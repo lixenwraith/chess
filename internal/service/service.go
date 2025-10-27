@@ -224,6 +224,14 @@ func (s *Service) GetGame(gameID string) (*game.Game, error) {
 	return g, nil
 }
 
+func (s *Service) DeleteGame(gameID string) error {
+	if _, ok := s.games[gameID]; !ok {
+		return fmt.Errorf("game not found: %s", gameID)
+	}
+	delete(s.games, gameID)
+	return nil
+}
+
 func (s *Service) Close() error {
 	if s.engine != nil {
 		return s.engine.Close()

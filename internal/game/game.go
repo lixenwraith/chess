@@ -71,6 +71,10 @@ func (g *Game) NextPlayer() *core.Player {
 	return g.players[g.NextTurn()]
 }
 
+func (g *Game) GetPlayer(color core.Color) *core.Player {
+	return g.players[color]
+}
+
 func (g *Game) AddSnapshot(fen string, move string, nextTurn core.Color) {
 	g.snapshots = append(g.snapshots, Snapshot{
 		FEN:          fen,
