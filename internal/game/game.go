@@ -9,34 +9,45 @@ import (
 )
 
 type Snapshot struct {
-	FEN          string     // Board state at this point
-	PreviousMove string     // Move that created this position (empty for initial)
-	NextTurn     core.Color // Whose turn it is at this position
+	FEN           string          `json:"fen"`
+	PreviousMove  string          `json:"previousMove"`
+	NextTurnColor core.Color      `json:"nextTurnColor"`
+	PlayerType    core.PlayerType `json:"playerType"`
+	PlayerID      string          `json:"playerId"` // ID of the player whose turn it is
 }
 
 // MoveResult tracks the outcome of a move
 type MoveResult struct {
-	Move      string
-	Player    core.Color
-	GameState core.State
-	Score     int
-	Depth     int
+	Move        string     `json:"move"`
+	PlayerColor core.Color `json:"playerColor"`
+	GameState   core.State `json:"gameState"`
+	Score       int        `json:"score"`
+	Depth       int        `json:"depth"`
 }
 
 type Game struct {
-	snapshots  []Snapshot
-	players    map[core.Color]*core.Player
-	state      core.State
-	lastResult *MoveResult
+	snapshots  []Snapshot                  `json:"snapshots"`
+	players    map[core.Color]*core.Player `json:"players"`
+	state      core.State                  `json:"state"`
+	lastResult *MoveResult                 `json:"lastResult,omitempty"`
 }
 
-func New(initialFEN string, whitePlayer, blackPlayer *core.Player, startingTurn core.Color) *Game {
+func New(initialFEN string, whitePlayer, blackPlayer *core.Player, startingTurnColor core.Color) *Game {
+	// Determine which player's turn it is initially
+	var initialPlayerID string
+	if startingTurnColor == core.ColorWhite {
+		initialPlayerID = whitePlayer.ID
+	} else {
+		initialPlayerID = blackPlayer.ID
+	}
+
 	return &Game{
 		snapshots: []Snapshot{
 			{
-				FEN:          initialFEN,
-				PreviousMove: "", // No move led to initial position
-				NextTurn:     startingTurn,
+				FEN:           initialFEN,
+				PreviousMove:  "",
+				NextTurnColor: startingTurnColor,
+				PlayerID:      initialPlayerID,
 			},
 		},
 		players: map[core.Color]*core.Player{
@@ -63,24 +74,38 @@ func (g *Game) CurrentFEN() string {
 	return g.CurrentSnapshot().FEN
 }
 
-func (g *Game) NextTurn() core.Color {
-	return g.CurrentSnapshot().NextTurn
+func (g *Game) NextTurnColor() core.Color {
+	return g.CurrentSnapshot().NextTurnColor
 }
 
 func (g *Game) NextPlayer() *core.Player {
-	return g.players[g.NextTurn()]
+	return g.players[g.NextTurnColor()]
 }
 
 func (g *Game) GetPlayer(color core.Color) *core.Player {
 	return g.players[color]
 }
 
-func (g *Game) AddSnapshot(fen string, move string, nextTurn core.Color) {
+func (g *Game) AddSnapshot(fen string, move string, nextTurnColor core.Color) {
+	// Get the player ID for the next turn
+	nextPlayer := g.players[nextTurnColor]
 	g.snapshots = append(g.snapshots, Snapshot{
-		FEN:          fen,
-		PreviousMove: move,
-		NextTurn:     nextTurn,
+		FEN:           fen,
+		PreviousMove:  move,
+		NextTurnColor: nextTurnColor,
+		PlayerID:      nextPlayer.ID,
 	})
+}
+
+func (g *Game) UpdatePlayers(whitePlayer, blackPlayer *core.Player) {
+	g.players[core.ColorWhite] = whitePlayer
+	g.players[core.ColorBlack] = blackPlayer
+
+	// Update current snapshot's PlayerID to reflect new player
+	if len(g.snapshots) > 0 {
+		currentSnap := &g.snapshots[len(g.snapshots)-1]
+		currentSnap.PlayerID = g.players[currentSnap.NextTurnColor].ID
+	}
 }
 
 func (g *Game) UndoMoves(count int) error {

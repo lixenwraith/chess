@@ -21,7 +21,7 @@ type Board struct {
 	fullmove  int
 }
 
-func FEN(fen string) (*Board, error) {
+func ParseFEN(fen string) (*Board, error) {
 	parts := strings.Fields(fen)
 	if len(parts) != 6 {
 		return nil, fmt.Errorf("invalid FEN: expected 6 parts, got %d", len(parts))
@@ -54,10 +54,17 @@ func FEN(fen string) (*Board, error) {
 	}
 
 	// Parse game state with validation
-	if len(parts[1]) != 1 || (parts[1][0] != 'w' && parts[1][0] != 'b') {
+	if len(parts[1]) != 1 {
 		return nil, fmt.Errorf("invalid FEN: turn must be 'w' or 'b'")
 	}
-	b.turn = core.Color(parts[1][0])
+	switch parts[1] {
+	case "w":
+		b.turn = core.ColorWhite
+	case "b":
+		b.turn = core.ColorBlack
+	default:
+		return nil, fmt.Errorf("invalid FEN: turn must be 'w' or 'b'")
+	}
 	b.castling = parts[2]
 	b.enPassant = parts[3]
 
@@ -69,6 +76,30 @@ func FEN(fen string) (*Board, error) {
 	}
 
 	return b, nil
+}
+
+// ToASCII creates an ASCII representation of the board
+func (b *Board) ToASCII() string {
+	var sb strings.Builder
+	sb.WriteString("  a b c d e f g h\n")
+
+	for r := 0; r < 8; r++ {
+		sb.WriteString(fmt.Sprintf("%d ", 8-r))
+		for f := 0; f < 8; f++ {
+			square := fmt.Sprintf("%c%c", 'a'+f, '8'-r)
+			piece := b.GetPieceAt(square)
+
+			if piece == 0 {
+				sb.WriteString(". ")
+			} else {
+				sb.WriteString(fmt.Sprintf("%c ", piece))
+			}
+		}
+		sb.WriteString(fmt.Sprintf(" %d\n", 8-r))
+	}
+	sb.WriteString("  a b c d e f g h")
+
+	return sb.String()
 }
 
 func (b *Board) Turn() core.Color {

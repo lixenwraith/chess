@@ -3,202 +3,137 @@ package service
 
 import (
 	"fmt"
-	"strings"
+	"sync"
 
-	"chess/internal/board"
 	"chess/internal/core"
-	"chess/internal/engine"
 	"chess/internal/game"
+
+	"github.com/google/uuid"
 )
 
+// Service is a pure state manager for chess games
+// It has NO knowledge of chess rules or engine interactions
 type Service struct {
-	games  map[string]*game.Game
-	engine *engine.UCI
+	games map[string]*game.Game
+	mu    sync.RWMutex
 }
 
+// New creates a new service instance
 func New() (*Service, error) {
-	eng, err := engine.New()
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize engine: %v", err)
-	}
-
 	return &Service{
-		games:  make(map[string]*game.Game),
-		engine: eng,
+		games: make(map[string]*game.Game),
 	}, nil
 }
 
-func (s *Service) NewGame(id string, whiteType, blackType core.PlayerType, fen ...string) error {
-	initialFEN := board.StartingFEN
-	if len(fen) > 0 && fen[0] != "" {
-		initialFEN = fen[0]
+// CreateGame creates game with player configuration
+func (s *Service) CreateGame(id string, whiteConfig, blackConfig core.PlayerConfig, initialFEN string, startingTurn core.Color) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.games[id]; exists {
+		return fmt.Errorf("game %s already exists", id)
 	}
 
-	// Use the engine to validate and canonicalize the FEN
-	s.engine.NewGame()
-	s.engine.SetPosition(initialFEN, []string{})
-	validatedFEN, err := s.engine.GetFEN()
-	if err != nil {
-		return fmt.Errorf("could not get FEN from engine: %v", err)
-	}
+	// Create players with UUIDs and config
+	whitePlayer := core.NewPlayer(whiteConfig, core.ColorWhite)
+	blackPlayer := core.NewPlayer(blackConfig, core.ColorBlack)
 
-	b, err := board.FEN(validatedFEN)
-	if err != nil {
-		return fmt.Errorf("engine returned invalid FEN: %v", err)
-	}
-	startingTurn := b.Turn()
-
-	// Setup players based on types
-	whitePlayer := &core.Player{
-		ID:   "white",
-		Type: whiteType,
-	}
-	if whiteType == core.PlayerComputer {
-		whitePlayer.ID = "stockfish-white"
-	}
-
-	blackPlayer := &core.Player{
-		ID:   "black",
-		Type: blackType,
-	}
-	if blackType == core.PlayerComputer {
-		blackPlayer.ID = "stockfish-black"
-	}
-
-	s.games[id] = game.New(validatedFEN, whitePlayer, blackPlayer, startingTurn)
-
+	s.games[id] = game.New(initialFEN, whitePlayer, blackPlayer, startingTurn)
 	return nil
 }
 
-func (s *Service) MakeHumanMove(gameID, uci string) error {
-	// Basic move format validation
-	uci = strings.ToLower(strings.TrimSpace(uci))
-	if len(uci) < 4 || len(uci) > 5 {
-		return fmt.Errorf("invalid move format: expected e2e4 or e7e8q")
-	}
+// UpdatePlayers replaces players in an existing game
+func (s *Service) UpdatePlayers(gameID string, whiteConfig, blackConfig core.PlayerConfig) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	g, ok := s.games[gameID]
 	if !ok {
-		return fmt.Errorf("game not found")
+		return fmt.Errorf("game not found: %s", gameID)
 	}
 
-	// Check if it's human's turn
-	if g.NextPlayer().Type != core.PlayerHuman {
-		return fmt.Errorf("not a human player's turn")
-	}
+	// Create new player instances with new UUIDs
+	whitePlayer := core.NewPlayer(whiteConfig, core.ColorWhite)
+	blackPlayer := core.NewPlayer(blackConfig, core.ColorBlack)
 
-	currentFEN := g.CurrentFEN()
-	humanColor := g.NextTurn()
+	// Update the game's players
+	g.UpdatePlayers(whitePlayer, blackPlayer)
 
-	// Try to apply human move
-	s.engine.SetPosition(currentFEN, []string{uci})
-
-	// Get FEN after human move to check if move was legal
-	humanMoveFEN, err := s.engine.GetFEN()
-	if err != nil {
-		return fmt.Errorf("failed to get position: %v", err)
-	}
-
-	// If position didn't change, move was illegal
-	if humanMoveFEN == currentFEN {
-		return fmt.Errorf("illegal move")
-	}
-
-	// Record human move
-	g.AddSnapshot(humanMoveFEN, uci, core.OppositeColor(humanColor))
-
-	// Check if opponent has any legal moves
-	s.engine.SetPosition(humanMoveFEN, []string{})
-	search, _ := s.engine.Search(100) // Quick search to check for legal moves
-
-	result := &game.MoveResult{
-		Move:      uci,
-		Player:    humanColor,
-		GameState: core.StateOngoing,
-	}
-
-	if search.BestMove == "" || search.BestMove == "(none)" {
-		// Human checkmated the opponent
-		if humanColor == core.ColorWhite {
-			g.SetState(core.StateWhiteWins)
-		} else {
-			g.SetState(core.StateBlackWins)
-		}
-		result.GameState = g.State()
-	}
-
-	// Store result in game instead of service
-	g.SetLastResult(result)
 	return nil
 }
 
-func (s *Service) MakeComputerMove(gameID string) (*game.MoveResult, error) {
+// GetGame retrieves a game by ID
+func (s *Service) GetGame(gameID string) (*game.Game, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	g, ok := s.games[gameID]
 	if !ok {
 		return nil, fmt.Errorf("game not found: %s", gameID)
 	}
-
-	if g.NextPlayer().Type != core.PlayerComputer {
-		return nil, fmt.Errorf("not computer's turn")
-	}
-
-	currentColor := g.NextTurn()
-	s.engine.SetPosition(g.CurrentFEN(), []string{})
-	search, err := s.engine.Search(1000)
-	if err != nil {
-		return nil, fmt.Errorf("engine error: %v", err)
-	}
-
-	result := &game.MoveResult{
-		Player:    currentColor,
-		Score:     search.Score,
-		Depth:     search.Depth,
-		GameState: core.StateOngoing,
-	}
-
-	if search.BestMove == "" || search.BestMove == "(none)" {
-		// No legal moves - computer is checkmated
-		if currentColor == core.ColorWhite {
-			g.SetState(core.StateBlackWins)
-		} else {
-			g.SetState(core.StateWhiteWins)
-		}
-		result.GameState = g.State()
-		g.SetLastResult(result)
-		return result, nil
-	}
-
-	result.Move = search.BestMove
-
-	// Apply move and get resulting FEN
-	s.engine.SetPosition(g.CurrentFEN(), []string{search.BestMove})
-	newFEN, err := s.engine.GetFEN()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get position: %v", err)
-	}
-
-	g.AddSnapshot(newFEN, search.BestMove, core.OppositeColor(currentColor))
-
-	// Check if opponent has any legal moves
-	s.engine.SetPosition(newFEN, []string{})
-	testSearch, _ := s.engine.Search(100)
-
-	if testSearch.BestMove == "" || testSearch.BestMove == "(none)" {
-		// Computer checkmated the opponent
-		if currentColor == core.ColorWhite {
-			g.SetState(core.StateWhiteWins)
-		} else {
-			g.SetState(core.StateBlackWins)
-		}
-		result.GameState = g.State()
-	}
-
-	// Store result in game
-	g.SetLastResult(result)
-	return result, nil
+	return g, nil
 }
 
-func (s *Service) Undo(gameID string, count int) error {
+// GenerateGameID creates a new unique game ID
+func (s *Service) GenerateGameID() string {
+	return uuid.New().String()
+}
+
+// ApplyMove adds a validated move to the game history
+// The processor has already validated this move and calculated the new FEN
+func (s *Service) ApplyMove(gameID, moveUCI, newFEN string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	g, ok := s.games[gameID]
+	if !ok {
+		return fmt.Errorf("game not found: %s", gameID)
+	}
+
+	// Determine whose turn it was before this move
+	currentTurn := g.NextTurnColor()
+	nextTurn := core.OppositeColor(currentTurn)
+
+	// Add the new position to game history
+	g.AddSnapshot(newFEN, moveUCI, nextTurn)
+
+	return nil
+}
+
+// UpdateGameState sets the game's end state (checkmate, stalemate, etc)
+func (s *Service) UpdateGameState(gameID string, state core.State) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	g, ok := s.games[gameID]
+	if !ok {
+		return fmt.Errorf("game not found: %s", gameID)
+	}
+
+	g.SetState(state)
+	return nil
+}
+
+// SetLastMoveResult stores metadata about the last move (score, depth, etc)
+// Used by processor to track computer move evaluations
+func (s *Service) SetLastMoveResult(gameID string, result *game.MoveResult) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	g, ok := s.games[gameID]
+	if !ok {
+		return fmt.Errorf("game not found: %s", gameID)
+	}
+
+	g.SetLastResult(result)
+	return nil
+}
+
+// UndoMoves removes the specified number of moves from game history
+func (s *Service) UndoMoves(gameID string, count int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	g, ok := s.games[gameID]
 	if !ok {
 		return fmt.Errorf("game not found: %s", gameID)
@@ -207,34 +142,25 @@ func (s *Service) Undo(gameID string, count int) error {
 	return g.UndoMoves(count)
 }
 
-func (s *Service) GetCurrentBoard(gameID string) (*board.Board, error) {
-	g, ok := s.games[gameID]
-	if !ok {
-		return nil, fmt.Errorf("game not found: %s", gameID)
-	}
-
-	return board.FEN(g.CurrentFEN())
-}
-
-func (s *Service) GetGame(gameID string) (*game.Game, error) {
-	g, ok := s.games[gameID]
-	if !ok {
-		return nil, fmt.Errorf("game not found: %s", gameID)
-	}
-	return g, nil
-}
-
+// DeleteGame removes a game from memory
 func (s *Service) DeleteGame(gameID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if _, ok := s.games[gameID]; !ok {
 		return fmt.Errorf("game not found: %s", gameID)
 	}
+
 	delete(s.games, gameID)
 	return nil
 }
 
+// Close cleans up resources (currently a no-op as no engine to close)
 func (s *Service) Close() error {
-	if s.engine != nil {
-		return s.engine.Close()
-	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Clear all games
+	s.games = make(map[string]*game.Game)
 	return nil
 }

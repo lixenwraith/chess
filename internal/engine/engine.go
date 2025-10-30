@@ -25,6 +25,8 @@ type SearchResult struct {
 	BestMove string
 	Score    int
 	Depth    int
+	IsMate   bool
+	MateIn   int
 }
 
 func New() (*UCI, error) {
@@ -40,7 +42,7 @@ func New() (*UCI, error) {
 		return nil, err
 	}
 
-	if err := cmd.Start(); err != nil {
+	if err = cmd.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start engine: %v", err)
 	}
 
@@ -56,6 +58,16 @@ func New() (*UCI, error) {
 	}
 
 	return uci, nil
+}
+
+// SetSkillLevel sets the Stockfish skill level (0-20)
+func (u *UCI) SetSkillLevel(level int) {
+	if level < 0 {
+		level = 0
+	} else if level > 20 {
+		level = 20
+	}
+	u.sendCommand(fmt.Sprintf("setoption name Skill Level value %d", level))
 }
 
 // Get FEN from Stockfish's debug ('d') command
@@ -184,6 +196,16 @@ func (u *UCI) Search(timeMs int) (*SearchResult, error) {
 						fmt.Sscanf(fields[i+1], "%d", &result.Depth)
 					case "cp":
 						fmt.Sscanf(fields[i+1], "%d", &result.Score)
+						result.IsMate = false
+					case "mate":
+						fmt.Sscanf(fields[i+1], "%d", &result.MateIn)
+						result.IsMate = true
+						// Convert mate score to centipawn equivalent for backwards compatibility
+						if result.MateIn > 0 {
+							result.Score = 100000 - result.MateIn
+						} else {
+							result.Score = -100000 - result.MateIn
+						}
 					}
 				}
 			}
