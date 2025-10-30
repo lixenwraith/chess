@@ -4,6 +4,7 @@ package http
 import (
 	"chess/internal/core"
 	"chess/internal/processor"
+	"chess/internal/service"
 	"fmt"
 	"strings"
 	"time"
@@ -19,15 +20,16 @@ const rateLimitRate = 10 // req/sec
 
 type HTTPHandler struct {
 	proc *processor.Processor
+	svc  *service.Service
 }
 
-func NewHTTPHandler(proc *processor.Processor) *HTTPHandler {
-	return &HTTPHandler{proc: proc}
+func NewHTTPHandler(proc *processor.Processor, svc *service.Service) *HTTPHandler {
+	return &HTTPHandler{proc: proc, svc: svc}
 }
 
-func NewFiberApp(proc *processor.Processor, devMode bool) *fiber.App {
+func NewFiberApp(proc *processor.Processor, svc *service.Service, devMode bool) *fiber.App {
 	// Create handler
-	h := NewHTTPHandler(proc)
+	h := NewHTTPHandler(proc, svc)
 
 	// Initialize Fiber app
 	app := fiber.New(fiber.Config{
@@ -146,11 +148,12 @@ func customErrorHandler(c *fiber.Ctx, err error) error {
 	return c.Status(code).JSON(response)
 }
 
-// Health check endpoint
+// Health check endpoint with storage status
 func (h *HTTPHandler) Health(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
-		"status": "healthy",
-		"time":   time.Now().Unix(),
+		"status":  "healthy",
+		"time":    time.Now().Unix(),
+		"storage": h.svc.GetStorageHealth(),
 	})
 }
 

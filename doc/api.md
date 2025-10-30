@@ -6,6 +6,25 @@ Content-Type: `application/json` (required for POST/PUT)
 
 ## Endpoints
 
+### Health Check
+`GET /health`
+
+Returns server status.
+
+**Response (200):**
+```json
+{
+  "status": "healthy",
+  "time": 1699123456,
+  "storage": "ok"
+}
+```
+
+Storage states:
+- `"disabled"` - No storage path configured
+- `"ok"` - Database operational
+- `"degraded"` - Write failures detected, operating memory-only
+
 ### Create Game
 `POST /games`
 
@@ -29,8 +48,8 @@ Creates new game with specified players.
 ```
 
 - `type` (integer, required): 1=human, 2=computer
-- `level` (integer, 0-20): AI skill level for computer players
-- `searchTime` (integer, 100-10000ms): AI thinking time for computer players
+- `level` (integer, 0-20): Engine skill level for computer players
+- `searchTime` (integer, 100-10000ms): Engine thinking time for computer players
 - `fen` (string): Starting position in FEN notation (default: standard position)
 
 **Response (201):**

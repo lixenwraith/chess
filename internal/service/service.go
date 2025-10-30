@@ -4,24 +4,27 @@ package service
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"chess/internal/core"
 	"chess/internal/game"
+	"chess/internal/storage"
 
 	"github.com/google/uuid"
 )
 
-// Service is a pure state manager for chess games
-// It has NO knowledge of chess rules or engine interactions
+// Service is a pure state manager for chess games with optional persistence
 type Service struct {
 	games map[string]*game.Game
 	mu    sync.RWMutex
+	store *storage.Store // nil if persistence disabled
 }
 
-// New creates a new service instance
-func New() (*Service, error) {
+// New creates a new service instance with optional storage
+func New(store *storage.Store) (*Service, error) {
 	return &Service{
 		games: make(map[string]*game.Game),
+		store: store,
 	}, nil
 }
 
@@ -39,6 +42,25 @@ func (s *Service) CreateGame(id string, whiteConfig, blackConfig core.PlayerConf
 	blackPlayer := core.NewPlayer(blackConfig, core.ColorBlack)
 
 	s.games[id] = game.New(initialFEN, whitePlayer, blackPlayer, startingTurn)
+
+	// Persist if storage enabled
+	if s.store != nil {
+		record := storage.GameRecord{
+			GameID:          id,
+			InitialFEN:      initialFEN,
+			WhitePlayerID:   whitePlayer.ID,
+			WhiteType:       int(whitePlayer.Type),
+			WhiteLevel:      whitePlayer.Level,
+			WhiteSearchTime: whitePlayer.SearchTime,
+			BlackPlayerID:   blackPlayer.ID,
+			BlackType:       int(blackPlayer.Type),
+			BlackLevel:      blackPlayer.Level,
+			BlackSearchTime: blackPlayer.SearchTime,
+			StartTimeUTC:    time.Now().UTC(),
+		}
+		s.store.RecordNewGame(record)
+	}
+
 	return nil
 }
 
@@ -76,11 +98,19 @@ func (s *Service) GetGame(gameID string) (*game.Game, error) {
 
 // GenerateGameID creates a new unique game ID
 func (s *Service) GenerateGameID() string {
-	return uuid.New().String()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Ensure UUID uniqueness (handle potential conflicts)
+	for {
+		id := uuid.New().String()
+		if _, exists := s.games[id]; !exists {
+			return id
+		}
+	}
 }
 
 // ApplyMove adds a validated move to the game history
-// The processor has already validated this move and calculated the new FEN
 func (s *Service) ApplyMove(gameID, moveUCI, newFEN string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -96,6 +126,20 @@ func (s *Service) ApplyMove(gameID, moveUCI, newFEN string) error {
 
 	// Add the new position to game history
 	g.AddSnapshot(newFEN, moveUCI, nextTurn)
+
+	// Persist if storage enabled
+	if s.store != nil {
+		moveNumber := len(g.Moves())
+		record := storage.MoveRecord{
+			GameID:       gameID,
+			MoveNumber:   moveNumber,
+			MoveUCI:      moveUCI,
+			FENAfterMove: newFEN,
+			PlayerColor:  currentTurn.String(),
+			MoveTimeUTC:  time.Now().UTC(),
+		}
+		s.store.RecordMove(record)
+	}
 
 	return nil
 }
@@ -114,8 +158,7 @@ func (s *Service) UpdateGameState(gameID string, state core.State) error {
 	return nil
 }
 
-// SetLastMoveResult stores metadata about the last move (score, depth, etc)
-// Used by processor to track computer move evaluations
+// SetLastMoveResult stores metadata about the last move
 func (s *Service) SetLastMoveResult(gameID string, result *game.MoveResult) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -139,7 +182,19 @@ func (s *Service) UndoMoves(gameID string, count int) error {
 		return fmt.Errorf("game not found: %s", gameID)
 	}
 
-	return g.UndoMoves(count)
+	originalMoveCount := len(g.Moves())
+
+	if err := g.UndoMoves(count); err != nil {
+		return err
+	}
+
+	// Delete undone moves from storage if enabled
+	if s.store != nil {
+		remainingMoves := originalMoveCount - count
+		s.store.DeleteUndoneMoves(gameID, remainingMoves)
+	}
+
+	return nil
 }
 
 // DeleteGame removes a game from memory
@@ -155,12 +210,29 @@ func (s *Service) DeleteGame(gameID string) error {
 	return nil
 }
 
-// Close cleans up resources (currently a no-op as no engine to close)
+// GetStorageHealth returns the storage component status
+func (s *Service) GetStorageHealth() string {
+	if s.store == nil {
+		return "disabled"
+	}
+	if s.store.IsHealthy() {
+		return "ok"
+	}
+	return "degraded"
+}
+
+// Close cleans up resources
 func (s *Service) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	// Clear all games
 	s.games = make(map[string]*game.Game)
+
+	// Close storage if enabled
+	if s.store != nil {
+		return s.store.Close()
+	}
+
 	return nil
 }

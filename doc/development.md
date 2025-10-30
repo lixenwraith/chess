@@ -21,21 +21,49 @@ go build ./cmd/chessd
 - `-host`: Server host (default: localhost)
 - `-port`: Server port (default: 8080)
 - `-dev`: Development mode with relaxed rate limits
+- `-storage-path`: SQLite database file path (enables persistence)
+- `-pid`: PID file path for process tracking
+- `-pid-lock`: Enable exclusive locking (requires -pid)
 
 ### Modes
 ```bash
-# Production (1 req/s rate limit)
+# In-memory only
 ./chessd
 
-# Development (10 req/s rate limit)
-./chessd -dev
+# With persistence
+./chessd -storage-path ./db/chess.db
+
+# Singleton enforcement (requires same PID file path across instances)
+./chessd -pid /var/run/chessd.pid -pid-lock
+
+# Development with all features
+./chessd -dev -storage-path chess.db -pid /tmp/chessd.pid
 ```
+
+## Database Management
+
+### CLI Commands
+```bash
+# Initialize database schema
+./chessd db init -path chess.db
+
+# Query games
+./chessd db query -path chess.db [-gameId ID] [-playerId ID]
+
+# Delete database
+./chessd db delete -path chess.db
+```
+
+Query parameters accept `*` for all records (default if omitted) or specific IDs for filtering.
 
 ## Project Structure
 
 ```
 chess/
-├── cmd/chessd/        # Entry point
+├── cmd/chessd/
+│   ├── main.go        # Entry point
+│   ├── pid.go         # PID file management
+│   └── cli/           # Database CLI
 ├── internal/
 │   ├── board/         # FEN/ASCII operations
 │   ├── core/          # Shared types
@@ -43,28 +71,14 @@ chess/
 │   ├── game/          # Game state
 │   ├── http/          # Fiber handlers
 │   ├── processor/     # Command processing
-│   └── service/       # State management
+│   ├── service/       # State management
+│   └── storage/       # SQLite persistence
 └── test/              # Test scripts
 ```
 
 ## Testing
 
-```bash
-# Unit tests
-go test ./...
-
-# API tests (requires dev mode)
-./chessd -dev &
-./test/test-api.sh
-```
-
-Test script validates:
-- Basic CRUD operations
-- Computer move triggering ("cccc" mechanism)
-- Pending state protection
-- Rate limiting
-- Input validation
-- Error handling
+See [test documentation](../test/README.md) for details.
 
 ## Configuration
 
@@ -73,6 +87,20 @@ Test script validates:
 - Worker count: 2 (internal/processor/processor.go)
 - Queue capacity: 100 (internal/processor/queue.go)
 - Min search time: 100ms (internal/processor/processor.go)
+- Write queue: 1000 operations (internal/storage/storage.go)
+- DB connections: 25 max, 5 idle (internal/storage/storage.go)
+
+### Storage Configuration
+- WAL mode enabled in development for concurrency
+- Foreign key constraints enforced
+- Async write pattern with 2-second drain on shutdown
+- Degradation to memory-only on write failures
+
+### PID Management
+- Singleton enforcement requires same PID file path - all instances must use the same -pid value
+- Stale PID detection via signal 0 checking
+- Exclusive file locking with LOCK_EX|LOCK_NB
+- Automatic cleanup on graceful shutdown
 
 ### Validation Rules
 - Player type: 1 (human) or 2 (computer)

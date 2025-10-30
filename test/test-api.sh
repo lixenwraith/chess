@@ -581,7 +581,7 @@ GAME_ID=$(echo "$RESPONSE" | jq -r '.gameId' 2>/dev/null)
 print_header "SECTION 8: Player Configuration"
 # ==============================================================================
 
-test_case "8.1: Create Game with AI Configuration"
+test_case "8.1: Create Game with Engine Configuration"
 RESPONSE=$(api_request POST "$API_URL/games" \
     -H "Content-Type: application/json" \
     -d '{"white": {"type": 1}, "black": {"type": 2, "level": 10, "searchTime": 500}}')
