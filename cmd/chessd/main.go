@@ -1,4 +1,3 @@
-// FILE: cmd/chessd/main.go
 package main
 
 import (
@@ -7,6 +6,7 @@ import (
 	"chess/internal/processor"
 	"chess/internal/service"
 	"chess/internal/storage"
+	"chess/internal/webserver"
 	"flag"
 	"fmt"
 	"log"
@@ -27,12 +27,18 @@ func main() {
 
 	// Command-line flags
 	var (
-		host        = flag.String("host", "localhost", "Server host")
-		port        = flag.Int("port", 8080, "Server port")
+		// API server flags (renamed)
+		apiHost     = flag.String("api-host", "localhost", "API server host")
+		apiPort     = flag.Int("api-port", 8080, "API server port")
 		dev         = flag.Bool("dev", false, "Development mode (relaxed rate limits)")
 		storagePath = flag.String("storage-path", "", "Path to SQLite database file (disables persistence if empty)")
 		pidPath     = flag.String("pid", "", "Optional path to write PID file")
 		pidLock     = flag.Bool("pid-lock", false, "Lock PID file to allow only one instance (requires -pid)")
+
+		// Web UI server flags
+		serve   = flag.Bool("serve", false, "Enable web UI server")
+		webHost = flag.String("web-host", "localhost", "Web UI server host")
+		webPort = flag.Int("web-port", 9090, "Web UI server port")
 	)
 	flag.Parse()
 
@@ -56,7 +62,7 @@ func main() {
 	if *storagePath != "" {
 		log.Printf("Initializing persistent storage at: %s", *storagePath)
 		var err error
-		store, err = storage.NewStore(*storagePath, *dev) // CHANGED: Added *dev parameter
+		store, err = storage.NewStore(*storagePath, *dev)
 		if err != nil {
 			log.Fatalf("Failed to initialize storage: %v", err)
 		}
@@ -90,13 +96,13 @@ func main() {
 	// 4. Initialize the Fiber App/HTTP Handler, injecting processor and service
 	app := http.NewFiberApp(proc, svc, *dev)
 
-	// Server configuration
-	addr := fmt.Sprintf("%s:%d", *host, *port)
+	// API Server configuration
+	apiAddr := fmt.Sprintf("%s:%d", *apiHost, *apiPort)
 
-	// Start server in a goroutine
+	// Start API server in a goroutine
 	go func() {
 		log.Printf("Chess API Server starting...")
-		log.Printf("Listening on: http://%s", addr)
+		log.Printf("API Listening on: http://%s", apiAddr)
 		log.Printf("API Version: v1")
 		if *dev {
 			log.Printf("Rate Limit: 20 requests/second per IP (DEV MODE)")
@@ -108,26 +114,41 @@ func main() {
 		} else {
 			log.Printf("Storage: Disabled")
 		}
-		log.Printf("Endpoints: http://%s/api/v1/games", addr)
-		log.Printf("Health: http://%s/health", addr)
+		log.Printf("API Endpoints: http://%s/api/v1/games", apiAddr)
+		log.Printf("Health: http://%s/health", apiAddr)
 
-		if err := app.Listen(addr); err != nil {
-			// This log often prints on graceful shutdown, which is normal.
-			log.Printf("Server listen error: %v", err)
+		if err := app.Listen(apiAddr); err != nil {
+			log.Printf("API server listen error: %v", err)
 		}
 	}()
+
+	// 5. Start Web UI server if requested
+	if *serve {
+		webAddr := fmt.Sprintf("%s:%d", *webHost, *webPort)
+		apiURL := fmt.Sprintf("http://%s", apiAddr)
+
+		go func() {
+			log.Printf("Web UI Server starting...")
+			log.Printf("Web UI Listening on: http://%s", webAddr)
+			log.Printf("Web UI API target: %s", apiURL)
+
+			if err := webserver.Start(*webHost, *webPort, apiURL); err != nil {
+				log.Printf("Web UI server error: %v", err)
+			}
+		}()
+	}
 
 	// Wait for an interrupt signal to gracefully shut down
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 	<-quit
 
-	log.Println("Shutting down server...")
+	log.Println("Shutting down servers...")
 
 	// Graceful shutdown with a timeout
 	if err := app.ShutdownWithTimeout(5 * time.Second); err != nil {
 		log.Printf("Server forced to shutdown: %v", err)
 	}
 
-	log.Println("Server exited")
+	log.Println("Servers exited")
 }
