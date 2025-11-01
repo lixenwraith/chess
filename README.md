@@ -64,6 +64,33 @@ go build ./cmd/chessd
 
 Server listens on `http://localhost:8080`. See [API Reference](./doc/api.md) for endpoints.
 
+## Web UI
+
+The chess server includes an embedded web UI for playing games through a browser.
+
+### Enabling Web UI
+```bash
+# Start with web UI on default port 9090
+./chessd -serve
+
+# Custom web UI port  
+./chessd -serve -web-port 3000 -web-host 0.0.0.0
+
+# Full example with all features
+./chessd -dev -serve -web-port 9090 -api-port 8080 -storage-path chess.db
+```
+
+### Features
+- Visual chess board with drag-and-drop moves
+- Human vs Computer gameplay
+- Configurable engine strength (0-20)
+- Move history with algebraic notation
+- FEN display and custom starting positions
+- Real-time server health monitoring
+- Responsive design for mobile devices
+
+Access the UI at `http://localhost:9090` when server is running with `-serve` flag.
+
 ## Documentation
 
 - [API Reference](./doc/api.md) - Endpoint specifications

@@ -14,7 +14,7 @@ let gameState = {
     moveList: [],
 };
 
-// Chess piece Unicode
+// Chess piece Unicode: all black pieces for better fill, white pawn due to inability to override emoji variant display
 const pieceMap = {
     'p': '♙', 'r': '♜', 'n': '♞', 'b': '♝', 'q': '♛', 'k': '♚',
     'P': '♙', 'R': '♜', 'N': '♞', 'B': '♝', 'Q': '♛', 'K': '♚'
@@ -29,7 +29,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('undo-btn').addEventListener('click', undoMoves);
     document.getElementById('start-game-btn').addEventListener('click', startNewGame);
     document.getElementById('cancel-btn').addEventListener('click', hideNewGameModal);
-    document.getElementById('copy-fen').addEventListener('click', copyFEN);
     document.getElementById('copy-history').addEventListener('click', copyHistory);
 
     const levelSlider = document.getElementById('computer-level');
@@ -64,13 +63,12 @@ function startHealthCheck() {
                 updateStorageIndicator(health.storage || 'unknown');
                 gameState.networkError = false;
             } else {
-                updateServerIndicator('degraded');
+                handleApiError('health check', null, response);
                 updateStorageIndicator('unknown');
             }
         } catch (error) {
-            updateServerIndicator('degraded');
+            handleApiError('health check', error);
             updateStorageIndicator('unknown');
-            gameState.networkError = true;
         }
     };
 
@@ -78,11 +76,22 @@ function startHealthCheck() {
     gameState.healthCheckInterval = setInterval(checkHealth, 10000);
 }
 
-function updateServerIndicator(status) {
+function updateServerIndicator(status, message = null) {
     const indicator = document.getElementById('server-indicator');
     const light = indicator.querySelector('.light');
     light.setAttribute('data-status', status);
-    indicator.setAttribute('data-status', status);
+    // Set custom tooltip if message provided
+    if (message) {
+        indicator.setAttribute('data-status', message);
+    } else {
+        // Default messages
+        const defaultMessages = {
+            'healthy': 'healthy',
+            'degraded': 'degraded',
+            'unknown': 'unknown'
+        };
+        indicator.setAttribute('data-status', defaultMessages[status] || status);
+    }
 }
 
 function updateStorageIndicator(status) {
@@ -97,46 +106,46 @@ function updateTurnIndicator(state, turn) {
     const light = indicator.querySelector('.light');
 
     let status = '';
-    let tooltip = 'Turn: ';
+    let tooltipText = '';
 
-    if (gameState.networkError) {
-        status = 'network-error';
-        tooltip += 'Network Error';
-    } else if (state === 'pending' || gameState.isLocked) {
+    if (state === 'pending' || gameState.isLocked) {
         status = 'thinking';
-        tooltip += 'Computer Thinking';
+        tooltipText = 'Computer Thinking';
     } else if (state && isGameOver(state)) {
         switch(state) {
             case 'white wins':
                 status = 'white-wins';
-                tooltip = 'White Wins';
+                tooltipText = 'White Wins';
                 break;
             case 'black wins':
                 status = 'black-wins';
-                tooltip = 'Black Wins';
+                tooltipText = 'Black Wins';
                 break;
             case 'stalemate':
                 status = 'stalemate';
-                tooltip = 'Stalemate';
+                tooltipText = 'Stalemate';
                 break;
             case 'draw':
                 status = 'draw';
-                tooltip = 'Draw';
+                tooltipText = 'Draw';
                 break;
             default:
                 status = 'unknown';
-                tooltip = 'Game Over';
+                tooltipText = 'Game Over';
         }
     } else if (turn === 'w') {
         status = 'white';
-        tooltip += 'White';
-    } else {
+        tooltipText = 'White';
+    } else if (turn === 'b') {
         status = 'black';
-        tooltip += 'Black';
+        tooltipText = 'Black';
+    } else {
+        status = 'unknown';
+        tooltipText = 'Unknown';
     }
 
     light.setAttribute('data-status', status);
-    indicator.setAttribute('data-status', tooltip.split(': ')[0]);
+    indicator.setAttribute('data-status', tooltipText);
 }
 
 function showNewGameModal() {
@@ -214,17 +223,6 @@ function handleSliderNav(e, direction) {
     }
 }
 
-function copyFEN() {
-    const fenText = document.getElementById('fen-display').textContent;
-    navigator.clipboard.writeText(fenText).then(() => {
-        const btn = document.getElementById('copy-fen');
-        btn.classList.add('copied');
-        setTimeout(() => {
-            btn.classList.remove('copied');
-        }, 2000);
-    });
-}
-
 function copyHistory() {
     const moves = gameState.moveList;
     let pgn = '';
@@ -233,6 +231,10 @@ function copyHistory() {
             pgn += `${Math.floor(i / 2) + 1}. `;
         }
         pgn += moves[i] + ' ';
+    }
+
+    if (gameState.fen) {
+        pgn += `\n\n[FEN "${gameState.fen}"]`;
     }
 
     navigator.clipboard.writeText(pgn.trim()).then(() => {
@@ -248,18 +250,34 @@ async function startNewGame() {
     const playerColor = document.querySelector('input[name="player-color"]:checked').value;
     const computerLevel = parseInt(document.getElementById('computer-level').value);
     const searchTime = parseInt(document.getElementById('search-time').value);
+    const startingFEN = document.getElementById('starting-fen').value.trim();
     gameState.isPlayerWhite = (playerColor === 'white');
 
     const whiteConfig = gameState.isPlayerWhite ? { type: 1 } : { type: 2, level: computerLevel, searchTime: searchTime };
     const blackConfig = gameState.isPlayerWhite ? { type: 2, level: computerLevel, searchTime: searchTime } : { type: 1 };
 
+    const requestBody = {
+        white: whiteConfig,
+        black: blackConfig
+    };
+
+    const defaultFEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+    if (startingFEN && startingFEN !== defaultFEN) {
+        requestBody.fen = startingFEN;
+    }
+
     try {
         const response = await fetch(`${gameState.apiUrl}/api/v1/games`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ white: whiteConfig, black: blackConfig })
+            body: JSON.stringify(requestBody)
         });
         if (!response.ok) throw new Error('Failed to create game');
+
+        if (!response.ok) {
+            const errorInfo = handleApiError('create game', null, response);
+            throw new Error(errorInfo.statusMessage);
+        }
 
         const game = await response.json();
         gameState.gameId = game.gameId;
@@ -267,13 +285,15 @@ async function startNewGame() {
         hideNewGameModal();
         initializeBoard();
         updateGameDisplay(game);
-        document.getElementById('undo-btn').disabled = false;
+        document.getElementById('undo-btn').disabled = true;
         if (!gameState.isPlayerWhite) triggerComputerMove();
 
     } catch (error) {
-        console.error('Error starting game:', error);
-        alert('Failed to start new game');
-        gameState.networkError = true;
+        if (error.message === 'Failed to fetch') {
+            handleApiError('create game', error);
+        } else {
+            flashErrorMessage(error.message);
+        }
         updateTurnIndicator('', '');
     }
 }
@@ -367,6 +387,7 @@ function handleSquareClick(e) {
         gameState.selectedSquare = square;
         squareEl.classList.add('selected');
     } else {
+        flashErrorMessage('Invalid Piece Selection');
         // Flash red for invalid piece selection
         flashSquare(squareEl, false);
     }
@@ -392,42 +413,51 @@ async function handleHumanMove(from, to) {
 
         const game = await response.json();
         if (!response.ok) {
-            // Invalid move - flash both squares red
-            flashSquare(fromEl, false);
-            flashSquare(toEl, false);
-            renderBoardFromFEN(gameState.fen);
+            // Handle client errors differently - these aren't network issues
+            if (response.status === 400) {
+                // Invalid move - flash message and squares
+                // Handled early, not shown as server error, and bypasses handleApiError
+                flashErrorMessage('Invalid Move');
+                flashSquare(fromEl, false);
+                flashSquare(toEl, false);
+                renderBoardFromFEN(gameState.fen);
+                return;
+            }
+            // Other errors use error handler
+            handleApiError('move', null, response);
             return;
         }
 
-        // Valid move - flash both squares green
         flashSquare(fromEl, true);
         flashSquare(toEl, true);
-
         updateGameDisplay(game);
         if (!isGameOver(game.state)) {
             triggerComputerMove();
         }
     } catch (error) {
-        console.error('Error making move:', error);
-        gameState.networkError = true;
-        updateTurnIndicator('', gameState.turn);
+        handleApiError('move', error);
     }
 }
 
 async function triggerComputerMove() {
     lockBoard();
     try {
-        await fetch(`${gameState.apiUrl}/api/v1/games/${gameState.gameId}/moves`, {
+        const response = await fetch(`${gameState.apiUrl}/api/v1/games/${gameState.gameId}/moves`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ move: 'cccc' })
         });
+
+        if (!response.ok) {
+            handleApiError('trigger computer move', null, response);
+            unlockBoard();
+            return;
+        }
+
         gameState.networkError = false;
         startPolling();
     } catch (error) {
-        console.error('Error triggering computer move:', error);
-        gameState.networkError = true;
-        updateTurnIndicator('', gameState.turn);
+        handleApiError('trigger computer move', error);
         unlockBoard();
     }
 }
@@ -436,7 +466,20 @@ function startPolling() {
     gameState.pollInterval = setInterval(async () => {
         try {
             const response = await fetch(`${gameState.apiUrl}/api/v1/games/${gameState.gameId}`);
-            if (!response.ok) throw new Error('Failed to get game state');
+            if (!response.ok) {
+                // Use error handler but continue polling for 404 (game might be deleted)
+                const errorInfo = handleApiError('poll game state', null, response);
+                if (response.status === 404) {
+                    stopPolling();
+                    unlockBoard();
+                    flashErrorMessage('Game no longer exists');
+                    gameState.gameId = null;
+                    return;
+                }
+                // For other errors, display but keep polling
+                handleApiError('poll game state', null, response);
+                return;
+            }
 
             const game = await response.json();
             if (game.state !== 'pending') {
@@ -445,10 +488,9 @@ function startPolling() {
                 unlockBoard();
             }
             gameState.networkError = false;
+            updateServerIndicator('healthy');
         } catch (error) {
-            console.error('Error polling game state:', error);
-            gameState.networkError = true;
-            updateTurnIndicator('', gameState.turn);
+            handleApiError('poll game state', error);
             stopPolling();
             unlockBoard();
         }
@@ -472,23 +514,36 @@ function unlockBoard() {
 
 async function undoMoves() {
     if (gameState.isLocked) return;
+
+    if (!gameState.moveList || gameState.moveList.length < 2) {
+        console.log('No moves to undo');
+        return;
+    }
+
     try {
         const response = await fetch(`${gameState.apiUrl}/api/v1/games/${gameState.gameId}/undo`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ count: 2 })
         });
-        if (!response.ok) throw new Error('Failed to undo moves');
+
+        if (!response.ok) {
+            const errorInfo = handleApiError('undo', null, response);
+            // For client errors like "no moves to undo", don't throw
+            if (errorInfo.isClientError) {
+                console.log('Undo failed:', errorInfo.statusMessage);
+                return;
+            }
+            throw new Error(errorInfo.statusMessage);
+        }
+
         const game = await response.json();
-
-        // Clear checkmate state
         gameState.state = game.state;
-
         updateGameDisplay(game);
     } catch (error) {
-        console.error('Error undoing moves:', error);
-        gameState.networkError = true;
-        updateTurnIndicator('', gameState.turn);
+        if (error.message === 'Failed to fetch') {
+            handleApiError('undo', error);
+        }
     }
 }
 
@@ -575,9 +630,6 @@ function updateGameDisplay(game) {
         if (toEl) toEl.classList.add('last-move-to');
     }
 
-    // Update FEN display
-    document.getElementById('fen-display').textContent = game.fen || '-';
-
     // Update move history
     renderMoveHistory(game.moves || []);
 
@@ -604,12 +656,95 @@ function isGameOver(state) {
     return ['white wins', 'black wins', 'stalemate', 'draw'].includes(state);
 }
 
-function getGameOverText(state) {
-    switch(state) {
-        case 'white wins': return 'White Wins';
-        case 'black wins': return 'Black Wins';
-        case 'stalemate': return 'Stalemate';
-        case 'draw': return 'Draw';
-        default: return state;
+function handleApiError(action, error, response = null) {
+    let serverStatus = 'degraded';
+    let statusMessage = 'Server Error';
+    let isNetworkError = !response;
+
+    if (isNetworkError) {
+        // Network/connection error
+        statusMessage = 'Connection Failed';
+        console.error(`Network error during ${action}:`, error);
+    } else if (response) {
+        const status = response.status;
+
+        // Map status codes to user-friendly messages
+        switch (status) {
+            case 400:
+                // Bad request - not a server issue, game logic error
+                serverStatus = 'healthy'; // Server is fine, request was invalid
+                if (action === 'undo') {
+                    statusMessage = 'No Moves to Undo';
+                } else if (action === 'move') {
+                    statusMessage = 'Invalid Move';
+                } else {
+                    statusMessage = 'Invalid Request';
+                }
+                break;
+            case 404:
+                serverStatus = 'healthy'; // Server is fine, game doesn't exist
+                statusMessage = 'Game Not Found';
+                break;
+            case 429:
+                serverStatus = 'degraded';
+                statusMessage = 'Rate Limited';
+                break;
+            case 415:
+                serverStatus = 'healthy';
+                statusMessage = 'Invalid Content Type';
+                break;
+            case 500:
+            case 502:
+            case 503:
+                serverStatus = 'degraded';
+                statusMessage = status === 503 ? 'Service Unavailable' : 'Server Error';
+                break;
+            default:
+                if (status >= 500) {
+                    serverStatus = 'degraded';
+                    statusMessage = `Server Error (${status})`;
+                } else if (status >= 400) {
+                    serverStatus = 'healthy';
+                    statusMessage = `Request Failed (${status})`;
+                }
+        }
+
+        console.error(`API error during ${action}: ${status} - ${statusMessage}`);
     }
+
+    flashErrorMessage(statusMessage);
+
+    // Update indicators based on error type
+    if (isNetworkError || (response && response.status >= 500)) {
+        updateServerIndicator(serverStatus, statusMessage);
+        gameState.networkError = true;
+    } else {
+        // For client errors (4xx), server is healthy but request failed
+        updateServerIndicator('healthy');
+        gameState.networkError = false;
+    }
+
+    return {
+        serverStatus,
+        statusMessage,
+        isNetworkError,
+        isClientError: response && response.status >= 400 && response.status < 500,
+        isServerError: response && response.status >= 500
+    };
+}
+
+function flashErrorMessage(message) {
+    const overlay = document.getElementById('error-flash-overlay');
+    const messageEl = document.getElementById('error-flash-message');
+
+    // Set message text
+    messageEl.textContent = message;
+
+    // Show overlay
+    overlay.classList.add('show');
+
+    // Auto-hide after animation completes
+    setTimeout(() => {
+        overlay.classList.remove('show');
+    }, 500);
 }

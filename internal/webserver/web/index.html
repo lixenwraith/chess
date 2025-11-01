@@ -25,15 +25,6 @@
                         <div id="board"></div>
                     </div>
                 </div>
-                <div class="fen-container">
-                    <div id="fen-display" class="fen-display">-</div>
-                    <button class="copy-btn" id="copy-fen" title="Copy FEN">
-                        <svg viewBox="0 0 24 24" width="16" height="16">
-                            <rect x="9" y="9" width="13" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="2"/>
-                            <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" fill="none" stroke="currentColor" stroke-width="2"/>
-                        </svg>
-                    </button>
-                </div>
             </div>
 
             <aside class="info-panel">
@@ -47,6 +38,14 @@
                     <div class="indicator" id="turn-indicator" data-tooltip="Turn">
                         <span class="light turn-light" data-status="white">●</span>
                     </div>
+                    <div class="error-flash-overlay" id="error-flash-overlay">
+                        <div class="error-flash-message" id="error-flash-message"></div>
+                    </div>
+                </div>
+
+                <div class="controls">
+                    <button id="new-game-btn" class="btn btn-primary">New Game</button>
+                    <button id="undo-btn" class="btn btn-secondary" disabled>Undo</button>
                 </div>
 
                 <div class="move-history-container">
@@ -61,16 +60,11 @@
                     </div>
                 </div>
 
-                <div class="controls">
-                    <button id="new-game-btn" class="btn btn-primary">New Game</button>
-                    <button id="undo-btn" class="btn btn-secondary" disabled>Undo</button>
-                </div>
             </aside>
         </main>
     </div>
 </div>
 
-<!-- New Game Modal -->
 <div id="modal-overlay" class="modal-overlay">
     <div class="modal">
         <h2>New Game</h2>
@@ -88,6 +82,11 @@
         <div class="form-group">
             <label for="search-time">Search Time (ms): <span id="time-value">1000</span></label>
             <input type="range" id="search-time" min="100" max="10000" step="100" value="1000">
+        </div>
+        <div class="form-group">
+            <label for="starting-fen">Starting Position (FEN)</label>
+            <textarea id="starting-fen" class="fen-input" rows="2"
+                      placeholder="Enter FEN notation">rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1</textarea>
         </div>
         <div class="modal-buttons">
             <button id="start-game-btn" class="btn btn-primary">Start Game</button>

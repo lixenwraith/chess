@@ -18,8 +18,11 @@ go build ./cmd/chessd
 ## Running
 
 ### Flags
-- `-host`: Server host (default: localhost)
-- `-port`: Server port (default: 8080)
+- `-api-host`: API server host (default: localhost)
+- `-api-port`: API server port (default: 8080)
+- `-serve`: Enable embedded web UI server
+- `-web-host`: Web UI server host (default: localhost)
+- `-web-port`: Web UI server port (default: 9090)
 - `-dev`: Development mode with relaxed rate limits
 - `-storage-path`: SQLite database file path (enables persistence)
 - `-pid`: PID file path for process tracking
