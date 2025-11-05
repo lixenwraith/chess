@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# FILE: test-db.sh
+# FILE: test/test-db.sh
 
-# Database and User Management Test Suite
-# Tests user operations, authentication, and game persistence
+# Database & Authentication API Integration Test Suite
+# Tests user operations, authentication, and persistence via HTTP API
+#
+# REQUIRES: Server running on localhost:8080 with database storage
+# Start with: test/run-test-server.sh
 
 BASE_URL="http://localhost:8080"
 API_URL="${BASE_URL}/api/v1"
@@ -118,29 +121,6 @@ api_request() {
     return $status
 }
 
-wait_for_state() {
-    local game_id=$1
-    local target_state=$2
-    local token=$3
-    local max_attempts=${4:-20}
-    local attempt=0
-
-    while [ $attempt -lt $max_attempts ]; do
-        local response=$(api_request GET "$API_URL/games/$game_id" \
-            -H "Authorization: Bearer $token")
-        local current_state=$(echo "$response" | jq -r '.state' 2>/dev/null)
-
-        if [ "$current_state" = "$target_state" ] || [[ "$target_state" = "!pending" && "$current_state" != "pending" ]]; then
-            return 0
-        fi
-
-        ((attempt++))
-        sleep 0.1
-    done
-
-    return 1
-}
-
 # Check dependencies
 for cmd in jq sqlite3 curl; do
     if ! command -v $cmd &> /dev/null; then
@@ -155,10 +135,18 @@ if [ ! -x "$CHESSD_EXEC" ]; then
     exit 1
 fi
 
+# Verify server connectivity before running tests
+if ! curl -sf "$BASE_URL/health" > /dev/null 2>&1; then
+    echo -e "${RED}Error: Cannot connect to server at $BASE_URL${NC}"
+    echo "Start the server first: test/run-test-server.sh"
+    exit 1
+fi
+
 # Start tests
 print_header "Database & User Management Test Suite"
+echo "Server: $BASE_URL"
 echo "Executable: $CHESSD_EXEC"
-echo "Database: $TEST_DB"
+echo "Test Database (server-managed): $TEST_DB"
 echo ""
 
 # ==============================================================================

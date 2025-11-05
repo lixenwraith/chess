@@ -158,6 +158,9 @@ See [test documentation](../test/README.md) for comprehensive test suites coveri
 
 # Run test server with sample users
 ./test/test-db-server.sh
+
+# Test real-time game updates via long-polling
+./test/test-longpoll.sh
 ```
 
 ## Configuration
@@ -170,6 +173,8 @@ See [test documentation](../test/README.md) for comprehensive test suites coveri
 - Write queue: 1000 operations (internal/storage/storage.go)
 - DB connections: 25 max, 5 idle (internal/storage/storage.go)
 - JWT expiration: 7 days (internal/service/user.go)
+- Long-poll timeout: 25 seconds (internal/service/waiter.go)
+- Long-poll channel buffer: 1 (internal/service/waiter.go)
 
 ### Authentication Configuration
 - Password minimum: 8 characters with letter and number
@@ -235,3 +240,5 @@ See [test documentation](../test/README.md) for comprehensive test suites coveri
 - No email verification for registration
 - Fixed worker pool size for engine calculations
 - No real-time game updates (polling required)
+- Long-polling limited to 25 seconds per request
+- REST API only

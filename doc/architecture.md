@@ -11,14 +11,17 @@ Central command handler containing business logic. Single `Execute(Command)` ent
 ### Service Layer (`internal/service`)
 In-memory state storage with authentication support. Thread-safe game map protected by RWMutex. Manages game lifecycle, snapshots, player configuration, user accounts, and JWT token generation. Coordinates with storage layer for persistence of both games and users.
 
-### Storage Layer (`internal/storage`)
-SQLite persistence with async writes for games, synchronous writes for authentication operations. Buffered channel (1000 ops) processes game writes sequentially in background. User operations use direct database access for consistency. Graceful degradation on write failures. WAL mode for development environments.
+#### Long-Polling Registry (`internal/service/waiter.go`)
+Manages clients waiting for game state changes via HTTP long-polling. Tracks move counts per client, sends notifications on state changes, enforces 25-second timeout. Non-blocking notification pattern handles slow clients gracefully. Coordinates with service layer for game updates and deletion events.
 
-### Authentication Module (`internal/service/user.go`, `internal/http/auth.go`)
+#### Authentication Module (`internal/service/user.go`, `internal/http/auth.go`)
 - **Password Hashing**: Argon2id for secure password storage
 - **JWT Management**: HS256 tokens with 7-day expiration
 - **User Operations**: Registration, login, profile management
 - **Session Tracking**: Last login timestamps
+
+### Storage Layer (`internal/storage`)
+SQLite persistence with async writes for games, synchronous writes for authentication operations. Buffered channel (1000 ops) processes game writes sequentially in background. User operations use direct database access for consistency. Graceful degradation on write failures. WAL mode for development environments.
 
 ### Supporting Modules
 - **Engine** (`internal/engine`): UCI protocol wrapper for Stockfish process communication
@@ -62,6 +65,17 @@ SQLite persistence with async writes for games, synchronous writes for authentic
 4. Worker goroutine calculates move with dedicated Stockfish instance
 5. Callback updates game state via service
 6. Client polls for completion
+7. Returns GameResponse
+
+### Long-Polling Flow
+1. Client sends `GET /games/{id}?wait=true&moveCount=N`
+2. Handler creates context from HTTP connection
+3. Registers wait with WaitRegistry using game ID and move count
+4. If game state unchanged, blocks up to 25 seconds
+5. On any game update, NotifyGame sends to all waiters
+6. Returns immediately with current state
+7. Client disconnection cancels wait via context
+8. Game deletion notifies and removes all waiters
 
 ## Persistence Flow
 

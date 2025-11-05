@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# FILE: run-test-db-server.sh
+# FILE: test/run-test-server.sh
 
 set -e
 
@@ -19,7 +19,8 @@ NC='\033[0m'
 # Check executable
 if [ ! -x "$CHESSD_EXEC" ]; then
     echo -e "${RED}Error: chessd executable not found or not executable: $CHESSD_EXEC${NC}"
-    echo "Please build the application first: go build ./cmd/chessd"
+    echo "Provide the path to chessd binary as first argument or place it in the current directory."
+    echo "Build the binary if not available: go build ./cmd/chessd"
     exit 1
 fi
 
@@ -91,11 +92,12 @@ echo "  Executable: $CHESSD_EXEC"
 echo "  Database:   $TEST_DB"
 echo "  Port:       $API_PORT"
 echo "  Mode:       Development (WAL enabled, relaxed rate limits)"
+echo "  Purpose:    Backend for chessd tests"
 echo "  PID File:   $PID_FILE"
 echo ""
 echo -e "${YELLOW}Instructions:${NC}"
-echo "  1. Server will start in foreground"
-echo "  2. Open another terminal and run: ./test-db.sh"
+echo "  1. Server will run in foreground with test database"
+echo "  2. Open another terminal and run the test script or manual tests"
 echo "  3. Press Ctrl+C here when testing is complete"
 echo ""
 echo -e "${CYAN}──────────────────────────────────────────────────────────${NC}"

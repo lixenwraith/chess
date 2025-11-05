@@ -2,7 +2,11 @@
 package service
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"sync"
+	"time"
 
 	"chess/internal/game"
 	"chess/internal/storage"
@@ -14,15 +18,17 @@ type Service struct {
 	mu        sync.RWMutex
 	store     *storage.Store // nil if persistence disabled
 	jwtSecret []byte
+	waiter    *WaitRegistry // Long-polling notification registry
 }
 
 // New creates a new service instance with optional storage
-func New(store *storage.Store, jwtSecret []byte) (*Service, error) {
+func New(store *storage.Store, jwtSecret []byte) *Service {
 	return &Service{
 		games:     make(map[string]*game.Game),
 		store:     store,
 		jwtSecret: jwtSecret,
-	}, nil
+		waiter:    NewWaitRegistry(),
+	}
 }
 
 // GetStorageHealth returns the storage component status
@@ -36,8 +42,21 @@ func (s *Service) GetStorageHealth() string {
 	return "degraded"
 }
 
-// Close cleans up resources
-func (s *Service) Close() error {
+// RegisterWait registers a client to wait for game state changes
+func (s *Service) RegisterWait(gameID string, moveCount int, ctx context.Context) <-chan struct{} {
+	return s.waiter.RegisterWait(gameID, moveCount, ctx)
+}
+
+// Shutdown gracefully shuts down the service
+func (s *Service) Shutdown(timeout time.Duration) error {
+	// Collect all errors
+	var errs []error
+
+	// Shutdown wait registry
+	if err := s.waiter.Shutdown(timeout); err != nil {
+		errs = append(errs, fmt.Errorf("wait registry: %w", err))
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -46,8 +65,10 @@ func (s *Service) Close() error {
 
 	// Close storage if enabled
 	if s.store != nil {
-		return s.store.Close()
+		if err := s.store.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("storage: %w", err))
+		}
 	}
 
-	return nil
+	return errors.Join(errs...)
 }

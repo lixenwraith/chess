@@ -154,6 +154,23 @@ Note: When authenticated, human player IDs match the user's ID. Anonymous player
 
 Returns current game state.
 
+**Long-polling support:**
+Add query parameters for real-time updates:
+- `wait=true` - Enable long-polling (waits up to 25 seconds)
+- `moveCount=N` - Last known move count
+
+Returns immediately if game state changed, otherwise waits for updates:
+```
+GET /games/{gameId}?wait=true&moveCount=5
+```
+
+Response includes all game data. Compare `moves` array length to detect changes.
+
+**Timeout behavior:**
+- Returns current state after 25 seconds even if no changes
+- Client disconnection cancels wait immediately
+- Game deletion notifies all waiting clients
+
 ### Make Move
 `POST /games/{gameId}/moves`
 

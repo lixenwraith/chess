@@ -3,6 +3,7 @@ package http
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -295,16 +296,73 @@ func (h *HTTPHandler) GetGame(c *fiber.Ctx) error {
 		})
 	}
 
-	// Create command and execute
-	cmd := processor.NewGetGameCommand(gameID)
-	resp := h.proc.Execute(cmd)
+	// Check for long-polling parameters
+	waitStr := c.Query("wait", "false")
+	moveCountStr := c.Query("moveCount", "-1")
 
-	// Return appropriate HTTP response
-	if !resp.Success {
-		return c.Status(fiber.StatusNotFound).JSON(resp.Error)
+	// Non-wait path - existing behavior
+	if waitStr != "true" {
+		// Create command and execute
+		cmd := processor.NewGetGameCommand(gameID)
+		resp := h.proc.Execute(cmd)
+
+		// Return appropriate HTTP response
+		if !resp.Success {
+			return c.Status(fiber.StatusNotFound).JSON(resp.Error)
+		}
+
+		return c.JSON(resp.Data)
 	}
 
-	return c.JSON(resp.Data)
+	// Long-polling path
+	moveCount, err := strconv.Atoi(moveCountStr)
+	if err != nil {
+		moveCount = -1
+	}
+
+	// First check if game exists and get current state
+	g, err := h.svc.GetGame(gameID)
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(core.ErrorResponse{
+			Error: "game not found",
+			Code:  core.ErrGameNotFound,
+		})
+	}
+
+	currentMoveCount := len(g.Moves())
+
+	// If move count already different, return immediately
+	if moveCount != currentMoveCount {
+		cmd := processor.NewGetGameCommand(gameID)
+		resp := h.proc.Execute(cmd)
+		if !resp.Success {
+			return c.Status(fiber.StatusNotFound).JSON(resp.Error)
+		}
+		return c.JSON(resp.Data)
+	}
+
+	// Register wait with service
+	ctx := c.Context()
+	notify := h.svc.RegisterWait(gameID, moveCount, ctx)
+
+	// Wait for notification, timeout, or client disconnect
+	select {
+	case <-notify:
+		// State changed or timeout, get fresh game state
+		cmd := processor.NewGetGameCommand(gameID)
+		resp := h.proc.Execute(cmd)
+
+		// Game might have been deleted
+		if !resp.Success {
+			return c.Status(fiber.StatusNotFound).JSON(resp.Error)
+		}
+
+		return c.JSON(resp.Data)
+
+	case <-ctx.Done():
+		// Client disconnected
+		return nil
+	}
 }
 
 // MakeMove submits a move

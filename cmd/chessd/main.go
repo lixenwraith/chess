@@ -1,6 +1,8 @@
+// FILE: cmd/chessd/main.go
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"flag"
 	"fmt"
@@ -16,6 +18,10 @@ import (
 	"chess/internal/service"
 	"chess/internal/storage"
 	"chess/internal/webserver"
+)
+
+const (
+	gracefulShutdownTimeout = time.Second * 5
 )
 
 func main() {
@@ -93,22 +99,14 @@ func main() {
 	}
 
 	// 2. Initialize the Service with optional storage and auth
-	svc, err := service.New(store, jwtSecret)
-	if err != nil {
-		log.Fatalf("Failed to initialize service: %v", err)
-	}
-	defer svc.Close()
+	svc := service.New(store, jwtSecret)
 
 	// 3. Initialize the Processor (Orchestrator), injecting the service
 	proc, err := processor.New(svc)
 	if err != nil {
+		svc.Shutdown(gracefulShutdownTimeout)
 		log.Fatalf("Failed to initialize processor: %v", err)
 	}
-	defer func() {
-		if err := proc.Close(); err != nil {
-			log.Printf("Warning: failed to close processor cleanly: %v", err)
-		}
-	}()
 
 	// 4. Initialize the Fiber App/HTTP Handler, injecting processor and service
 	app := http.NewFiberApp(proc, svc, *dev)
@@ -164,9 +162,23 @@ func main() {
 
 	log.Println("Shutting down servers...")
 
-	// Graceful shutdown with a timeout
-	if err := app.ShutdownWithTimeout(5 * time.Second); err != nil {
+	// Graceful shutdown of service (includes wait registry)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), gracefulShutdownTimeout)
+	defer shutdownCancel()
+
+	// Graceful shutdown of HTTP server with timeout
+	if err = app.ShutdownWithContext(shutdownCtx); err != nil {
 		log.Printf("Server forced to shutdown: %v", err)
+	}
+
+	// Close processor after service shutdown
+	if err = proc.Close(); err != nil {
+		log.Printf("Processor close error: %v", err)
+	}
+
+	// Shutdown service first (includes wait registry cleanup)
+	if err = svc.Shutdown(gracefulShutdownTimeout); err != nil {
+		log.Printf("Service shutdown error: %v", err)
 	}
 
 	log.Println("Servers exited")

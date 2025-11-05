@@ -104,6 +104,9 @@ func (s *Service) ApplyMove(gameID, moveUCI, newFEN string) error {
 	// Add the new position to game history
 	g.AddSnapshot(newFEN, moveUCI, nextTurn)
 
+	// Notify waiting clients about the state change
+	s.waiter.NotifyGame(gameID, len(g.Moves()))
+
 	// Persist if storage enabled
 	if s.store != nil {
 		moveNumber := len(g.Moves())
@@ -132,6 +135,12 @@ func (s *Service) UpdateGameState(gameID string, state core.State) error {
 	}
 
 	g.SetState(state)
+
+	// Notify if game ended
+	if state != core.StateOngoing && state != core.StatePending {
+		s.waiter.NotifyGame(gameID, len(g.Moves()))
+	}
+
 	return nil
 }
 
@@ -165,6 +174,9 @@ func (s *Service) UndoMoves(gameID string, count int) error {
 		return err
 	}
 
+	// Notify waiting clients about the undo
+	s.waiter.NotifyGame(gameID, len(g.Moves()))
+
 	// Delete undone moves from storage if enabled
 	if s.store != nil {
 		remainingMoves := originalMoveCount - count
@@ -182,6 +194,9 @@ func (s *Service) DeleteGame(gameID string) error {
 	if _, ok := s.games[gameID]; !ok {
 		return fmt.Errorf("game not found: %s", gameID)
 	}
+
+	// Notify and remove all waiters before deletion
+	s.waiter.RemoveGame(gameID)
 
 	delete(s.games, gameID)
 	return nil
