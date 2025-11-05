@@ -1,12 +1,7 @@
 package main
 
 import (
-	"chess/cmd/chessd/cli"
-	"chess/internal/http"
-	"chess/internal/processor"
-	"chess/internal/service"
-	"chess/internal/storage"
-	"chess/internal/webserver"
+	"crypto/rand"
 	"flag"
 	"fmt"
 	"log"
@@ -14,6 +9,13 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"chess/cmd/chessd/cli"
+	"chess/internal/http"
+	"chess/internal/processor"
+	"chess/internal/service"
+	"chess/internal/storage"
+	"chess/internal/webserver"
 )
 
 func main() {
@@ -75,8 +77,23 @@ func main() {
 		log.Printf("Persistent storage disabled (use -storage-path to enable)")
 	}
 
-	// 2. Initialize the Service with optional storage
-	svc, err := service.New(store)
+	// JWT secret management
+	var jwtSecret []byte
+	if *dev {
+		// Fixed secret in dev mode for testing consistency
+		jwtSecret = []byte("dev-secret-minimum-32-characters-long")
+		log.Printf("Using fixed JWT secret (dev mode)")
+	} else {
+		// Generate cryptographically secure secret
+		jwtSecret = make([]byte, 32)
+		if _, err := rand.Read(jwtSecret); err != nil {
+			log.Fatalf("Failed to generate JWT secret: %v", err)
+		}
+		log.Printf("JWT secret generated (sessions valid until restart)")
+	}
+
+	// 2. Initialize the Service with optional storage and auth
+	svc, err := service.New(store, jwtSecret)
 	if err != nil {
 		log.Fatalf("Failed to initialize service: %v", err)
 	}
@@ -104,6 +121,7 @@ func main() {
 		log.Printf("Chess API Server starting...")
 		log.Printf("API Listening on: http://%s", apiAddr)
 		log.Printf("API Version: v1")
+		log.Printf("Authentication: Enabled (JWT)")
 		if *dev {
 			log.Printf("Rate Limit: 20 requests/second per IP (DEV MODE)")
 		} else {
@@ -112,9 +130,10 @@ func main() {
 		if *storagePath != "" {
 			log.Printf("Storage: Enabled (%s)", *storagePath)
 		} else {
-			log.Printf("Storage: Disabled")
+			log.Printf("Storage: Disabled (auth features unavailable)")
 		}
 		log.Printf("API Endpoints: http://%s/api/v1/games", apiAddr)
+		log.Printf("Auth Endpoints: http://%s/api/v1/auth/[register|login|me]", apiAddr)
 		log.Printf("Health: http://%s/health", apiAddr)
 
 		if err := app.Listen(apiAddr); err != nil {
@@ -122,7 +141,7 @@ func main() {
 		}
 	}()
 
-	// 5. Start Web UI server if requested
+	// 5. Start Web UI server (optional)
 	if *serve {
 		webAddr := fmt.Sprintf("%s:%d", *webHost, *webPort)
 		apiURL := fmt.Sprintf("http://%s", apiAddr)

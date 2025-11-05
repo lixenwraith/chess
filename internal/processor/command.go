@@ -21,6 +21,7 @@ const (
 // Command is a unified structure for all processor operations
 type Command struct {
 	Type   CommandType
+	UserID string
 	GameID string      // For game-specific commands
 	Args   interface{} // Command-specific arguments
 }

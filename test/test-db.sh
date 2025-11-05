@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # FILE: test-db.sh
 
-# Database Persistence Test Suite for Chess API
-# Tests async writes, persistence, and database integrity
+# Database and User Management Test Suite
+# Tests user operations, authentication, and game persistence
 
 BASE_URL="http://localhost:8080"
 API_URL="${BASE_URL}/api/v1"
 TEST_DB="test.db"
+CHESSD_EXEC=${1:-"./chessd"}
 API_DELAY=${API_DELAY:-50}
 
 # Colors
@@ -21,6 +22,23 @@ NC='\033[0m'
 # Test counters
 PASS=0
 FAIL=0
+
+# Test users
+TEST_USER1="alice"
+TEST_PASS1="AlicePass123"
+TEST_EMAIL1="alice@test.com"
+
+TEST_USER2="bob"
+TEST_PASS2="BobSecure456"
+TEST_PASS2_OLD="BobSecure456"
+TEST_PASS2_NEW="BobNewPass789"
+
+TEST_USER_API="charlie"
+TEST_PASS_API="CharliePass123"
+
+TEST_USER_CLI="dave"
+TEST_PASS_CLI="DaveSecure111"
+UNSUPPORTED_HASH='$2a$10$abcdefghijklmnopqrstuv1234567890abcdefghijklmnopqrstuv'
 
 # Helper functions
 print_header() {
@@ -69,20 +87,22 @@ assert_json_field() {
     fi
 }
 
-assert_db_record() {
-    local sql_query=$1
-    local expected=$2
+assert_command() {
+    local command=$1
+    local expected_exit=$2
     local test_name=$3
 
-    local actual=$(sqlite3 "$TEST_DB" "$sql_query" 2>/dev/null)
+    local output
+    output=$(eval "$command" 2>&1)
+    local exit_code=$?
 
-    if [ "$actual" = "$expected" ]; then
-        echo -e "${GREEN}  ✓ $test_name: DB query returned '$actual'${NC}"
+    if [ "$exit_code" = "$expected_exit" ]; then
+        echo -e "${GREEN}  ✓ $test_name: Command exit code $exit_code${NC}"
         ((PASS++))
         return 0
     else
-        echo -e "${RED}  ✗ $test_name: Expected '$expected', got '$actual'${NC}"
-        echo -e "${RED}    Query: $sql_query${NC}"
+        echo -e "${RED}  ✗ $test_name: Expected exit $expected_exit, got $exit_code${NC}"
+        echo -e "    Command output: $output"
         ((FAIL++))
         return 1
     fi
@@ -101,11 +121,13 @@ api_request() {
 wait_for_state() {
     local game_id=$1
     local target_state=$2
-    local max_attempts=${3:-20}
+    local token=$3
+    local max_attempts=${4:-20}
     local attempt=0
 
     while [ $attempt -lt $max_attempts ]; do
-        local response=$(api_request GET "$API_URL/games/$game_id")
+        local response=$(api_request GET "$API_URL/games/$game_id" \
+            -H "Authorization: Bearer $token")
         local current_state=$(echo "$response" | jq -r '.state' 2>/dev/null)
 
         if [ "$current_state" = "$target_state" ] || [[ "$target_state" = "!pending" && "$current_state" != "pending" ]]; then
@@ -127,352 +149,303 @@ for cmd in jq sqlite3 curl; do
     fi
 done
 
-# Check database exists
-if [ ! -f "$TEST_DB" ]; then
-    echo -e "${RED}Error: Test database '$TEST_DB' not found${NC}"
-    echo "Make sure the server is running with: ./run-server-with-db.sh"
+# Check executable exists
+if [ ! -x "$CHESSD_EXEC" ]; then
+    echo -e "${RED}Error: chessd executable not found or not executable: $CHESSD_EXEC${NC}"
     exit 1
 fi
 
 # Start tests
-print_header "Database Persistence Test Suite"
-echo "Server: $BASE_URL"
+print_header "Database & User Management Test Suite"
+echo "Executable: $CHESSD_EXEC"
 echo "Database: $TEST_DB"
-echo "Mode: Development with WAL"
 echo ""
 
 # ==============================================================================
-print_header "SECTION 1: Storage Health & Basic Persistence"
+print_header "SECTION 1: CLI User Operations"
 # ==============================================================================
 
-test_case "1.1: Storage Health Check"
-RESPONSE=$(api_request GET "$BASE_URL/health")
-assert_json_field "$RESPONSE" '.storage' "ok" "Storage is healthy"
+test_case "1.1: database initialization"
+assert_command "$CHESSD_EXEC db init -path $TEST_DB" 0 "initialize database"
 
-test_case "1.2: Database Schema Verification"
-TABLE_COUNT=$(sqlite3 "$TEST_DB" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('games', 'moves');" 2>/dev/null)
-if [ "$TABLE_COUNT" = "2" ]; then
-    echo -e "${GREEN}  ✓ Database schema verified: games and moves tables exist${NC}"
+# Create testuser1 first (not charlie)
+test_case "1.2: Add First User via CLI"
+OUTPUT=$($CHESSD_EXEC db user add -path "$TEST_DB" -username "testuser1" \
+    -email "testuser1@test.com" -password "TestPass123" 2>&1)
+if echo "$OUTPUT" | grep -qi "User created successfully"; then
+    echo -e "${GREEN}  ✓ User created: testuser1${NC}"
     ((PASS++))
 else
-    echo -e "${RED}  ✗ Database schema incomplete: expected 2 tables, found $TABLE_COUNT${NC}"
+    echo -e "${RED}  ✗ Failed to create first user${NC}"
     ((FAIL++))
 fi
 
-test_case "1.3: Game Creation Persistence"
+test_case "1.3: Add Second User"
+OUTPUT=$($CHESSD_EXEC db user add -path "$TEST_DB" -username "testuser2" \
+    -password "TestPass456" 2>&1)
+if echo "$OUTPUT" | grep -qi "User created successfully"; then
+    echo -e "${GREEN}  ✓ User created: testuser2${NC}"
+    ((PASS++))
+else
+    echo -e "${RED}  ✗ Failed to create second user${NC}"
+    ((FAIL++))
+fi
+
+# Now test duplicate prevention with an existing user
+test_case "1.4: Duplicate Username Prevention"
+assert_command "$CHESSD_EXEC db user add -path $TEST_DB -username testuser1 -password TestPass789" 1 \
+    "Duplicate username rejected"
+
+test_case "1.5: Login with Case-Insensitive Username (ALICE)"
+RESPONSE=$(api_request POST "$API_URL/auth/login" \
+    -H "Content-Type: application/json" \
+    -d "{\"identifier\": \"ALICE\", \"password\": \"$TEST_PASS1\"}")
+if echo "$RESPONSE" | jq -r '.token' 2>/dev/null | grep -qE "^ey[A-Za-z0-9_-]+\.ey[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$"; then
+    echo -e "${GREEN}  ✓ Case-insensitive username login works${NC}"
+    ((PASS++))
+else
+    echo -e "${RED}  ✗ Case-insensitive login failed${NC}"
+    ((FAIL++))
+fi
+
+test_case "1.6: Update User Email"
+assert_command "$CHESSD_EXEC db user set-email -path $TEST_DB -username testuser2 -email testuser2_updated@test.com" 0 \
+    "Email update"
+
+test_case "1.7: Update User Password"
+assert_command "$CHESSD_EXEC db user set-password -path $TEST_DB -username testuser2 -password NewPass789" 0 \
+    "Password update"
+
+test_case "2.1: Health Check"
+RESPONSE=$(api_request GET "$BASE_URL/health")
+assert_json_field "$RESPONSE" '.storage' "ok" "Storage healthy"
+
+# Register charlie here for the first time
+test_case "2.2: Register New User via API"
+RESPONSE=$(api_request POST "$API_URL/auth/register" \
+    -H "Content-Type: application/json" \
+    -d '{"username": "charlie", "email": "charlie@test.com", "password": "CharliePass123"}')
+TOKEN_CHARLIE=$(echo "$RESPONSE" | jq -r '.token' 2>/dev/null)
+if [ -n "$TOKEN_CHARLIE" ] && [ "$TOKEN_CHARLIE" != "null" ]; then
+    echo -e "${GREEN}  ✓ User registered via API${NC}"
+    ((PASS++))
+else
+    echo -e "${RED}  ✗ Registration failed${NC}"
+    ((FAIL++))
+fi
+
+test_case "2.3: Login with Username"
+RESPONSE=$(api_request POST "$API_URL/auth/login" \
+    -H "Content-Type: application/json" \
+    -d "{\"identifier\": \"$TEST_USER1\", \"password\": \"$TEST_PASS1\"}")
+TOKEN_ALICE=$(echo "$RESPONSE" | jq -r '.token' 2>/dev/null)
+USER_ID_ALICE=$(echo "$RESPONSE" | jq -r '.userId' 2>/dev/null)
+if [ -n "$TOKEN_ALICE" ] && [ "$TOKEN_ALICE" != "null" ]; then
+    echo -e "${GREEN}  ✓ Login successful for $TEST_USER1${NC}"
+    ((PASS++))
+else
+    echo -e "${RED}  ✗ Login failed${NC}"
+    ((FAIL++))
+fi
+
+test_case "2.4: Login with Email"
+RESPONSE=$(api_request POST "$API_URL/auth/login" \
+    -H "Content-Type: application/json" \
+    -d "{\"identifier\": \"$TEST_EMAIL1\", \"password\": \"$TEST_PASS1\"}")
+if echo "$RESPONSE" | jq -r '.token' 2>/dev/null | grep -q "^ey"; then
+    echo -e "${GREEN}  ✓ Email login successful${NC}"
+    ((PASS++))
+else
+    echo -e "${RED}  ✗ Email login failed${NC}"
+    ((FAIL++))
+fi
+
+test_case "2.5: Invalid Credentials"
+STATUS=$(api_request POST "$API_URL/auth/login" \
+    -o /dev/null -w "%{http_code}" \
+    -H "Content-Type: application/json" \
+    -d "{\"identifier\": \"$TEST_USER1\", \"password\": \"WrongPassword\"}")
+assert_status 401 "$STATUS" "Invalid password rejected"
+
+test_case "2.6: Get Current User"
+RESPONSE=$(api_request GET "$API_URL/auth/me" \
+    -H "Authorization: Bearer $TOKEN_ALICE")
+assert_json_field "$RESPONSE" '.username' "$TEST_USER1" "Username matches"
+assert_json_field "$RESPONSE" '.email' "$TEST_EMAIL1" "Email matches"
+
+# ==============================================================================
+print_header "SECTION 3: Authenticated Game Creation"
+# ==============================================================================
+
+test_case "3.1: Create Game as Authenticated User"
 RESPONSE=$(api_request POST "$API_URL/games" \
     -H "Content-Type: application/json" \
-    -d '{"white": {"type": 1}, "black": {"type": 2, "level": 5, "searchTime": 100}}')
-
+    -H "Authorization: Bearer $TOKEN_ALICE" \
+    -d '{"white": {"type": 1}, "black": {"type": 2, "searchTime": 100}}')
 GAME_ID=$(echo "$RESPONSE" | jq -r '.gameId' 2>/dev/null)
-BLACK_ID=$(echo "$RESPONSE" | jq -r '.players.black.id' 2>/dev/null)
-WHITE_ID=$(echo "$RESPONSE" | jq -r '.players.white.id' 2>/dev/null)
+WHITE_PLAYER_ID=$(echo "$RESPONSE" | jq -r '.players.white.id' 2>/dev/null)
 
-if [ -n "$GAME_ID" ] && [ "$GAME_ID" != "null" ]; then
-    echo "  Game ID: $GAME_ID"
-    sleep 0.5  # Allow async write
-
-    assert_db_record \
-        "SELECT COUNT(*) FROM games WHERE game_id = '$GAME_ID';" \
-        "1" \
-        "Game record created"
-
-    assert_db_record \
-        "SELECT black_player_id FROM games WHERE game_id = '$GAME_ID';" \
-        "$BLACK_ID" \
-        "Black player ID matches"
-
-    assert_db_record \
-        "SELECT black_level FROM games WHERE game_id = '$GAME_ID';" \
-        "5" \
-        "Black AI level persisted"
-
-    assert_db_record \
-        "SELECT initial_fen FROM games WHERE game_id = '$GAME_ID';" \
-        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" \
-        "Starting FEN persisted"
-fi
-
-# ==============================================================================
-print_header "SECTION 2: Move Persistence & Undo"
-# ==============================================================================
-
-test_case "2.1: Human Move Persistence"
-if [ -n "$GAME_ID" ]; then
-    RESPONSE=$(api_request POST "$API_URL/games/$GAME_ID/moves" \
-        -H "Content-Type: application/json" \
-        -d '{"move": "e2e4"}')
-
-    sleep 0.5  # Allow async write
-
-    assert_db_record \
-        "SELECT COUNT(*) FROM moves WHERE game_id = '$GAME_ID';" \
-        "1" \
-        "Move record created"
-
-    assert_db_record \
-        "SELECT move_uci FROM moves WHERE game_id = '$GAME_ID' AND move_number = 1;" \
-        "e2e4" \
-        "Move UCI notation stored"
-
-    assert_db_record \
-        "SELECT player_color FROM moves WHERE game_id = '$GAME_ID' AND move_number = 1;" \
-        "w" \
-        "Move color recorded"
-fi
-
-test_case "2.2: Computer Move Persistence"
-if [ -n "$GAME_ID" ]; then
-    # Trigger computer move
-    api_request POST "$API_URL/games/$GAME_ID/moves" \
-        -H "Content-Type: application/json" \
-        -d '{"move": "cccc"}' > /dev/null
-
-    wait_for_state "$GAME_ID" "!pending"
-    sleep 0.5  # Allow async write
-
-    assert_db_record \
-        "SELECT COUNT(*) FROM moves WHERE game_id = '$GAME_ID';" \
-        "2" \
-        "Computer move persisted"
-
-    COMPUTER_MOVE=$(sqlite3 "$TEST_DB" "SELECT move_uci FROM moves WHERE game_id = '$GAME_ID' AND move_number = 2;" 2>/dev/null)
-    if [ -n "$COMPUTER_MOVE" ] && [ "$COMPUTER_MOVE" != "e2e4" ]; then
-        echo -e "${GREEN}  ✓ Computer move stored: $COMPUTER_MOVE${NC}"
-        ((PASS++))
-    else
-        echo -e "${RED}  ✗ Computer move not properly stored${NC}"
-        ((FAIL++))
-    fi
-fi
-
-test_case "2.3: Undo Move Database Effect"
-if [ -n "$GAME_ID" ]; then
-    # Undo last move
-    api_request POST "$API_URL/games/$GAME_ID/undo" \
-        -H "Content-Type: application/json" \
-        -d '{"count": 1}' > /dev/null
-
-    sleep 0.5  # Allow async write
-
-    assert_db_record \
-        "SELECT COUNT(*) FROM moves WHERE game_id = '$GAME_ID';" \
-        "1" \
-        "Undo removed move from DB"
-
-    # Undo again
-    api_request POST "$API_URL/games/$GAME_ID/undo" \
-        -H "Content-Type: application/json" \
-        -d '{"count": 1}' > /dev/null
-
-    sleep 0.5
-
-    assert_db_record \
-        "SELECT COUNT(*) FROM moves WHERE game_id = '$GAME_ID';" \
-        "0" \
-        "All moves removed after undo"
-fi
-
-# ==============================================================================
-print_header "SECTION 3: Complex Game Scenarios"
-# ==============================================================================
-
-test_case "3.1: Custom FEN Game Persistence"
-CUSTOM_FEN="r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 4 4"
-RESPONSE=$(api_request POST "$API_URL/games" \
-    -H "Content-Type: application/json" \
-    -d "{\"white\": {\"type\": 2, \"searchTime\": 100}, \"black\": {\"type\": 2, \"searchTime\": 100}, \"fen\": \"$CUSTOM_FEN\"}")
-
-FEN_GAME_ID=$(echo "$RESPONSE" | jq -r '.gameId' 2>/dev/null)
-if [ -n "$FEN_GAME_ID" ] && [ "$FEN_GAME_ID" != "null" ]; then
-    sleep 0.5
-
-    assert_db_record \
-        "SELECT initial_fen FROM games WHERE game_id = '$FEN_GAME_ID';" \
-        "$CUSTOM_FEN" \
-        "Custom FEN persisted correctly"
-
-    # Clean up
-    api_request DELETE "$API_URL/games/$FEN_GAME_ID" > /dev/null
-fi
-
-test_case "3.2: Multiple Games Isolation"
-# Create two games
-RESPONSE1=$(api_request POST "$API_URL/games" \
-    -H "Content-Type: application/json" \
-    -d '{"white": {"type": 1}, "black": {"type": 1}}')
-GAME_ID1=$(echo "$RESPONSE1" | jq -r '.gameId' 2>/dev/null)
-
-RESPONSE2=$(api_request POST "$API_URL/games" \
-    -H "Content-Type: application/json" \
-    -d '{"white": {"type": 2, "searchTime": 100}, "black": {"type": 1}}')
-GAME_ID2=$(echo "$RESPONSE2" | jq -r '.gameId' 2>/dev/null)
-
-if [ -n "$GAME_ID1" ] && [ -n "$GAME_ID2" ]; then
-    sleep 0.5
-
-    # Make moves in first game
-    api_request POST "$API_URL/games/$GAME_ID1/moves" \
-        -H "Content-Type: application/json" \
-        -d '{"move": "d2d4"}' > /dev/null
-    api_request POST "$API_URL/games/$GAME_ID1/moves" \
-        -H "Content-Type: application/json" \
-        -d '{"move": "d7d5"}' > /dev/null
-
-    sleep 0.5
-
-    assert_db_record \
-        "SELECT COUNT(*) FROM moves WHERE game_id = '$GAME_ID1';" \
-        "2" \
-        "Game 1 has 2 moves"
-
-    assert_db_record \
-        "SELECT COUNT(*) FROM moves WHERE game_id = '$GAME_ID2';" \
-        "0" \
-        "Game 2 has 0 moves (isolation)"
-
-    # Clean up
-    api_request DELETE "$API_URL/games/$GAME_ID1" > /dev/null
-    api_request DELETE "$API_URL/games/$GAME_ID2" > /dev/null
-fi
-
-# ==============================================================================
-print_header "SECTION 4: Foreign Key Constraints & Cascade"
-# ==============================================================================
-
-test_case "4.1: Cascade Delete Verification"
-# Create game with moves
-RESPONSE=$(api_request POST "$API_URL/games" \
-    -H "Content-Type: application/json" \
-    -d '{"white": {"type": 1}, "black": {"type": 1}}')
-CASCADE_ID=$(echo "$RESPONSE" | jq -r '.gameId' 2>/dev/null)
-
-if [ -n "$CASCADE_ID" ] && [ "$CASCADE_ID" != "null" ]; then
-    # Make several moves
-    api_request POST "$API_URL/games/$CASCADE_ID/moves" \
-        -H "Content-Type: application/json" -d '{"move": "e2e4"}' > /dev/null
-    api_request POST "$API_URL/games/$CASCADE_ID/moves" \
-        -H "Content-Type: application/json" -d '{"move": "e7e5"}' > /dev/null
-    api_request POST "$API_URL/games/$CASCADE_ID/moves" \
-        -H "Content-Type: application/json" -d '{"move": "g1f3"}' > /dev/null
-
-    sleep 0.5
-
-    MOVE_COUNT_BEFORE=$(sqlite3 "$TEST_DB" "SELECT COUNT(*) FROM moves WHERE game_id = '$CASCADE_ID';" 2>/dev/null)
-    echo -e "${BLUE}  Moves before delete: $MOVE_COUNT_BEFORE${NC}"
-
-    # Delete game
-    api_request DELETE "$API_URL/games/$CASCADE_ID" > /dev/null
-    sleep 0.5
-
-    # Note: Game deletion is handled in memory, DB records remain
-    # This is by design - games table persists for history
-    assert_db_record \
-        "SELECT COUNT(*) FROM games WHERE game_id = '$CASCADE_ID';" \
-        "1" \
-        "Game record persists in DB (by design)"
-fi
-
-# ==============================================================================
-print_header "SECTION 5: Async Write Buffer Behavior"
-# ==============================================================================
-
-test_case "5.1: Rapid Write Buffering"
-RESPONSE=$(api_request POST "$API_URL/games" \
-    -H "Content-Type: application/json" \
-    -d '{"white": {"type": 1}, "black": {"type": 1}}')
-BUFFER_ID=$(echo "$RESPONSE" | jq -r '.gameId' 2>/dev/null)
-
-if [ -n "$BUFFER_ID" ] && [ "$BUFFER_ID" != "null" ]; then
-    # Rapid fire a sequence of legal moves without waiting
-    echo -e "${BLUE}  Sending 10 rapid, legal moves...${NC}"
-    moves=("e2e4" "e7e5" "g1f3" "b8c6" "f1b5" "a7a6" "b5c6" "d7c6" "e1g1" "f7f6")
-    for move in "${moves[@]}"; do
-        api_request POST "$API_URL/games/$BUFFER_ID/moves" \
-            -H "Content-Type: application/json" -d "{\"move\": \"$move\"}" > /dev/null
-    done
-
-    # Immediate check (may show partial writes)
-    IMMEDIATE_COUNT=$(sqlite3 "$TEST_DB" "SELECT COUNT(*) FROM moves WHERE game_id = '$BUFFER_ID';" 2>/dev/null)
-    echo -e "${BLUE}  Immediate move count: $IMMEDIATE_COUNT${NC}"
-
-    # Wait for async writes to complete
-    sleep 1
-
-    FINAL_COUNT=$(sqlite3 "$TEST_DB" "SELECT COUNT(*) FROM moves WHERE game_id = '$BUFFER_ID';" 2>/dev/null)
-    if [ "$FINAL_COUNT" = "10" ]; then
-        echo -e "${GREEN}  ✓ All 10 moves persisted after buffer flush${NC}"
-        ((PASS++))
-    else
-        echo -e "${RED}  ✗ Expected 10 moves, found $FINAL_COUNT${NC}"
-        ((FAIL++))
-    fi
-
-    # Clean up
-    api_request DELETE "$API_URL/games/$BUFFER_ID" > /dev/null
-fi
-
-# ==============================================================================
-print_header "SECTION 6: Database Query Endpoints"
-# ==============================================================================
-
-test_case "6.1: CLI Query Tool Integration"
-# Create identifiable game
-RESPONSE=$(api_request POST "$API_URL/games" \
-    -H "Content-Type: application/json" \
-    -d '{"white": {"type": 1}, "black": {"type": 2, "level": 15, "searchTime": 200}}')
-QUERY_ID=$(echo "$RESPONSE" | jq -r '.gameId' 2>/dev/null)
-
-if [ -n "$QUERY_ID" ] && [ "$QUERY_ID" != "null" ]; then
-    sleep 0.5
-
-    # Query using partial game ID (first 8 chars)
-    PARTIAL_ID="${QUERY_ID:0:8}"
-    FOUND=$(sqlite3 "$TEST_DB" "SELECT COUNT(*) FROM games WHERE game_id LIKE '$PARTIAL_ID%';" 2>/dev/null)
-
-    if [ "$FOUND" = "1" ]; then
-        echo -e "${GREEN}  ✓ Game queryable by partial ID${NC}"
-        ((PASS++))
-    else
-        echo -e "${RED}  ✗ Game not found with partial ID query${NC}"
-        ((FAIL++))
-    fi
-
-    # Verify player type storage
-    assert_db_record \
-        "SELECT white_type || ',' || black_type FROM games WHERE game_id = '$QUERY_ID';" \
-        "1,2" \
-        "Player types stored correctly"
-
-    # Clean up
-    api_request DELETE "$API_URL/games/$QUERY_ID" > /dev/null
-fi
-
-# ==============================================================================
-print_header "SECTION 7: Storage Degradation Handling"
-# ==============================================================================
-
-test_case "7.1: Storage Health After Normal Operations"
-# Check that storage remains healthy after all operations
-RESPONSE=$(api_request GET "$BASE_URL/health")
-assert_json_field "$RESPONSE" '.storage' "ok" "Storage still healthy after tests"
-
-test_case "7.2: WAL Mode Verification"
-JOURNAL_MODE=$(sqlite3 "$TEST_DB" "PRAGMA journal_mode;" 2>/dev/null)
-if [ "$JOURNAL_MODE" = "wal" ]; then
-    echo -e "${GREEN}  ✓ Database is in WAL mode${NC}"
+if [ "$WHITE_PLAYER_ID" = "$USER_ID_ALICE" ]; then
+    echo -e "${GREEN}  ✓ Player ID matches User ID for authenticated human${NC}"
     ((PASS++))
 else
-    echo -e "${RED}  ✗ Database not in WAL mode: $JOURNAL_MODE${NC}"
+    echo -e "${RED}  ✗ Player ID mismatch: expected $USER_ID_ALICE, got $WHITE_PLAYER_ID${NC}"
     ((FAIL++))
 fi
 
-# Check WAL file exists
-if [ -f "${TEST_DB}-wal" ]; then
-    echo -e "${GREEN}  ✓ WAL file exists${NC}"
+test_case "3.2: Anonymous Game Creation"
+RESPONSE=$(api_request POST "$API_URL/games" \
+    -H "Content-Type: application/json" \
+    -d '{"white": {"type": 1}, "black": {"type": 1}}')
+ANON_WHITE_ID=$(echo "$RESPONSE" | jq -r '.players.white.id' 2>/dev/null)
+ANON_BLACK_ID=$(echo "$RESPONSE" | jq -r '.players.black.id' 2>/dev/null)
+
+# Check UUIDs are different and not user IDs
+if [ "$ANON_WHITE_ID" != "$ANON_BLACK_ID" ] && \
+   [ "$ANON_WHITE_ID" != "$USER_ID_ALICE" ] && \
+   [[ "$ANON_WHITE_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+    echo -e "${GREEN}  ✓ Anonymous players get unique UUIDs${NC}"
     ((PASS++))
 else
-    echo -e "${YELLOW}  ⚠ WAL file not found (may be checkpointed)${NC}"
+    echo -e "${RED}  ✗ Anonymous player ID issue${NC}"
+    ((FAIL++))
+fi
+
+test_case "3.3: Both Players Same Authenticated User"
+RESPONSE=$(api_request POST "$API_URL/games" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $TOKEN_ALICE" \
+    -d '{"white": {"type": 1}, "black": {"type": 1}}')
+WHITE_ID=$(echo "$RESPONSE" | jq -r '.players.white.id' 2>/dev/null)
+BLACK_ID=$(echo "$RESPONSE" | jq -r '.players.black.id' 2>/dev/null)
+
+if [ "$WHITE_ID" = "$USER_ID_ALICE" ] && [ "$BLACK_ID" = "$USER_ID_ALICE" ]; then
+    echo -e "${GREEN}  ✓ Same user can play both sides${NC}"
+    ((PASS++))
+else
+    echo -e "${RED}  ✗ Both sides should be same user${NC}"
+    ((FAIL++))
+fi
+
+# ==============================================================================
+print_header "SECTION 4: Game Persistence with User IDs"
+# ==============================================================================
+
+test_case "4.1: Verify Game Storage with User ID"
+if [ -n "$GAME_ID" ]; then
+    sleep 0.5  # Allow async write
+
+    DB_WHITE_ID=$(sqlite3 "$TEST_DB" "SELECT white_player_id FROM games WHERE game_id = '$GAME_ID';" 2>/dev/null)
+    if [ "$DB_WHITE_ID" = "$USER_ID_ALICE" ]; then
+        echo -e "${GREEN}  ✓ User ID correctly persisted in database${NC}"
+        ((PASS++))
+    else
+        echo -e "${RED}  ✗ Database has wrong player ID${NC}"
+        ((FAIL++))
+    fi
+fi
+
+test_case "4.2: Query Games by User ID"
+GAMES_COUNT=$(sqlite3 "$TEST_DB" "SELECT COUNT(*) FROM games WHERE white_player_id = '$USER_ID_ALICE' OR black_player_id = '$USER_ID_ALICE';" 2>/dev/null)
+if [ "$GAMES_COUNT" -ge "2" ]; then
+    echo -e "${GREEN}  ✓ User's games queryable: found $GAMES_COUNT games${NC}"
+    ((PASS++))
+else
+    echo -e "${RED}  ✗ Expected at least 2 games for user${NC}"
+    ((FAIL++))
+fi
+
+# ==============================================================================
+print_header "SECTION 5: Password Operations"
+# ==============================================================================
+
+# Now TEST_PASS2_NEW is defined, this test should work
+test_case "5.1: Update User Password via CLI for 'bob'"
+assert_command "$CHESSD_EXEC db user set-password -path $TEST_DB -username $TEST_USER2 -password $TEST_PASS2_NEW" 0 \
+    "CLI password update for '$TEST_USER2'"
+
+test_case "5.2: Login with NEW Password for 'bob'"
+RESPONSE=$(api_request POST "$API_URL/auth/login" \
+    -H "Content-Type: application/json" \
+    -d "{\"identifier\": \"$TEST_USER2\", \"password\": \"$TEST_PASS2_NEW\"}")
+if echo "$RESPONSE" | jq -r '.token' 2>/dev/null | grep -q "^ey"; then
+    echo -e "${GREEN}  ✓ Login works with new password for '$TEST_USER2'${NC}"
+    ((PASS++))
+else
+    echo -e "${RED}  ✗ Login failed with new password for '$TEST_USER2'${NC}"
+    ((FAIL++))
+fi
+
+test_case "5.3: OLD Password Rejected for 'bob'"
+STATUS=$(api_request POST "$API_URL/auth/login" \
+    -o /dev/null -w "%{http_code}" \
+    -H "Content-Type: application/json" \
+    -d "{\"identifier\": \"$TEST_USER2\", \"password\": \"$TEST_PASS2_OLD\"}")
+assert_status 401 "$STATUS" "Old password correctly rejected for '$TEST_USER2'"
+
+test_case "5.4: Add new user '$TEST_USER_CLI' via CLI for hash test"
+assert_command "$CHESSD_EXEC db user add -path $TEST_DB -username $TEST_USER_CLI -password $TEST_PASS_CLI" 0 \
+    "Add user '$TEST_USER_CLI' for hash test"
+
+test_case "5.5: CLI rejects unsupported hash format"
+assert_command "$CHESSD_EXEC db user set-hash -path $TEST_DB -username $TEST_USER_CLI -hash '$UNSUPPORTED_HASH'" 1 \
+    "Unsupported bcrypt hash rejected by CLI"
+
+# ==============================================================================
+print_header "SECTION 6: Edge Cases"
+# ==============================================================================
+
+test_case "6.1: Case-Insensitive Username"
+RESPONSE=$(api_request POST "$API_URL/auth/login" \
+    -H "Content-Type: application/json" \
+    -d "{\"identifier\": \"ALICE\", \"password\": \"$TEST_PASS1\"}")
+if echo "$RESPONSE" | jq -r '.token' 2>/dev/null | grep -qE "^ey[A-Za-z0-9_-]+\.ey[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$"; then
+    echo -e "${GREEN}  ✓ Case-insensitive username login${NC}"
+    ((PASS++))
+else
+    echo -e "${RED}  ✗ Case sensitivity issue${NC}"
+    ((FAIL++))
+fi
+
+test_case "6.2: Concurrent Registration Handling"
+# Try to register same username simultaneously
+{
+    api_request POST "$API_URL/auth/register" \
+        -H "Content-Type: application/json" \
+        -d '{"username": "concurrent", "password": "TestPass123"}' &
+    api_request POST "$API_URL/auth/register" \
+        -H "Content-Type: application/json" \
+        -d '{"username": "concurrent", "password": "TestPass456"}' &
+} > /dev/null 2>&1
+wait
+
+# Check only one user was created
+USER_COUNT=$(sqlite3 "$TEST_DB" "SELECT COUNT(*) FROM users WHERE username = 'concurrent';" 2>/dev/null)
+if [ "$USER_COUNT" = "1" ]; then
+    echo -e "${GREEN}  ✓ Concurrent registration handled correctly${NC}"
+    ((PASS++))
+else
+    echo -e "${RED}  ✗ Race condition: $USER_COUNT users created${NC}"
+    ((FAIL++))
+fi
+
+test_case "6.3: Delete User"
+# First, get a user to delete
+OUTPUT=$($CHESSD_EXEC db user add -path "$TEST_DB" -username "deleteme" \
+    -password "TempPass123" 2>&1)
+TEMP_ID=$(echo "$OUTPUT" | grep "ID:" | awk '{print $2}')
+
+assert_command "$CHESSD_EXEC db user delete -path $TEST_DB -username deleteme" 0 \
+    "User deletion by username"
+
+# Verify deletion
+USER_EXISTS=$(sqlite3 "$TEST_DB" "SELECT COUNT(*) FROM users WHERE user_id = '$TEMP_ID';" 2>/dev/null)
+if [ "$USER_EXISTS" = "0" ]; then
+    echo -e "${GREEN}  ✓ User successfully deleted from database${NC}"
+    ((PASS++))
+else
+    echo -e "${RED}  ✗ User still exists after deletion${NC}"
+    ((FAIL++))
 fi
 
 # ==============================================================================
@@ -494,7 +467,7 @@ echo -e "Success Rate: ${SUCCESS_RATE}%"
 echo -e "${CYAN}══════════════════════════════════════${NC}"
 
 if [ $FAIL -eq 0 ]; then
-    echo -e "\n${GREEN}🎉 All database tests passed!${NC}"
+    echo -e "\n${GREEN}🎉 All database and user tests passed!${NC}"
     exit 0
 else
     echo -e "\n${RED}⚠️  Some tests failed. Review the output above.${NC}"

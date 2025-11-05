@@ -34,6 +34,7 @@ Tests all API endpoints, error handling, rate limiting, and game logic.
 - Security hardening and input validation
 
 ### 2. Database Persistence Tests (`test-db.sh`)
+**Outdated: test-db.sh and test-db-server.sh currently focus on user operations.**
 
 Tests database storage, async writes, and data integrity.
 

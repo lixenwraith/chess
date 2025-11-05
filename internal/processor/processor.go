@@ -159,8 +159,20 @@ func (p *Processor) handleCreateGame(cmd Command) ProcessorResponse {
 		return p.errorResponse(fmt.Sprintf("FEN parse error: %v", err), core.ErrInvalidRequest)
 	}
 
-	// Create game in service with validated FEN and turn
-	if err = p.svc.CreateGame(gameID, args.White, args.Black, validatedFEN, b.Turn()); err != nil {
+	// Create players with appropriate IDs
+	whitePlayer := core.NewPlayer(args.White, core.ColorWhite)
+	blackPlayer := core.NewPlayer(args.Black, core.ColorBlack)
+
+	// Override player IDs for authenticated human players
+	if args.White.Type == core.PlayerHuman && cmd.UserID != "" {
+		whitePlayer.ID = cmd.UserID
+	}
+	if args.Black.Type == core.PlayerHuman && cmd.UserID != "" {
+		blackPlayer.ID = cmd.UserID
+	}
+
+	// Create game in service with fully-formed players
+	if err = p.svc.CreateGame(gameID, whitePlayer, blackPlayer, validatedFEN, b.Turn()); err != nil {
 		return p.errorResponse(fmt.Sprintf("failed to create game: %v", err), core.ErrInternalError)
 	}
 
@@ -206,8 +218,12 @@ func (p *Processor) handleConfigurePlayers(cmd Command) ProcessorResponse {
 		return p.errorResponse("cannot change players while computer is calculating", core.ErrInvalidRequest)
 	}
 
+	// Create new player instances
+	whitePlayer := core.NewPlayer(args.White, core.ColorWhite)
+	blackPlayer := core.NewPlayer(args.Black, core.ColorBlack)
+
 	// Update players in service
-	if err = p.svc.UpdatePlayers(cmd.GameID, args.White, args.Black); err != nil {
+	if err = p.svc.UpdatePlayers(cmd.GameID, whitePlayer, blackPlayer); err != nil {
 		return p.errorResponse(fmt.Sprintf("failed to update players: %v", err), core.ErrInternalError)
 	}
 
@@ -389,7 +405,6 @@ func (p *Processor) handleDeleteGame(cmd Command) ProcessorResponse {
 		return p.errorResponse("game not found", core.ErrGameNotFound)
 	}
 
-	// TODO: gracefully handle deleting game even if pending, discard engine response
 	// Only block deletion if actively computing
 	if g.State() == core.StatePending {
 		return p.errorResponse("cannot delete game while computer move is in progress", core.ErrInvalidRequest)

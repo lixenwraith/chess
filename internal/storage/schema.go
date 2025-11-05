@@ -3,6 +3,16 @@ package storage
 
 import "time"
 
+// UserRecord represents a user account in the database
+type UserRecord struct {
+	UserID       string     `db:"user_id"`
+	Username     string     `db:"username"`
+	Email        string     `db:"email"`
+	PasswordHash string     `db:"password_hash"`
+	CreatedAt    time.Time  `db:"created_at"`
+	LastLoginAt  *time.Time `db:"last_login_at"`
+}
+
 // GameRecord represents a row in the games table
 type GameRecord struct {
 	GameID          string    `db:"game_id"`
@@ -31,6 +41,19 @@ type MoveRecord struct {
 
 // Schema defines the SQLite database structure
 const Schema = `
+CREATE TABLE IF NOT EXISTS users (
+	user_id TEXT PRIMARY KEY,
+	username TEXT UNIQUE NOT NULL COLLATE NOCASE,
+	email TEXT COLLATE NOCASE,
+	password_hash TEXT NOT NULL,
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	last_login_at DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique ON users(email) WHERE email IS NOT NULL AND email != '';
+
 CREATE TABLE IF NOT EXISTS games (
 	game_id TEXT PRIMARY KEY,
 	initial_fen TEXT NOT NULL,

@@ -2,12 +2,13 @@
 package http
 
 import (
-	"chess/internal/core"
-	"chess/internal/processor"
-	"chess/internal/service"
 	"fmt"
 	"strings"
 	"time"
+
+	"chess/internal/core"
+	"chess/internal/processor"
+	"chess/internal/service"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -47,27 +48,66 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, devMode bool) 
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: "*",
 		AllowMethods: "GET,POST,PUT,DELETE,OPTIONS",
-		AllowHeaders: "Origin,Content-Type,Accept",
+		AllowHeaders: "Origin,Content-Type,Accept,Authorization",
 	}))
 
 	// Health check (no rate limit)
 	app.Get("/health", h.Health)
 
-	// API v1 routes with rate limiting
+	// API v1 routes
 	api := app.Group("/api/v1")
 
-	// Rate limiter: 10/20 req/sec per IP with expiry
+	// Auth routes with specific rate limiting
+	auth := api.Group("/auth")
+
+	// Register: 5 req/min per IP
+	auth.Post("/register", limiter.New(limiter.Config{
+		Max:        5,
+		Expiration: 1 * time.Minute,
+		KeyGenerator: func(c *fiber.Ctx) string {
+			return c.IP()
+		},
+		LimitReached: func(c *fiber.Ctx) error {
+			return c.Status(fiber.StatusTooManyRequests).JSON(core.ErrorResponse{
+				Error:   "rate limit exceeded",
+				Code:    core.ErrRateLimitExceeded,
+				Details: "5 registrations per minute allowed",
+			})
+		},
+	}), h.RegisterHandler)
+
+	// Login: 10 req/min per IP
+	auth.Post("/login", limiter.New(limiter.Config{
+		Max:        10,
+		Expiration: 1 * time.Minute,
+		KeyGenerator: func(c *fiber.Ctx) string {
+			return c.IP()
+		},
+		LimitReached: func(c *fiber.Ctx) error {
+			return c.Status(fiber.StatusTooManyRequests).JSON(core.ErrorResponse{
+				Error:   "rate limit exceeded",
+				Code:    core.ErrRateLimitExceeded,
+				Details: "10 login attempts per minute allowed",
+			})
+		},
+	}), h.LoginHandler)
+
+	// Create token validator closure
+	validateToken := svc.ValidateToken
+
+	// Current user (requires auth)
+	auth.Get("/me", AuthRequired(validateToken), h.GetCurrentUserHandler)
+
+	// Game routes with standard rate limiting
 	maxReq := rateLimitRate
 	if devMode {
-		maxReq = rateLimitRate * 2 // Loosen rate limiter for testing
+		maxReq = rateLimitRate * 2
 	}
 	api.Use(limiter.New(limiter.Config{
-		Max:        maxReq,          // Allow requests per second
-		Expiration: 1 * time.Second, // Per second
+		Max:        maxReq,
+		Expiration: 1 * time.Second,
 		KeyGenerator: func(c *fiber.Ctx) string {
-			// Check X-Forwarded-For first, then X-Real-IP, then RemoteIP
 			if xff := c.Get("X-Forwarded-For"); xff != "" {
-				// Take the first IP from X-Forwarded-For chain
 				if idx := strings.Index(xff, ","); idx != -1 {
 					return strings.TrimSpace(xff[:idx])
 				}
@@ -82,9 +122,6 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, devMode bool) 
 				Details: fmt.Sprintf("%d requests per second allowed", maxReq),
 			})
 		},
-		Storage:                nil, // Use in-memory storage (default)
-		SkipFailedRequests:     false,
-		SkipSuccessfulRequests: false,
 	}))
 
 	// Content-Type validation for POST and PUT requests
@@ -93,8 +130,8 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, devMode bool) 
 	// Middleware validation for sanitization
 	api.Use(validationMiddleware)
 
-	// Register game routes
-	api.Post("/games", h.CreateGame)
+	// Register game routes with auth middleware
+	api.Post("/games", OptionalAuth(validateToken), h.CreateGame) // Optional auth for player ID association
 	api.Put("/games/:gameId/players", h.ConfigurePlayers)
 	api.Get("/games/:gameId", h.GetGame)
 	api.Delete("/games/:gameId", h.DeleteGame)
@@ -179,8 +216,12 @@ func (h *HTTPHandler) CreateGame(c *fiber.Ctx) error {
 	var req core.CreateGameRequest
 	req = *(validatedBody.(*core.CreateGameRequest))
 
-	// Let processor generate game ID via service
+	// Retrieve authenticated user ID if available
+	userID, _ := c.Locals("userID").(string)
+
+	// Generate game ID via service with optional user context
 	cmd := processor.NewCreateGameCommand(req)
+	cmd.UserID = userID // Add user ID to command if authenticated
 
 	resp := h.proc.Execute(cmd)
 

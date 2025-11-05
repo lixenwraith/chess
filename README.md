@@ -12,19 +12,21 @@
 
 # Chess
 
-Go backend server providing a RESTful API for chess gameplay. Integrates Stockfish engine for move validation and computer opponents.
+Go backend server providing a RESTful API for chess gameplay with user authentication. Integrates Stockfish engine for move validation and computer opponents.
 
 ## Features
 
 - RESTful API for chess operations
+- User registration and JWT authentication
 - Stockfish engine integration for validation
 - Human vs human, human vs computer, computer vs computer modes
 - Custom FEN position support
 - Asynchronous engine move calculation
 - Configurable engine strength and thinking time
-- Optional SQLite persistence with async writes
+- SQLite persistence with async writes for games
+- User management with secure Argon2 password storage
 - PID file management for singleton enforcement
-- Database CLI for storage administration
+- Database CLI for storage and user administration
 
 ## Requirements
 
@@ -33,7 +35,6 @@ Go backend server providing a RESTful API for chess gameplay. Integrates Stockfi
 - SQLite3 (for persistence features)
 
 ### Installation
-
 ```bash
 # Arch Linux
 yay -S stockfish
@@ -43,26 +44,58 @@ pkg install stockfish
 ```
 
 ## Quick Start
-
 ```bash
-git clone https://git.lixen.com/lixen/chess
+#git clone https://git.lixen.com/lixen/chess # Mirror
+git clone https://github.com/lixenwraith/chess
 cd chess
 go build ./cmd/chessd
 
-# Standard mode with persistence
+# Standard mode with persistence and auth
 ./chessd -storage-path chess.db
 
-# Development mode with PID lock on localhost custom port
-./chessd -dev -pid /tmp/chessd.pid -pid-lock -port 9090
+# Development mode with all features
+./chessd -dev -storage-path chess.db -pid /tmp/chessd.pid -pid-lock -port 9090
 
-# Database initialization (doesn't run server)
+# Initialize database with user support
 ./chessd db init -path chess.db
 
-# Query stored games (doesn't run server)
-./chessd db query -path chess.db -gameId "*"
+# Add users via CLI
+./chessd db user add -path chess.db -username alice -password AlicePass123
+./chessd db user list -path chess.db
 ```
 
-Server listens on `http://localhost:8080`. See [API Reference](./doc/api.md) for endpoints.
+Server listens on `http://localhost:8080`. See [API Reference](./doc/api.md) for endpoints including authentication.
+
+## User Management
+
+The chess server supports user accounts with secure authentication:
+
+### Creating Users
+```bash
+# Add user with password
+./chessd db user add -path chess.db -username alice -email alice@example.com -password SecurePass123
+
+# Interactive password prompt
+./chessd db user add -path chess.db -username bob -interactive
+
+# Import with existing hash
+./chessd db user add -path chess.db -username charlie -hash '$argon2id$...'
+```
+
+### Managing Users
+```bash
+# List all users
+./chessd db user list -path chess.db
+
+# Update password
+./chessd db user set-password -path chess.db -username alice -password NewPass456
+
+# Update email
+./chessd db user set-email -path chess.db -username alice -email newemail@example.com
+
+# Delete user
+./chessd db user delete -path chess.db -username alice
+```
 
 ## Web UI
 
@@ -76,7 +109,7 @@ The chess server includes an embedded web UI for playing games through a browser
 # Custom web UI port  
 ./chessd -serve -web-port 3000 -web-host 0.0.0.0
 
-# Full example with all features
+# Full example with authentication enabled
 ./chessd -dev -serve -web-port 9090 -api-port 8080 -storage-path chess.db
 ```
 
@@ -87,15 +120,16 @@ The chess server includes an embedded web UI for playing games through a browser
 - Move history with algebraic notation
 - FEN display and custom starting positions
 - Real-time server health monitoring
+- User authentication support
 - Responsive design for mobile devices
 
 Access the UI at `http://localhost:9090` when server is running with `-serve` flag.
 
 ## Documentation
 
-- [API Reference](./doc/api.md) - Endpoint specifications
-- [Architecture](./doc/architecture.md) - System design
-- [Development](./doc/development.md) - Build and test instructions
+- [API Reference](./doc/api.md) - Endpoint specifications including auth
+- [Architecture](./doc/architecture.md) - System design with auth layer
+- [Development](./doc/development.md) - Build, test, and user management
 - [Stockfish Integration](./doc/stockfish.md) - Engine communication
 
 ## License
