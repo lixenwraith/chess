@@ -1,34 +1,14 @@
-// FILE: lixenwraith/chess/internal/client/commands/registry.go
-package commands
+// FILE: lixenwraith/chess/internal/client/command/registry.go
+package command
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"chess/internal/client/api"
 	"chess/internal/client/display"
+	"chess/internal/client/session"
 )
-
-type Session interface {
-	GetAPIBaseURL() string
-	SetAPIBaseURL(string)
-	GetCurrentGame() string
-	SetCurrentGame(string)
-	GetCurrentUser() string
-	SetCurrentUser(string)
-	GetAuthToken() string
-	SetAuthToken(string)
-	GetUsername() string
-	SetUsername(string)
-	GetLastMoveCount() int
-	SetLastMoveCount(int)
-	GetClient() interface{}
-	IsVerbose() bool
-	SetGameState(interface{})
-	SetPlayerColor(string)
-	GetPlayerColor() string
-}
 
 // Command defines a client command with its handler
 type Command struct {
@@ -36,18 +16,18 @@ type Command struct {
 	ShortName   string
 	Description string
 	Usage       string
-	Handler     func(Session, []string) error
+	Handler     func(*session.Session, []string) error
 }
 
 type Registry struct {
-	session  Session
+	session  *session.Session
 	commands map[string]*Command
 }
 
 // Registry manages command registration and execution
-func NewRegistry(session Session) *Registry {
+func NewRegistry(s *session.Session) *Registry {
 	r := &Registry{
-		session:  session,
+		session:  s,
 		commands: make(map[string]*Command),
 	}
 
@@ -65,7 +45,7 @@ func NewRegistry(session Session) *Registry {
 		Handler:     r.helpHandler,
 	})
 
-	// Exit command
+	// Exit command (handled in main loop, but registered for help display)
 	r.Register(&Command{
 		Name:        "exit",
 		ShortName:   "x",
@@ -95,8 +75,8 @@ func (r *Registry) Execute(input string) {
 
 	cmd, exists := r.commands[cmdName]
 	if !exists {
-		fmt.Printf("%sUnknown command: %s%s\n", display.Red, cmdName, display.Reset)
-		fmt.Printf("Type 'help' for available commands\n")
+		display.Println(display.Red, "Unknown command: %s", cmdName)
+		display.Println(display.Reset, "Type 'help' for available commands")
 		return
 	}
 
@@ -106,27 +86,29 @@ func (r *Registry) Execute(input string) {
 	}
 
 	if err := cmd.Handler(r.session, args); err != nil {
-		fmt.Printf("%sError: %s%s\n", display.Red, err.Error(), display.Reset)
+		display.Println(display.Red, "Error: %s", err.Error())
 	}
 }
 
-func (r *Registry) helpHandler(s Session, args []string) error {
+func (r *Registry) helpHandler(s *session.Session, args []string) error {
 	if len(args) > 0 {
 		// Show help for specific command
 		cmd, exists := r.commands[args[0]]
 		if !exists {
 			return fmt.Errorf("unknown command: %s", args[0])
 		}
-		fmt.Printf("\n%s%s%s - %s\n", display.Cyan, cmd.Name, display.Reset, cmd.Description)
+		fmt.Println()
+		display.Print(display.Cyan, cmd.Name)
+		display.Println(display.Reset, " - %s", cmd.Description)
 		if cmd.ShortName != "" {
-			fmt.Printf("Short form: %s%s%s\n", display.Cyan, cmd.ShortName, display.Reset)
+			display.Println(display.Cyan, "Short form: %s", cmd.ShortName)
 		}
 		fmt.Printf("Usage: %s\n", cmd.Usage)
 		return nil
 	}
 
 	// Show all commands
-	fmt.Printf("\n%sAvailable Commands:%s\n\n", display.Cyan, display.Reset)
+	display.Println(display.Cyan, "\nAvailable Commands:\n")
 
 	// Group commands
 	type cmdInfo struct {
@@ -165,7 +147,7 @@ func (r *Registry) helpHandler(s Session, args []string) error {
 	}
 
 	printCommandGroup := func(title string, cmds []cmdInfo) {
-		fmt.Printf("%s%s:%s\n", display.Yellow, title, display.Reset)
+		display.Println(display.Yellow, "%s:", title)
 		for _, info := range cmds {
 			if cmd, exists := r.commands[info.name]; exists {
 				shortPart := ""
@@ -175,20 +157,20 @@ func (r *Registry) helpHandler(s Session, args []string) error {
 				fmt.Printf("  %s%-10s %s\n", shortPart, cmd.Name, cmd.Description)
 			}
 		}
+		fmt.Println()
 	}
 
 	printCommandGroup("Game Commands", gameCommands)
-	fmt.Println()
 	printCommandGroup("Auth Commands", authCommands)
-	fmt.Println()
 	printCommandGroup("Utility Commands", utilCommands)
 
-	fmt.Printf("\nType 'help <command>' for detailed usage\n")
-	fmt.Printf("Add '-v' to any command for verbose output\n")
+	display.Println(display.Reset, "Type 'help <command>' for detailed usage")
+	display.Println(display.Reset, "Add '-v' to any command for verbose output\n")
 	return nil
 }
-func exitHandler(s Session, args []string) error {
-	fmt.Printf("%sGoodbye!%s\n", display.Cyan, display.Reset)
-	os.Exit(0)
+
+func exitHandler(s *session.Session, args []string) error {
+	// Exit is handled in main loop, this is just for consistency
+	display.Println(display.Cyan, "Goodbye!\n")
 	return nil
 }

@@ -3,17 +3,15 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 
 	"chess/internal/client/api"
-	"chess/internal/client/commands"
+	"chess/internal/client/command"
 	"chess/internal/client/display"
 	"chess/internal/client/session"
-
-	"github.com/chzyer/readline"
 )
 
 func main() {
@@ -23,44 +21,37 @@ func main() {
 		Verbose:    false,
 	}
 
-	// Initialize readline
-	rl, err := readline.NewEx(&readline.Config{
-		Prompt:          display.Prompt("chess"),
-		HistoryFile:     ".chess_history",
-		InterruptPrompt: "^C",
-		EOFPrompt:       "exit",
-	})
-	if err != nil {
-		fmt.Printf("%s%s%s\n", display.Red, err.Error(), display.Reset)
-		os.Exit(1)
-	}
-	defer rl.Close()
+	// Initialize simple input scanner
+	scanner := bufio.NewScanner(os.Stdin)
 
-	fmt.Printf("%sChess Debug Client%s\n", display.Cyan, display.Reset)
-	fmt.Printf("%sAPI: %s%s\n", display.Cyan, s.APIBaseURL, display.Reset)
-	fmt.Printf("Type 'help' for commands\n\n")
+	display.Println(display.Cyan, "Chess Debug Client")
+	display.Println(display.Cyan, "API: %s", s.APIBaseURL)
+	fmt.Println("Type 'help' for commands\n")
 
-	registry := commands.NewRegistry(s)
+	registry := command.NewRegistry(s)
 
 	for {
 		// Build enhanced prompt
 		prompt := buildPrompt(s)
-		rl.SetPrompt(prompt)
+		fmt.Print(prompt)
 
-		line, err := rl.Readline()
-		if err == io.EOF {
+		// Read input
+		if !scanner.Scan() {
+			// EOF or error
+			if err := scanner.Err(); err != nil {
+				display.Println(display.Red, "\nError reading input: %s", err.Error())
+			}
 			break
 		}
-		if err != nil {
-			continue
-		}
 
-		line = strings.TrimSpace(line)
+		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
 
+		// Check for exit commands
 		if line == "exit" || line == "quit" || line == "x" {
+			display.Println(display.Cyan, "Goodbye!")
 			break
 		}
 
@@ -77,63 +68,53 @@ func main() {
 }
 
 func buildPrompt(s *session.Session) string {
-	parts := []string{}
-
-	// Base
-	base := "chess"
+	var b display.Builder
+	b.Add("", "chess")
 
 	// Add user/game context
 	if s.Username != "" {
-		parts = append(parts, fmt.Sprintf("%s%s%s", display.Magenta, s.Username, display.Reset))
+		b.Add("", " [").Add(display.Magenta, s.Username)
+		if s.CurrentGame != "" {
+			b.Add(display.Yellow, " - ")
+		} else {
+			b.Add("", "]")
+		}
 	}
-	if s.Username != "" && s.CurrentGame != "" {
-		parts = append(parts, fmt.Sprintf("%s - %s", display.Yellow, display.Reset))
-	}
+
 	if s.CurrentGame != "" {
-		parts = append(parts, fmt.Sprintf("%s%s%s", display.White, s.CurrentGame[:8], display.Reset))
+		if s.Username == "" {
+			b.Add("", " [")
+		}
+		b.Add(display.White, s.CurrentGame[:8])
+		b.Add("", "]")
 	}
 
 	// Add player color if in game
 	if s.CurrentGameState != nil && s.PlayerColor != "" {
-		colorText := ""
 		if s.PlayerColor == "w" {
-			colorText = display.Blue + "White" + display.Reset
+			b.Add("", " ").Add(display.Blue, "White")
 		} else {
-			colorText = display.Red + "Black" + display.Reset
+			b.Add("", " ").Add(display.Red, "Black")
 		}
-		parts = append(parts, colorText)
-	}
-
-	// Build first part
-	promptStr := base
-	if len(parts) > 0 {
-		promptStr += display.Yellow + " [" + display.Reset + strings.Join(parts, "") + display.Yellow + "]"
 	}
 
 	// Add game state if available
 	if s.CurrentGameState != nil {
-		turnInfo := ""
+		turnInfo := " - Turn:"
 		if s.CurrentGameState.Turn == "w" {
-			turnPlayer := "White"
 			playerType := "h"
 			if s.CurrentGameState.Players.White.Type == 2 {
 				playerType = "c"
 			}
-			turnInfo = fmt.Sprintf(" - Turn:%s(%s)",
-				fmt.Sprintf("%s%s%s", display.Blue, turnPlayer, display.Reset),
-				playerType)
+			b.Add("", turnInfo).Add(display.Blue, "White").Add("", fmt.Sprintf("(%s)", playerType))
 		} else {
-			turnPlayer := "Black"
 			playerType := "h"
 			if s.CurrentGameState.Players.Black.Type == 2 {
 				playerType = "c"
 			}
-			turnInfo = fmt.Sprintf(" - Turn:%s(%s)",
-				fmt.Sprintf("%s%s%s", display.Red, turnPlayer, display.Reset),
-				playerType)
+			b.Add("", turnInfo).Add(display.Red, "Black").Add("", fmt.Sprintf("(%s)", playerType))
 		}
-		promptStr += turnInfo
 	}
 
-	return display.Prompt(promptStr)
+	return display.Prompt(b.String())
 }

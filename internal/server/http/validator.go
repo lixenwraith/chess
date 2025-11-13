@@ -2,10 +2,11 @@
 package http
 
 import (
-	"chess/internal/server/core"
 	"fmt"
 	"reflect"
 	"strings"
+
+	"chess/internal/server/core"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/gofiber/fiber/v2"
@@ -25,7 +26,7 @@ func validationMiddleware(c *fiber.Ctx) error {
 
 	// Determine request type based on path
 	path := c.Path()
-	var requestType interface{}
+	var requestType any
 
 	switch {
 	case strings.HasSuffix(path, "/games") && method == fiber.MethodPost:

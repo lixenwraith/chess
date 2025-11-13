@@ -22,23 +22,23 @@ func RenderBoard(asciiBoard string) {
 			switch {
 			case char >= 'a' && char <= 'h' && isRankLine:
 				// File letters - Cyan
-				fmt.Printf("%s%c%s", Cyan, char, Reset)
+				Print(Cyan, "%c", char)
 			case char >= 'A' && char <= 'Z':
 				// White pieces - Blue
-				fmt.Printf("%s%c%s", Blue, char, Reset)
+				Print(Blue, "%c", char)
 			case char >= 'a' && char <= 'z' && !isRankLine:
 				// Black pieces - Red
-				fmt.Printf("%s%c%s", Red, char, Reset)
+				Print(Red, "%c", char)
 			case char == '.':
 				// Empty squares
-				fmt.Printf(".")
+				Print(White, ".")
 			case char >= '1' && char <= '8':
 				// Rank numbers - Cyan
-				fmt.Printf("%s%c%s", Cyan, char, Reset)
+				Print(Cyan, "%c", char)
 			case char == ' ':
-				fmt.Printf(" ")
+				Print(Reset, " ")
 			default:
-				fmt.Printf("%c", char)
+				Print(Reset, "%c", char)
 			}
 		}
 		fmt.Println()

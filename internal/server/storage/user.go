@@ -45,7 +45,7 @@ func (s *Store) CreateUser(record UserRecord) error {
 func (s *Store) userExists(tx *sql.Tx, username, email string) (bool, error) {
 	var count int
 	query := `SELECT COUNT(*) FROM users WHERE username = ? COLLATE NOCASE`
-	args := []interface{}{username}
+	args := []any{username}
 
 	if email != "" {
 		query = `SELECT COUNT(*) FROM users WHERE username = ? COLLATE NOCASE OR email = ? COLLATE NOCASE`

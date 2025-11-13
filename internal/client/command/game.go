@@ -1,5 +1,5 @@
-// FILE: lixenwraith/chess/internal/client/commands/game.go
-package commands
+// FILE: lixenwraith/chess/internal/client/command/game.go
+package command
 
 import (
 	"bufio"
@@ -11,6 +11,7 @@ import (
 
 	"chess/internal/client/api"
 	"chess/internal/client/display"
+	"chess/internal/client/session"
 )
 
 func (r *Registry) registerGameCommands() {
@@ -87,14 +88,14 @@ func (r *Registry) registerGameCommands() {
 	})
 }
 
-func newGameHandler(s Session, args []string) error {
+func newGameHandler(s *session.Session, args []string) error {
 	scanner := bufio.NewScanner(os.Stdin)
-	c := s.GetClient().(*api.Client)
+	c := s.Client
 
-	fmt.Println("\n" + display.Cyan + "Creating new game..." + display.Reset)
+	display.Println(display.Cyan, "\nCreating new game...")
 
 	// White player
-	fmt.Print(display.Yellow + "White player type (h/c) [h]: " + display.Reset)
+	display.Print(display.Yellow, "White player type (h/c) [h]: ")
 	scanner.Scan()
 	whiteType := strings.ToLower(strings.TrimSpace(scanner.Text()))
 	if whiteType == "" {
@@ -105,7 +106,7 @@ func newGameHandler(s Session, args []string) error {
 	if whiteType == "c" {
 		white.Type = 2
 
-		fmt.Print(display.Yellow + "Computer level (0-20) [10]: " + display.Reset)
+		display.Print(display.Yellow, "Computer level (0-20) [10]: ")
 		scanner.Scan()
 		levelStr := strings.TrimSpace(scanner.Text())
 		if levelStr == "" {
@@ -115,7 +116,7 @@ func newGameHandler(s Session, args []string) error {
 			white.Level = level
 		}
 
-		fmt.Print(display.Yellow + "Search time (100-10000ms) [1000]: " + display.Reset)
+		display.Print(display.Yellow, "Search time (100-10000ms) [1000]: ")
 		scanner.Scan()
 		timeStr := strings.TrimSpace(scanner.Text())
 		if timeStr == "" {
@@ -126,8 +127,8 @@ func newGameHandler(s Session, args []string) error {
 		}
 	}
 
-	// Black player
-	fmt.Print(display.Yellow + "Black player type (h/c) [h]: " + display.Reset)
+	// Black player (same pattern)
+	display.Print(display.Yellow, "Black player type (h/c) [h]: ")
 	scanner.Scan()
 	blackType := strings.ToLower(strings.TrimSpace(scanner.Text()))
 	if blackType == "" {
@@ -138,7 +139,7 @@ func newGameHandler(s Session, args []string) error {
 	if blackType == "c" {
 		black.Type = 2
 
-		fmt.Print(display.Yellow + "Computer level (0-20) [10]: " + display.Reset)
+		display.Print(display.Yellow, "Computer level (0-20) [10]: ")
 		scanner.Scan()
 		levelStr := strings.TrimSpace(scanner.Text())
 		if levelStr == "" {
@@ -148,7 +149,7 @@ func newGameHandler(s Session, args []string) error {
 			black.Level = level
 		}
 
-		fmt.Print(display.Yellow + "Search time (100-10000ms) [1000]: " + display.Reset)
+		display.Print(display.Yellow, "Search time (100-10000ms) [1000]: ")
 		scanner.Scan()
 		timeStr := strings.TrimSpace(scanner.Text())
 		if timeStr == "" {
@@ -160,7 +161,7 @@ func newGameHandler(s Session, args []string) error {
 	}
 
 	// Starting position
-	fmt.Print(display.Yellow + "Starting position (FEN) [default]: " + display.Reset)
+	display.Print(display.Yellow, "Starting position (FEN) [default]: ")
 	scanner.Scan()
 	fen := strings.TrimSpace(scanner.Text())
 
@@ -175,36 +176,31 @@ func newGameHandler(s Session, args []string) error {
 		return err
 	}
 
-	s.SetCurrentGame(resp.GameID)
-	s.SetLastMoveCount(len(resp.Moves))
-	s.SetGameState(resp)
+	s.CurrentGame = resp.GameID
+	s.LastMoveCount = len(resp.Moves)
+	s.CurrentGameState = resp
 
 	// Determine player color if authenticated
-	if s.GetCurrentUser() != "" {
-		if resp.Players.White.ID == s.GetCurrentUser() {
-			s.SetPlayerColor("w")
-		} else if resp.Players.Black.ID == s.GetCurrentUser() {
-			s.SetPlayerColor("b")
+	if s.CurrentUser != "" {
+		if resp.Players.White.ID == s.CurrentUser {
+			s.PlayerColor = "w"
+		} else if resp.Players.Black.ID == s.CurrentUser {
+			s.PlayerColor = "b"
 		}
 	}
 
-	fmt.Printf("%sGame created: %s%s\n", display.Green, resp.GameID, display.Reset)
-	fmt.Printf("%sCurrent game set to: %s%s\n", display.Cyan, resp.GameID, display.Reset)
+	display.Println(display.Green, "Game created: %s", resp.GameID)
+	display.Println(display.Cyan, "Current game set to: %s", resp.GameID)
 
-	// If white is computer, trigger first move
+	// If white is computer, inform user to trigger move
 	if white.Type == 2 {
-		fmt.Printf("\n%sTriggering white computer move...%s\n", display.Magenta, display.Reset)
-		time.Sleep(100 * time.Millisecond)
-		_, err = c.MakeMove(resp.GameID, "cccc")
-		if err != nil {
-			fmt.Printf("%sFailed to trigger computer move: %s%s\n", display.Red, err.Error(), display.Reset)
-		}
+		display.Println(display.Magenta, "\nWhite is computer. Use 'computer' or 'c' to trigger first move.")
 	}
 
 	return nil
 }
 
-func joinGameHandler(s Session, args []string) error {
+func joinGameHandler(s *session.Session, args []string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("usage: join <gameId>")
 	}
@@ -239,74 +235,65 @@ func joinGameHandler(s Session, args []string) error {
 	return nil
 }
 
-func moveHandler(s Session, args []string) error {
+func moveHandler(s *session.Session, args []string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("usage: move <uci-move>")
 	}
 
-	gameID := s.GetCurrentGame()
+	gameID := s.CurrentGame
 	if gameID == "" {
 		return fmt.Errorf("no current game, use 'new' or 'join <gameId>'")
 	}
 
 	move := args[0]
-	c := s.GetClient().(*api.Client)
+	c := s.Client
 
 	resp, err := c.MakeMove(gameID, move)
 	if err != nil {
 		return err
 	}
 
-	s.SetLastMoveCount(len(resp.Moves))
-	s.SetGameState(resp)
-	fmt.Printf("%sMove accepted%s\n", display.Green, display.Reset)
+	s.LastMoveCount = len(resp.Moves)
+	s.CurrentGameState = resp
+	display.Println(display.Green, "Move accepted")
 
-	// Check if computer should move
-	currentTurn := resp.Turn
-	var computerPlayer *api.PlayerInfo
-	if currentTurn == "w" && resp.Players.White.Type == 2 {
-		computerPlayer = &resp.Players.White
-	} else if currentTurn == "b" && resp.Players.Black.Type == 2 {
-		computerPlayer = &resp.Players.Black
-	}
+	// Check if game ended
+	switch resp.State {
+	case "checkmate":
+		winner := "Black"
+		if resp.Turn == "b" { // Turn switches after move, so if black's turn after checkmate, white won
+			winner = "White"
+		}
+		display.Println(display.Green, "\nCHECKMATE! %s wins!", winner)
+	case "stalemate":
+		display.Println(display.Yellow, "\nSTALEMATE! Game drawn.")
+	case "draw":
+		display.Println(display.Yellow, "\nDRAW! Game drawn.")
+	case "ongoing":
+		// Check if computer needs to play
+		currentTurn := resp.Turn
+		var computerPlayer *api.PlayerInfo
+		if currentTurn == "w" && resp.Players.White.Type == 2 {
+			computerPlayer = &resp.Players.White
+		} else if currentTurn == "b" && resp.Players.Black.Type == 2 {
+			computerPlayer = &resp.Players.Black
+		}
 
-	if computerPlayer != nil && resp.State == "ongoing" {
-		fmt.Printf("\n%sComputer's turn, triggering move...%s\n", display.Magenta, display.Reset)
-		time.Sleep(100 * time.Millisecond)
-		resp2, err := c.MakeMove(gameID, "cccc")
-		if err != nil {
-			fmt.Printf("%sFailed to trigger computer move: %s%s\n", display.Red, err.Error(), display.Reset)
-		} else if resp2.State == "pending" {
-			fmt.Printf("%sComputer is thinking...%s\n", display.Magenta, display.Reset)
-			// Wait for completion
-			for i := 0; i < 50; i++ {
-				time.Sleep(200 * time.Millisecond)
-				resp3, err := c.GetGame(gameID)
-				if err == nil && resp3.State != "pending" {
-					s.SetLastMoveCount(len(resp3.Moves))
-					if resp3.LastMove != nil {
-						fmt.Printf("%sComputer played: %s%s", display.Magenta, resp3.LastMove.Move, display.Reset)
-						if resp3.LastMove.Depth > 0 {
-							fmt.Printf(" (depth %d, score %d)", resp3.LastMove.Depth, resp3.LastMove.Score)
-						}
-						fmt.Println()
-					}
-					break
-				}
-			}
+		if computerPlayer != nil {
+			display.Println(display.Magenta, "\nComputer's turn. Use 'computer' or 'c' to trigger move.")
 		}
 	}
 
 	return nil
 }
 
-func computerMoveHandler(s Session, args []string) error {
-	gameID := s.GetCurrentGame()
+func computerMoveHandler(s *session.Session, args []string) error {
+	gameID := s.CurrentGame
 	if gameID == "" {
 		return fmt.Errorf("no current game, use 'new' or 'join <gameId>'")
 	}
 
-	c := s.GetClient().(*api.Client)
+	c := s.Client
 
 	resp, err := c.MakeMove(gameID, "cccc")
 	if err != nil {
@@ -314,34 +301,50 @@ func computerMoveHandler(s Session, args []string) error {
 	}
 
 	if resp.State == "pending" {
-		fmt.Printf("%sComputer is thinking...%s\n", display.Magenta, display.Reset)
+		display.Println(display.Magenta, "Computer is thinking...")
 
 		// Poll for completion
 		for i := 0; i < 50; i++ {
 			time.Sleep(200 * time.Millisecond)
 			resp2, err := c.GetGame(gameID)
 			if err == nil && resp2.State != "pending" {
-				s.SetLastMoveCount(len(resp2.Moves))
-				s.SetGameState(resp2)
+				s.LastMoveCount = len(resp2.Moves)
+				s.CurrentGameState = resp2
 				if resp2.LastMove != nil {
-					fmt.Printf("%sComputer played: %s%s", display.Magenta, resp2.LastMove.Move, display.Reset)
+					display.Print(display.Magenta, "Computer played: %s", resp2.LastMove.Move)
 					if resp2.LastMove.Depth > 0 {
 						fmt.Printf(" (depth %d, score %d)", resp2.LastMove.Depth, resp2.LastMove.Score)
 					}
 					fmt.Println()
 				}
+
+				// Check if game ended after computer move
+				switch resp2.State {
+				case "checkmate":
+					winner := "Black"
+					if resp2.Turn == "b" {
+						winner = "White"
+					}
+					display.Println(display.Green, "\nCHECKMATE! %s wins!", winner)
+				case "stalemate":
+					display.Println(display.Yellow, "\nSTALEMATE! Game drawn.")
+				case "draw":
+					display.Println(display.Yellow, "\nDRAW! Game drawn.")
+				}
+
 				return nil
 			}
 		}
 		return fmt.Errorf("timeout waiting for computer move")
 	}
 
-	s.SetLastMoveCount(len(resp.Moves))
-	fmt.Printf("%sMove triggered%s\n", display.Green, display.Reset)
+	s.LastMoveCount = len(resp.Moves)
+	s.CurrentGameState = resp
+	display.Println(display.Green, "Move triggered")
 	return nil
 }
 
-func undoHandler(s Session, args []string) error {
+func undoHandler(s *session.Session, args []string) error {
 	gameID := s.GetCurrentGame()
 	if gameID == "" {
 		return fmt.Errorf("no current game, use 'new' or 'join <gameId>'")
@@ -363,11 +366,12 @@ func undoHandler(s Session, args []string) error {
 	}
 
 	s.SetLastMoveCount(len(resp.Moves))
-	fmt.Printf("%sUndid %d move(s)%s\n", display.Green, count, display.Reset)
+	s.SetGameState(resp)
+	display.Println(display.Green, "Undid %d move(s)", count)
 	return nil
 }
 
-func showBoardHandler(s Session, args []string) error {
+func showBoardHandler(s *session.Session, args []string) error {
 	gameID := s.GetCurrentGame()
 	if gameID == "" {
 		return fmt.Errorf("no current game, use 'new' or 'join <gameId>'")
@@ -431,7 +435,7 @@ func showBoardHandler(s Session, args []string) error {
 	return nil
 }
 
-func gameStateHandler(s Session, args []string) error {
+func gameStateHandler(s *session.Session, args []string) error {
 	gameID := s.GetCurrentGame()
 	if gameID == "" {
 		return fmt.Errorf("no current game, use 'new' or 'join <gameId>'")
@@ -446,13 +450,13 @@ func gameStateHandler(s Session, args []string) error {
 	s.SetLastMoveCount(len(resp.Moves))
 
 	// Pretty print JSON
-	fmt.Printf("%sGame State:%s\n", display.Cyan, display.Reset)
+	display.Println(display.Cyan, "Game State:")
 	display.PrettyPrintJSON(resp)
 
 	return nil
 }
 
-func deleteGameHandler(s Session, args []string) error {
+func deleteGameHandler(s *session.Session, args []string) error {
 	gameID := s.GetCurrentGame()
 	if len(args) > 0 {
 		gameID = args[0]
@@ -477,7 +481,7 @@ func deleteGameHandler(s Session, args []string) error {
 	return nil
 }
 
-func pollHandler(s Session, args []string) error {
+func pollHandler(s *session.Session, args []string) error {
 	gameID := s.GetCurrentGame()
 	if gameID == "" {
 		return fmt.Errorf("no current game, use 'new' or 'join <gameId>'")
@@ -486,9 +490,8 @@ func pollHandler(s Session, args []string) error {
 	c := s.GetClient().(*api.Client)
 	moveCount := s.GetLastMoveCount()
 
-	fmt.Printf("%sLong-polling for updates (move count: %d)...%s\n",
-		display.Cyan, moveCount, display.Reset)
-	fmt.Printf("%sThis may take up to 25 seconds%s\n", display.Cyan, display.Reset)
+	display.Println(display.Cyan, "Long-polling for updates (move count: %d)...", moveCount)
+	display.Println(display.Cyan, "This may take up to 25 seconds")
 
 	resp, err := c.GetGameWithPoll(gameID, moveCount)
 	if err != nil {
@@ -499,12 +502,12 @@ func pollHandler(s Session, args []string) error {
 	s.SetGameState(resp)
 
 	if len(resp.Moves) > moveCount {
-		fmt.Printf("%sGame updated! New moves detected%s\n", display.Green, display.Reset)
+		display.Println(display.Green, "Game updated! New moves detected")
 		if resp.LastMove != nil {
 			fmt.Printf("Last move: %s\n", resp.LastMove.Move)
 		}
 	} else {
-		fmt.Printf("%sNo updates (timeout)%s\n", display.Yellow, display.Reset)
+		display.Println(display.Yellow, "No updates (timeout)")
 	}
 
 	return nil

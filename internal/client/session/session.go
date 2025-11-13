@@ -33,9 +33,9 @@ func (s *Session) GetUsername() string        { return s.Username }
 func (s *Session) SetUsername(name string)    { s.Username = name }
 func (s *Session) GetLastMoveCount() int      { return s.LastMoveCount }
 func (s *Session) SetLastMoveCount(count int) { s.LastMoveCount = count }
-func (s *Session) GetClient() interface{}     { return s.Client }
+func (s *Session) GetClient() any             { return s.Client }
 func (s *Session) IsVerbose() bool            { return s.Verbose }
-func (s *Session) SetGameState(game interface{}) {
+func (s *Session) SetGameState(game any) {
 	if g, ok := game.(*api.GameResponse); ok {
 		s.CurrentGameState = g
 	}

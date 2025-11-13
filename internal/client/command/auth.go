@@ -1,17 +1,15 @@
-// FILE: lixenwraith/chess/internal/client/commands/auth.go
-package commands
+// FILE: lixenwraith/chess/internal/client/command/auth.go
+package command
 
 import (
 	"bufio"
 	"fmt"
 	"os"
 	"strings"
-	"syscall"
 
 	"chess/internal/client/api"
 	"chess/internal/client/display"
-
-	"golang.org/x/term"
+	"chess/internal/client/session"
 )
 
 func (r *Registry) registerAuthCommands() {
@@ -56,21 +54,11 @@ func (r *Registry) registerAuthCommands() {
 	})
 }
 
-func readPassword(prompt string) (string, error) {
-	fmt.Print(prompt)
-	bytePassword, err := term.ReadPassword(int(syscall.Stdin))
-	fmt.Println()
-	if err != nil {
-		return "", err
-	}
-	return string(bytePassword), nil
-}
-
-func registerHandler(s Session, args []string) error {
+func registerHandler(s *session.Session, args []string) error {
 	scanner := bufio.NewScanner(os.Stdin)
 	c := s.GetClient().(*api.Client)
 
-	fmt.Print(display.Yellow + "Username: " + display.Reset)
+	display.Print(display.Yellow, "Username: ")
 	scanner.Scan()
 	username := strings.TrimSpace(scanner.Text())
 
@@ -79,7 +67,7 @@ func registerHandler(s Session, args []string) error {
 		return err
 	}
 
-	fmt.Print(display.Yellow + "Email (optional): " + display.Reset)
+	display.Print(display.Yellow, "Email (optional): ")
 	scanner.Scan()
 	email := strings.TrimSpace(scanner.Text())
 
@@ -93,18 +81,18 @@ func registerHandler(s Session, args []string) error {
 	s.SetUsername(resp.Username)
 	c.SetToken(resp.Token)
 
-	fmt.Printf("%sRegistered successfully%s\n", display.Green, display.Reset)
+	display.Println(display.Green, "Registered successfully")
 	fmt.Printf("User ID: %s\n", resp.UserID)
 	fmt.Printf("Username: %s\n", resp.Username)
 
 	return nil
 }
 
-func loginHandler(s Session, args []string) error {
+func loginHandler(s *session.Session, args []string) error {
 	scanner := bufio.NewScanner(os.Stdin)
 	c := s.GetClient().(*api.Client)
 
-	fmt.Print(display.Yellow + "Username or Email: " + display.Reset)
+	display.Print(display.Yellow, "Username or Email: ")
 	scanner.Scan()
 	identifier := strings.TrimSpace(scanner.Text())
 
@@ -123,27 +111,27 @@ func loginHandler(s Session, args []string) error {
 	s.SetUsername(resp.Username)
 	c.SetToken(resp.Token)
 
-	fmt.Printf("%sLogged in successfully%s\n", display.Green, display.Reset)
+	display.Println(display.Green, "Logged in successfully")
 	fmt.Printf("User ID: %s\n", resp.UserID)
 	fmt.Printf("Username: %s\n", resp.Username)
 
 	return nil
 }
 
-func logoutHandler(s Session, args []string) error {
+func logoutHandler(s *session.Session, args []string) error {
 	s.SetAuthToken("")
 	s.SetCurrentUser("")
 	s.SetUsername("")
 	c := s.GetClient().(*api.Client)
 	c.SetToken("")
 
-	fmt.Printf("%sLogged out%s\n", display.Green, display.Reset)
+	display.Println(display.Green, "Logged out")
 	return nil
 }
 
-func whoamiHandler(s Session, args []string) error {
+func whoamiHandler(s *session.Session, args []string) error {
 	if s.GetAuthToken() == "" {
-		fmt.Printf("%sNot authenticated%s\n", display.Yellow, display.Reset)
+		display.Println(display.Yellow, "Not authenticated")
 		return nil
 	}
 
@@ -153,7 +141,7 @@ func whoamiHandler(s Session, args []string) error {
 		return err
 	}
 
-	fmt.Printf("%sCurrent User:%s\n", display.Cyan, display.Reset)
+	display.Println(display.Cyan, "Current User:")
 	fmt.Printf("  User ID:  %s\n", user.UserID)
 	fmt.Printf("  Username: %s\n", user.Username)
 	if user.Email != "" {
@@ -167,14 +155,14 @@ func whoamiHandler(s Session, args []string) error {
 	return nil
 }
 
-func setUserHandler(s Session, args []string) error {
+func setUserHandler(s *session.Session, args []string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("usage: user <userId>")
 	}
 
 	userID := args[0]
 	s.SetCurrentUser(userID)
-	fmt.Printf("%sUser ID set to: %s%s\n", display.Cyan, userID, display.Reset)
+	display.Println(display.Cyan, "User ID set to: %s", userID)
 	fmt.Println("Note: This doesn't authenticate, just sets the ID for display")
 
 	return nil

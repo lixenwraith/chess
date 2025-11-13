@@ -13,6 +13,8 @@ import (
 	"chess/internal/client/display"
 )
 
+const HttpTimeout = 30 * time.Second
+
 type Client struct {
 	BaseURL    string
 	AuthToken  string
@@ -24,7 +26,7 @@ func New(baseURL string) *Client {
 	return &Client{
 		BaseURL: baseURL,
 		HTTPClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: HttpTimeout,
 		},
 	}
 }
@@ -42,7 +44,7 @@ func (c *Client) SetToken(token string) {
 	c.AuthToken = token
 }
 
-func (c *Client) doRequest(method, path string, body interface{}, result interface{}) error {
+func (c *Client) doRequest(method, path string, body any, result any) error {
 	url := c.BaseURL + path
 
 	// Prepare body
@@ -72,23 +74,24 @@ func (c *Client) doRequest(method, path string, body interface{}, result interfa
 	}
 
 	// Display request
-	fmt.Printf("\n%s[API] %s %s%s\n", display.Blue, method, path, display.Reset)
+	display.Print(display.Blue, "\n[API] %s %s\n", method, path)
 	if bodyStr != "" {
 		if c.Verbose {
 			// Display request body if verbose
-			var prettyBody interface{}
+			var prettyBody any
 			json.Unmarshal([]byte(bodyStr), &prettyBody)
 			prettyJSON, _ := json.MarshalIndent(prettyBody, "", "  ")
-			fmt.Printf("%sRequest Body:%s\n%s\n", display.Cyan, display.Reset, string(prettyJSON))
+			display.Println(display.Cyan, "Request Body:")
+			display.Println(display.Reset, string(prettyJSON))
 		} else {
-			fmt.Printf("%s%s%s\n", display.Blue, bodyStr, display.Reset)
+			display.Print(display.Blue, "%s\n", bodyStr)
 		}
 	}
 
 	// Execute request
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		fmt.Printf("%s[ERROR] %s%s\n", display.Red, err.Error(), display.Reset)
+		display.Print(display.Red, "[ERROR] %s\n", err.Error())
 		return err
 	}
 	defer resp.Body.Close()
@@ -108,12 +111,14 @@ func (c *Client) doRequest(method, path string, body interface{}, result interfa
 
 	// Display response body if verbose
 	if c.Verbose && len(respBody) > 0 {
-		var prettyResp interface{}
+		var prettyResp any
 		if err := json.Unmarshal(respBody, &prettyResp); err == nil {
 			prettyJSON, _ := json.MarshalIndent(prettyResp, "", "  ")
-			fmt.Printf("%sResponse Body:%s\n%s\n", display.Cyan, display.Reset, string(prettyJSON))
+			display.Println(display.Cyan, "Response Body:")
+			display.Println(display.Reset, string(prettyJSON))
 		} else {
-			fmt.Printf("%sResponse:%s\n%s\n", display.Cyan, display.Reset, string(respBody))
+			display.Println(display.Cyan, "Response:")
+			display.Println(display.Reset, string(respBody))
 		}
 	}
 
@@ -122,16 +127,16 @@ func (c *Client) doRequest(method, path string, body interface{}, result interfa
 		var errResp ErrorResponse
 		if err := json.Unmarshal(respBody, &errResp); err == nil {
 			if !c.Verbose {
-				fmt.Printf("%sError: %s%s\n", display.Red, errResp.Error, display.Reset)
+				display.Print(display.Red, "Error: %s\n", errResp.Error)
 				if errResp.Code != "" {
-					fmt.Printf("%sCode: %s%s\n", display.Red, errResp.Code, display.Reset)
+					display.Print(display.Red, "Code: %s\n", errResp.Code)
 				}
 				if errResp.Details != "" {
-					fmt.Printf("%sDetails: %s%s\n", display.Red, errResp.Details, display.Reset)
+					display.Print(display.Red, "Details: %s\n", errResp.Details)
 				}
 			}
 		} else if !c.Verbose {
-			fmt.Printf("%s%s%s\n", display.Red, string(respBody), display.Reset)
+			display.Println(display.Red, string(respBody))
 		}
 		return fmt.Errorf("request failed with status %d", resp.StatusCode)
 	}
@@ -140,8 +145,8 @@ func (c *Client) doRequest(method, path string, body interface{}, result interfa
 	if result != nil && len(respBody) > 0 {
 		if err := json.Unmarshal(respBody, result); err != nil {
 			// For debug, show raw response if parsing fails
-			fmt.Printf("%sResponse parse error: %s%s\n", display.Red, err.Error(), display.Reset)
-			fmt.Printf("%sRaw response: %s%s\n", display.Green, string(respBody), display.Reset)
+			display.Print(display.Red, "Response parse error: %s\n", err.Error())
+			display.Print(display.Green, "Raw response: %s\n", string(respBody))
 			return err
 		}
 	}
@@ -229,7 +234,7 @@ func (c *Client) GetCurrentUser() (*UserResponse, error) {
 
 // RawRequest performs a raw HTTP request for debugging purposes
 func (c *Client) RawRequest(method, path string, body string) error {
-	var bodyData interface{}
+	var bodyData any
 	if body != "" {
 		if err := json.Unmarshal([]byte(body), &bodyData); err != nil {
 			// Try as raw string

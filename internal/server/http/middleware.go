@@ -2,8 +2,9 @@
 package http
 
 import (
-	"chess/internal/server/core"
 	"strings"
+
+	"chess/internal/server/core"
 
 	"github.com/gofiber/fiber/v2"
 )

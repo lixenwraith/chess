@@ -22,15 +22,15 @@ const (
 type Command struct {
 	Type   CommandType
 	UserID string
-	GameID string      // For game-specific commands
-	Args   interface{} // Command-specific arguments
+	GameID string // For game-specific commands
+	Args   any    // Command-specific arguments
 }
 
 // ProcessorResponse wraps the response with metadata
 type ProcessorResponse struct {
 	Success bool                `json:"success"`
 	Pending bool                `json:"pending,omitempty"` // For async operations
-	Data    interface{}         `json:"data,omitempty"`
+	Data    any                 `json:"data,omitempty"`
 	Error   *core.ErrorResponse `json:"error,omitempty"`
 }
 

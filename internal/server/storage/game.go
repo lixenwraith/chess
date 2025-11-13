@@ -93,7 +93,7 @@ func (s *Store) QueryGames(gameID, playerID string) ([]GameRecord, error) {
 		start_time_utc
 	FROM games WHERE 1=1`
 
-	var args []interface{}
+	var args []any
 
 	// Handle gameID filtering
 	if gameID != "" && gameID != "*" {

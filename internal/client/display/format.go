@@ -7,10 +7,10 @@ import (
 )
 
 // PrettyPrintJSON prints formatted JSON
-func PrettyPrintJSON(v interface{}) {
+func PrettyPrintJSON(v any) {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		fmt.Printf("%sError formatting JSON: %s%s\n", Red, err.Error(), Reset)
+		Print(Red, "Error formatting JSON: %s\n", err.Error())
 		return
 	}
 	fmt.Println(string(data))

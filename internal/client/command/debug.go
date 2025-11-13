@@ -1,5 +1,5 @@
-// FILE: lixenwraith/chess/internal/client/commands/debug.go
-package commands
+// FILE: lixenwraith/chess/internal/client/command/debug.go
+package command
 
 import (
 	"fmt"
@@ -10,6 +10,7 @@ import (
 
 	"chess/internal/client/api"
 	"chess/internal/client/display"
+	"chess/internal/client/session"
 )
 
 func (r *Registry) registerDebugCommands() {
@@ -46,14 +47,14 @@ func (r *Registry) registerDebugCommands() {
 	})
 }
 
-func healthHandler(s Session, args []string) error {
+func healthHandler(s *session.Session, args []string) error {
 	c := s.GetClient().(*api.Client)
 	resp, err := c.Health()
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("%sServer Health:%s\n", display.Cyan, display.Reset)
+	display.Println(display.Cyan, "%sServer Health:%s")
 	fmt.Printf("  Status:  %s\n", resp.Status)
 	// Convert Unix timestamp to readable time
 	t := time.Unix(resp.Time, 0)
@@ -65,7 +66,7 @@ func healthHandler(s Session, args []string) error {
 	return nil
 }
 
-func urlHandler(s Session, args []string) error {
+func urlHandler(s *session.Session, args []string) error {
 	if len(args) == 0 {
 		fmt.Printf("Current API URL: %s\n", s.GetAPIBaseURL())
 		return nil
@@ -80,11 +81,11 @@ func urlHandler(s Session, args []string) error {
 	c := s.GetClient().(*api.Client)
 	c.SetBaseURL(url)
 
-	fmt.Printf("%sAPI URL set to: %s%s\n", display.Cyan, url, display.Reset)
+	display.Println(display.Cyan, "API URL set to: %s", url)
 	return nil
 }
 
-func rawRequestHandler(s Session, args []string) error {
+func rawRequestHandler(s *session.Session, args []string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("usage: raw <method> <path> [json-body]")
 	}
@@ -101,7 +102,7 @@ func rawRequestHandler(s Session, args []string) error {
 	return c.RawRequest(method, path, body)
 }
 
-func clearHandler(s Session, args []string) error {
+func clearHandler(s *session.Session, args []string) error {
 	cmd := exec.Command("clear")
 	cmd.Stdout = os.Stdout
 	return cmd.Run()
