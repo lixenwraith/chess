@@ -13,7 +13,8 @@
 #git clone https://git.lixen.com/lixen/chess # Mirror
 git clone https://github.com/lixenwraith/chess
 cd chess
-go build ./cmd/chessd
+go build ./cmd/chess-server
+go build ./cmd/chess-client
 ```
 
 ## Running
@@ -118,30 +119,39 @@ go build ./cmd/chessd
 ## Project Structure
 ```
 chess/
-├── cmd/chessd/
-│   ├── main.go        # Entry point with auth initialization
-│   ├── pid.go         # PID file management
-│   └── cli/           # Database and user CLI
+├── cmd/
+│   ├── chess-server/            # Server app
+│   │   ├── main.go              # Server entry point
+│   │   ├── pid.go               # PID file management
+│   │   └── cli/                 # Database and user CLI
+│   └── chess-client/            # Client app
+│       └── main.go              # Interactive debugging client
 ├── internal/
-│   ├── board/         # FEN/ASCII operations
-│   ├── core/          # Shared types and API models
-│   ├── engine/        # Stockfish UCI wrapper
-│   ├── game/          # Game state with player associations
-│   ├── http/          # Fiber handlers and auth endpoints
-│   │   ├── handler.go # Game endpoints
-│   │   ├── auth.go    # Authentication endpoints
-│   │   └── middleware.go # JWT validation
-│   ├── processor/     # Command processing with user context
-│   ├── service/       # State and user management
-│   │   ├── service.go # Core service
-│   │   ├── game.go    # Game operations
-│   │   └── user.go    # User and auth operations
-│   └── storage/       # SQLite persistence
-│       ├── storage.go # Async writer for games
-│       ├── game.go    # Game persistence
-│       ├── user.go    # User persistence (synchronous)
-│       └── schema.go  # Database schema
-└── test/              # Test scripts
+│   ├── client/                  # Client components
+│   │   ├── api/                 # HTTP client for server API
+│   │   ├── commands/            # Command registry and handlers
+│   │   ├── display/             # Terminal output formatting
+│   │   └── session/             # Session state management
+│   └── server/                  # Server components
+│       ├── board/               # FEN/ASCII operations
+│       ├── core/                # Shared types and API models
+│       ├── engine/              # Stockfish UCI wrapper
+│       ├── game/                # Game state with player associations
+│       ├── http/                # Fiber handlers and auth endpoints
+│       │   ├── handler.go       # Game endpoints
+│       │   ├── auth.go          # Authentication endpoints
+│       │   └── middleware.go    # JWT validation
+│       ├── processor/           # Command processing with user context
+│       ├── service/             # State and user management
+│       │   ├── service.go       # Core service
+│       │   ├── game.go          # Game operations
+│       │   └── user.go          # User and auth operations
+│       └── storage/             # SQLite persistence
+│           ├── storage.go       # Async writer for games
+│           ├── game.go          # Game persistence
+│           ├── user.go          # User persistence (synchronous)
+│           └── schema.go        # Database schema
+└── test/                        # Test scripts
 ```
 
 ## Testing

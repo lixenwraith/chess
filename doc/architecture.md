@@ -29,6 +29,7 @@ SQLite persistence with async writes for games, synchronous writes for authentic
 - **Board** (`internal/board`): FEN parsing and ASCII generation
 - **Core** (`internal/core`): Shared types, API models, error constants
 - **CLI** (`cmd/chessd/cli`): Database and user management commands
+- **Client** (`cmd/chess-client`, `internal/client`): Interactive debugging client with command registry, session management, and colored terminal output
 
 ## Request Flow
 

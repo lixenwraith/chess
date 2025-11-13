@@ -1,5 +1,5 @@
 #!/bin/bash
-# test-longpoll.sh - Test long-polling functionality
+# FILE: lixenwraith/chess/test/test-longpoll.sh
 
 set -e
 

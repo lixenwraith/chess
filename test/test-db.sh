@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# FILE: test/test-db.sh
+# FILE: lixenwraith/chess/test/test-db.sh
 
 # Database & Authentication API Integration Test Suite
 # Tests user operations, authentication, and persistence via HTTP API
@@ -10,7 +10,7 @@
 BASE_URL="http://localhost:8080"
 API_URL="${BASE_URL}/api/v1"
 TEST_DB="test.db"
-CHESSD_EXEC=${1:-"./chessd"}
+CHESS_SERVER_EXEC=${1:-"bin/chess-server"}
 API_DELAY=${API_DELAY:-50}
 
 # Colors
@@ -130,8 +130,8 @@ for cmd in jq sqlite3 curl; do
 done
 
 # Check executable exists
-if [ ! -x "$CHESSD_EXEC" ]; then
-    echo -e "${RED}Error: chessd executable not found or not executable: $CHESSD_EXEC${NC}"
+if [ ! -x "$CHESS_SERVER_EXEC" ]; then
+    echo -e "${RED}Error: chess-server executable not found or not executable: $CHESS_SERVER_EXEC${NC}"
     exit 1
 fi
 
@@ -145,7 +145,7 @@ fi
 # Start tests
 print_header "Database & User Management Test Suite"
 echo "Server: $BASE_URL"
-echo "Executable: $CHESSD_EXEC"
+echo "Executable: $CHESS_SERVER_EXEC"
 echo "Test Database (server-managed): $TEST_DB"
 echo ""
 
@@ -154,11 +154,11 @@ print_header "SECTION 1: CLI User Operations"
 # ==============================================================================
 
 test_case "1.1: database initialization"
-assert_command "$CHESSD_EXEC db init -path $TEST_DB" 0 "initialize database"
+assert_command "$CHESS_SERVER_EXEC db init -path $TEST_DB" 0 "initialize database"
 
 # Create testuser1 first (not charlie)
 test_case "1.2: Add First User via CLI"
-OUTPUT=$($CHESSD_EXEC db user add -path "$TEST_DB" -username "testuser1" \
+OUTPUT=$($CHESS_SERVER_EXEC db user add -path "$TEST_DB" -username "testuser1" \
     -email "testuser1@test.com" -password "TestPass123" 2>&1)
 if echo "$OUTPUT" | grep -qi "User created successfully"; then
     echo -e "${GREEN}  ✓ User created: testuser1${NC}"
@@ -169,7 +169,7 @@ else
 fi
 
 test_case "1.3: Add Second User"
-OUTPUT=$($CHESSD_EXEC db user add -path "$TEST_DB" -username "testuser2" \
+OUTPUT=$($CHESS_SERVER_EXEC db user add -path "$TEST_DB" -username "testuser2" \
     -password "TestPass456" 2>&1)
 if echo "$OUTPUT" | grep -qi "User created successfully"; then
     echo -e "${GREEN}  ✓ User created: testuser2${NC}"
@@ -181,7 +181,7 @@ fi
 
 # Now test duplicate prevention with an existing user
 test_case "1.4: Duplicate Username Prevention"
-assert_command "$CHESSD_EXEC db user add -path $TEST_DB -username testuser1 -password TestPass789" 1 \
+assert_command "$CHESS_SERVER_EXEC db user add -path $TEST_DB -username testuser1 -password TestPass789" 1 \
     "Duplicate username rejected"
 
 test_case "1.5: Login with Case-Insensitive Username (ALICE)"
@@ -197,11 +197,11 @@ else
 fi
 
 test_case "1.6: Update User Email"
-assert_command "$CHESSD_EXEC db user set-email -path $TEST_DB -username testuser2 -email testuser2_updated@test.com" 0 \
+assert_command "$CHESS_SERVER_EXEC db user set-email -path $TEST_DB -username testuser2 -email testuser2_updated@test.com" 0 \
     "Email update"
 
 test_case "1.7: Update User Password"
-assert_command "$CHESSD_EXEC db user set-password -path $TEST_DB -username testuser2 -password NewPass789" 0 \
+assert_command "$CHESS_SERVER_EXEC db user set-password -path $TEST_DB -username testuser2 -password NewPass789" 0 \
     "Password update"
 
 test_case "2.1: Health Check"
@@ -349,7 +349,7 @@ print_header "SECTION 5: Password Operations"
 
 # Now TEST_PASS2_NEW is defined, this test should work
 test_case "5.1: Update User Password via CLI for 'bob'"
-assert_command "$CHESSD_EXEC db user set-password -path $TEST_DB -username $TEST_USER2 -password $TEST_PASS2_NEW" 0 \
+assert_command "$CHESS_SERVER_EXEC db user set-password -path $TEST_DB -username $TEST_USER2 -password $TEST_PASS2_NEW" 0 \
     "CLI password update for '$TEST_USER2'"
 
 test_case "5.2: Login with NEW Password for 'bob'"
@@ -372,11 +372,11 @@ STATUS=$(api_request POST "$API_URL/auth/login" \
 assert_status 401 "$STATUS" "Old password correctly rejected for '$TEST_USER2'"
 
 test_case "5.4: Add new user '$TEST_USER_CLI' via CLI for hash test"
-assert_command "$CHESSD_EXEC db user add -path $TEST_DB -username $TEST_USER_CLI -password $TEST_PASS_CLI" 0 \
+assert_command "$CHESS_SERVER_EXEC db user add -path $TEST_DB -username $TEST_USER_CLI -password $TEST_PASS_CLI" 0 \
     "Add user '$TEST_USER_CLI' for hash test"
 
 test_case "5.5: CLI rejects unsupported hash format"
-assert_command "$CHESSD_EXEC db user set-hash -path $TEST_DB -username $TEST_USER_CLI -hash '$UNSUPPORTED_HASH'" 1 \
+assert_command "$CHESS_SERVER_EXEC db user set-hash -path $TEST_DB -username $TEST_USER_CLI -hash '$UNSUPPORTED_HASH'" 1 \
     "Unsupported bcrypt hash rejected by CLI"
 
 # ==============================================================================
@@ -419,11 +419,11 @@ fi
 
 test_case "6.3: Delete User"
 # First, get a user to delete
-OUTPUT=$($CHESSD_EXEC db user add -path "$TEST_DB" -username "deleteme" \
+OUTPUT=$($CHESS_SERVER_EXEC db user add -path "$TEST_DB" -username "deleteme" \
     -password "TempPass123" 2>&1)
 TEMP_ID=$(echo "$OUTPUT" | grep "ID:" | awk '{print $2}')
 
-assert_command "$CHESSD_EXEC db user delete -path $TEST_DB -username deleteme" 0 \
+assert_command "$CHESS_SERVER_EXEC db user delete -path $TEST_DB -username deleteme" 0 \
     "User deletion by username"
 
 # Verify deletion

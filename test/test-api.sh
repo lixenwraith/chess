@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# FILE: test/test-api.sh
+# FILE: lixenwraith/chess/test/test-api.sh
 
 # Chess API Robustness Test Suite
 # Tests the refactored chess API with security hardening
@@ -134,7 +134,7 @@ echo "Server: $BASE_URL"
 echo "API Version: v1"
 echo -e "${MAGENTA}  IMPORTANT: Server must be started with -dev flag for tests to pass!${NC}"
 echo -e "${MAGENTA}  Start the server first: test/run-test-server.sh${NC}"
-echo -e "${MAGENTA}  Or directly after build: ./chessd -dev${NC}"
+echo -e "${MAGENTA}  Or directly after build: bin/chess-server -dev${NC}"
 echo ""
 echo "Starting comprehensive tests..."
 

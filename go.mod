@@ -1,14 +1,15 @@
 module chess
 
-go 1.25.3
+go 1.25.4
 
 require (
+	github.com/chzyer/readline v1.5.1
 	github.com/go-playground/validator/v10 v10.28.0
 	github.com/gofiber/fiber/v2 v2.52.9
 	github.com/google/uuid v1.6.0
 	github.com/lixenwraith/auth v0.0.0-20251104131016-e5a810f4e226
 	github.com/mattn/go-sqlite3 v1.14.32
-	golang.org/x/term v0.36.0
+	golang.org/x/term v0.37.0
 )
 
 require (
@@ -28,7 +29,7 @@ require (
 	github.com/tinylib/msgp v1.5.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.68.0 // indirect
-	golang.org/x/crypto v0.43.0 // indirect
-	golang.org/x/sys v0.37.0 // indirect
-	golang.org/x/text v0.30.0 // indirect
+	golang.org/x/crypto v0.44.0 // indirect
+	golang.org/x/sys v0.38.0 // indirect
+	golang.org/x/text v0.31.0 // indirect
 )
