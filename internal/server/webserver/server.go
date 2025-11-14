@@ -13,7 +13,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/logger"
 )
 
-//go:embed web
+//go:embed chess-client-web
 var webFS embed.FS
 
 // Start initializes and starts the web UI server
@@ -58,8 +58,8 @@ func Start(host string, port int, apiURL string) error {
 		// Try to read the file
 		data, err := fs.ReadFile(webContent, fsPath)
 		if err != nil {
-			// If the file isn't found, serve index.html for SPA-style routing.
-			// This handles client-side routes that don't correspond to a file.
+			// If the file isn't found, serve index.html for SPA-style routing
+			// This handles client-side routes that don't correspond to a file
 			data, err = fs.ReadFile(webContent, "index.html")
 			if err != nil {
 				return c.Status(fiber.StatusInternalServerError).SendString("index.html not found")

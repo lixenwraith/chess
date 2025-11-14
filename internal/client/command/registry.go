@@ -141,7 +141,6 @@ func (r *Registry) helpHandler(s *session.Session, args []string) error {
 		{"health", ".", ""},
 		{"url", "/", ""},
 		{"raw", ":", ""},
-		{"clear", "-", ""},
 		{"help", "?", ""},
 		{"exit", "x", ""},
 	}

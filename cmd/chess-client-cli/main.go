@@ -1,5 +1,5 @@
-// FILE: lixenwraith/chess/cmd/chess-client/main.go
-// Package main implements an interactive debugging client for the chess server API.
+// FILE: lixenwraith/chess/cmd/chess-client-cli/main.go
+// Package main implements an interactive cli debugging client for the chess server API.
 package main
 
 import (
@@ -15,6 +15,21 @@ import (
 )
 
 func main() {
+	for {
+		if !runClient() {
+			break
+		}
+	}
+}
+
+func runClient() (restart bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			display.Println(display.Red, "Client crashed: %v", r)
+			panic(r)
+		}
+	}()
+
 	s := &session.Session{
 		APIBaseURL: "http://localhost:8080",
 		Client:     api.New("http://localhost:8080"),
@@ -51,8 +66,7 @@ func main() {
 
 		// Check for exit commands
 		if line == "exit" || line == "quit" || line == "x" {
-			display.Println(display.Cyan, "Goodbye!")
-			break
+			return handleExit()
 		}
 
 		// Check for verbose flag
@@ -65,6 +79,8 @@ func main() {
 
 		registry.Execute(line)
 	}
+
+	return false
 }
 
 func buildPrompt(s *session.Session) string {

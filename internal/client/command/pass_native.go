@@ -1,4 +1,4 @@
-// FILE: internal/client/command/auth_unix.go
+// FILE: lixenwraith/chess/internal/client/command/pass_native.go
 //go:build !js && !wasm
 
 package command

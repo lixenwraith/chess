@@ -3,10 +3,11 @@
 # Variables
 BINARY_DIR := bin
 SERVER_BINARY := $(BINARY_DIR)/chess-server
-CLIENT_BINARY := $(BINARY_DIR)/chess-client
+CLIENT_BINARY := $(BINARY_DIR)/chess-client-cli
 SERVER_SOURCE := ./cmd/chess-server
-CLIENT_SOURCE := ./cmd/chess-client
+CLIENT_SOURCE := ./cmd/chess-client-cli
 GO := go
+GOROOT := $(shell go env GOROOT)
 GOFLAGS := -trimpath
 LDFLAGS := -s -w
 
@@ -14,6 +15,12 @@ LDFLAGS := -s -w
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_TIME := $(shell date -u '+%Y-%m-%d_%H:%M:%S')
 VERSION := $(shell git describe --tags --abbrev=0 2>/dev/null || echo "dev")
+
+# WASM build variables
+WASM_DIR := web/chess-client-wasm
+WASM_BINARY := $(WASM_DIR)/chess-client.wasm
+WASM_EXEC_JS := $(WASM_DIR)/wasm_exec.js
+WASM_EXEC_SRC := $(GOROOT)/lib/wasm/wasm_exec.js
 
 # Default target
 .PHONY: all
@@ -42,6 +49,48 @@ $(CLIENT_BINARY): $(BINARY_DIR)
 # Create bin directory
 $(BINARY_DIR):
 	@mkdir -p $(BINARY_DIR)
+
+# Build WASM client
+.PHONY: wasm
+wasm: $(WASM_DIR)
+	@echo "Building WASM client..."
+	GOOS=js GOARCH=wasm $(GO) build $(GOFLAGS) \
+		-ldflags "$(LDFLAGS)" \
+		-o $(WASM_BINARY) $(CLIENT_SOURCE)
+	@cp "$(WASM_EXEC_SRC)" $(WASM_DIR)/
+	@echo "Built WASM client: $(WASM_BINARY)"
+	@echo "Size: $$(du -h $(WASM_BINARY) | cut -f1)"
+
+# Download xterm.js dependencies
+.PHONY: wasm-deps
+wasm-deps: $(WASM_DIR)
+	@echo "Downloading xterm.js 5.5.0..."
+	@mkdir -p $(WASM_DIR)/lib
+	@cd $(WASM_DIR)/lib && \
+		curl -sO https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js && \
+		curl -sO https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css
+	@echo "xterm.js 5.5.0 downloaded to $(WASM_DIR)/lib/"
+
+# Build WASM with dependencies
+.PHONY: wasm-full
+wasm-full: wasm-deps wasm
+
+# Serve WASM client for testing
+.PHONY: wasm-serve
+wasm-serve: wasm
+	@echo "Starting WASM server on http://localhost:8081"
+	@echo "Open http://localhost:8081 in your browser"
+	cd $(WASM_DIR) && python3 -m http.server 8081 --bind 127.0.0.1
+
+# Clean WASM build
+.PHONY: wasm-clean
+wasm-clean:
+	rm -f $(WASM_BINARY) $(WASM_EXEC_JS)
+	rm -rf $(WASM_DIR)/lib
+
+# Create WASM directory
+$(WASM_DIR):
+	@mkdir -p $(WASM_DIR)
 
 # Run server with default settings
 .PHONY: run-server
@@ -131,12 +180,15 @@ help:
 	@echo "  make build        Build both server and client"
 	@echo "  make server       Build server only"
 	@echo "  make client       Build client only"
+	@echo "  make wasm         Build WASM client"
+	@echo "  make wasm-full    Build WASM with dependencies"
 	@echo "  make dev          Build with race detector"
 	@echo ""
 	@echo "Run targets:"
 	@echo "  make run-server     Run server (port 8080, dev mode)"
 	@echo "  make run-server-web Run server with web UI (ports 8080/9090)"
 	@echo "  make run-client     Run client"
+	@echo "  make wasm-serve     Serve WASM client (port 8081)"
 	@echo ""
 	@echo "Test targets:"
 	@echo "  make test         Run all tests"
@@ -147,6 +199,10 @@ help:
 	@echo "Database targets:"
 	@echo "  make db-init      Initialize database"
 	@echo "  make db-clean     Remove database (destructive)"
+	@echo ""
+	@echo "WASM targets:"
+	@echo "  make wasm-deps    Download xterm.js dependencies"
+	@echo "  make wasm-clean   Clean WASM build files"
 	@echo ""
 	@echo "Maintenance:"
 	@echo "  make clean        Remove build artifacts"

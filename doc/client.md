@@ -1,4 +1,4 @@
-# Chess Client Documentation
+# Chess CLI Client Documentation
 
 The chess client is an interactive command-line debugging tool for the chess server API. It provides a rich terminal interface with colored output, command completion, and session management.
 
@@ -14,13 +14,15 @@ The chess client is an interactive command-line debugging tool for the chess ser
 
 ## Building
 ```bash
-go build ./cmd/chess-client
+go build ./cmd/chess-client-cli
+# or with make: make build client
 ```
 
 ## Running
 ```bash
 # Connect to default server (localhost:8080)
-./chess-client
+./chess-client-cli
+# if built with make: bin/chess-client-cli
 
 # The client starts with an interactive prompt
 chess > 

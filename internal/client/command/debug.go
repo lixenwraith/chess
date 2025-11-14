@@ -3,8 +3,6 @@ package command
 
 import (
 	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -37,14 +35,6 @@ func (r *Registry) registerDebugCommands() {
 		Usage:       "raw <method> <path> [json-body]",
 		Handler:     rawRequestHandler,
 	})
-
-	r.Register(&Command{
-		Name:        "clear",
-		ShortName:   "-",
-		Description: "Clear screen",
-		Usage:       "clear",
-		Handler:     clearHandler,
-	})
 }
 
 func healthHandler(s *session.Session, args []string) error {
@@ -54,7 +44,7 @@ func healthHandler(s *session.Session, args []string) error {
 		return err
 	}
 
-	display.Println(display.Cyan, "%sServer Health:%s")
+	display.Println(display.Cyan, "Server Health:")
 	fmt.Printf("  Status:  %s\n", resp.Status)
 	// Convert Unix timestamp to readable time
 	t := time.Unix(resp.Time, 0)
@@ -100,10 +90,4 @@ func rawRequestHandler(s *session.Session, args []string) error {
 
 	c := s.GetClient().(*api.Client)
 	return c.RawRequest(method, path, body)
-}
-
-func clearHandler(s *session.Session, args []string) error {
-	cmd := exec.Command("clear")
-	cmd.Stdout = os.Stdout
-	return cmd.Run()
 }

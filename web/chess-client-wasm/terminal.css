@@ -1,0 +1,17 @@
+:root {
+    --host-bg: #11111b;
+    --host-surface: #1a1b26;
+}
+
+body {
+    margin: 0;
+    padding: 0;
+    background: var(--host-bg);
+    overflow: hidden;
+    font-family: monospace;
+}
+
+#terminal {
+    width: 100vw;
+    height: 100vh;
+}

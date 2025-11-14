@@ -1,4 +1,4 @@
-// FILE: lixenwraith/chess/internal/client/command/auth_wasm.go
+// FILE: lixenwraith/chess/internal/client/command/pass_wasm.go
 //go:build js && wasm
 
 package command

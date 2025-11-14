@@ -1,10 +1,10 @@
 <table>
   <tr>
     <td>
-      <h1>Go Chess API</h1>
+      <h1>♚♛♜♝♞</h1>
       <p>
-        <a href="https://golang.org"><img src="https://img.shields.io/badge/Go-1.25-00ADD8?style=flat&logo=go" alt="Go"></a>
-        <a href="https://opensource.org/licenses/BSD-3-Clause"><img src="https://img.shields.io/badge/License-BSD_3--Clause-blue.svg" alt="License"></a>
+        <a href="https://golang.org"><img src="https://img.shields.io/badge/Go-1.25-00ADD8?style=flat&logo=go" alt="Go 1.25"></a>
+        <a href="https://opensource.org/licenses/BSD-3-Clause"><img src="https://img.shields.io/badge/License-BSD_3--Clause-blue.svg" alt="License BSD-3"></a>
       </p>
     </td>
   </tr>
@@ -59,6 +59,9 @@ make run-server-web
 
 # Initialize database with user support
 make db-init
+
+# View all build options
+make help
 
 # Add users via CLI
 ./bin/chess-server db user add -path db/chess.db -username alice -password AlicePass123
