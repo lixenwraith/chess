@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/cmd/chess-client-cli/exit_wasm.go
 //go:build js && wasm
 
 package main

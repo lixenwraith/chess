@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/internal/server/service/game.go
 package service
 
 import (
@@ -19,6 +18,15 @@ func (s *Service) CreateGame(id string, whitePlayer, blackPlayer *core.Player, i
 
 	if _, exists := s.games[id]; exists {
 		return fmt.Errorf("game %s already exists", id)
+	}
+
+	// Check computer game limit
+	hasComputer := whitePlayer.Type == core.PlayerComputer || blackPlayer.Type == core.PlayerComputer
+	if hasComputer {
+		if s.computerGames.Load() >= MaxComputerGames {
+			return fmt.Errorf("computer game limit reached (%d/%d)", s.computerGames.Load(), MaxComputerGames)
+		}
+		s.computerGames.Add(1)
 	}
 
 	// Store game with provided players
@@ -186,16 +194,22 @@ func (s *Service) UndoMoves(gameID string, count int) error {
 	return nil
 }
 
-// DeleteGame removes a game from memory
+// DeleteGame removes a game from the service
 func (s *Service) DeleteGame(gameID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok := s.games[gameID]; !ok {
+	g, ok := s.games[gameID]
+	if !ok {
 		return fmt.Errorf("game not found: %s", gameID)
 	}
 
-	// Notify and remove all waiters before deletion
+	// Decrement computer game count if applicable
+	if g.HasComputerPlayer() {
+		s.computerGames.Add(-1)
+	}
+
+	// Remove from wait registry
 	s.waiter.RemoveGame(gameID)
 
 	delete(s.games, gameID)

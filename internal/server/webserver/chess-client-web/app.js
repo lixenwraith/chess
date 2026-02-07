@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/internal/server/webserver/web/app.js
 // Game state management
 let gameState = {
     gameId: null,
@@ -679,6 +678,14 @@ function handleApiError(action, error, response = null) {
                     statusMessage = 'Invalid Move';
                 } else {
                     statusMessage = 'Invalid Request';
+                }
+                break;
+            case 403:
+                serverStatus = 'healthy';
+                if (action === 'move' || action === 'trigger computer move') {
+                    statusMessage = 'Slot Claimed';
+                } else {
+                    statusMessage = 'Not Authorized';
                 }
                 break;
             case 404:

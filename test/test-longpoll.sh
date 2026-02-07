@@ -1,5 +1,4 @@
 #!/bin/bash
-# FILE: lixenwraith/chess/test/test-longpoll.sh
 
 set -e
 

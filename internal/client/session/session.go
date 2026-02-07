@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/internal/client/session/session.go
 package session
 
 import (

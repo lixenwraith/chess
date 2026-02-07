@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/internal/server/webserver/server.go
 package webserver
 
 import (

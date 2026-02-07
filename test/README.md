@@ -11,8 +11,9 @@ This directory contains comprehensive test suites for the Chess API server, cove
 - Compiled `chessd` binary in accessible path
 
 ## Running the test server
+From repo root
 ```bash
-./run-test-server.sh
+test/run-test-server.sh
 ```
 
 Pass binary path as first argument of the script if it's not placed in current directory `./chessd`.

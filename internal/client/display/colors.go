@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/internal/client/display/colors.go
 package display
 
 import (

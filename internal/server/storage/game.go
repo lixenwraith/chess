@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/internal/server/storage/game.go
 package storage
 
 import (

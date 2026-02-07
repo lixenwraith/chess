@@ -1,5 +1,3 @@
-// FILE: lixenwraith/chess/internal/server/processor/processor.go
-
 package processor
 
 import (
@@ -131,6 +129,15 @@ func (p *Processor) handleCreateGame(cmd Command) ProcessorResponse {
 		args.Black.SearchTime = minSearchTime
 	}
 
+	// Check computer game limit
+	hasComputer := args.White.Type == core.PlayerComputer || args.Black.Type == core.PlayerComputer
+	if hasComputer && !p.svc.CanCreateComputerGame() {
+		return p.errorResponse(
+			fmt.Sprintf("computer game limit reached (%d/%d)", p.svc.GetComputerGameCount(), service.MaxComputerGames),
+			core.ErrResourceLimit,
+		)
+	}
+
 	// Generate game ID
 	gameID := p.svc.GenerateGameID()
 
@@ -163,12 +170,17 @@ func (p *Processor) handleCreateGame(cmd Command) ProcessorResponse {
 	whitePlayer := core.NewPlayer(args.White, core.ColorWhite)
 	blackPlayer := core.NewPlayer(args.Black, core.ColorBlack)
 
-	// Override player IDs for authenticated human players
-	if args.White.Type == core.PlayerHuman && cmd.UserID != "" {
-		whitePlayer.ID = cmd.UserID
-	}
-	if args.Black.Type == core.PlayerHuman && cmd.UserID != "" {
-		blackPlayer.ID = cmd.UserID
+	// FIX: Only assign authenticated user to ONE human slot
+	// If both are human, authenticated user gets white; black remains unclaimed
+	if cmd.UserID != "" {
+		if args.White.Type == core.PlayerHuman {
+			whitePlayer.ID = cmd.UserID
+			whitePlayer.ClaimedBy = cmd.UserID
+		} else if args.Black.Type == core.PlayerHuman {
+			// Only claim black if white is not human (i.e., H vs C scenario)
+			blackPlayer.ID = cmd.UserID
+			blackPlayer.ClaimedBy = cmd.UserID
+		}
 	}
 
 	// Create game in service with fully-formed players
@@ -252,7 +264,7 @@ func (p *Processor) handleGetGame(cmd Command) ProcessorResponse {
 	}
 }
 
-// handleMakeMove processes human moves
+// handleMakeMove processes human moves with authorization
 func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 	args, ok := cmd.Args.(core.MoveRequest)
 	if !ok {
@@ -278,21 +290,22 @@ func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 		return p.errorResponse("game is in invalid state", core.ErrInvalidRequest)
 	}
 
-	// Handle empty move string - trigger computer move
+	currentColor := g.NextTurnColor()
+	currentPlayer := g.NextPlayer()
+
+	// Handle computer move trigger
 	if strings.TrimSpace(args.Move) == "cccc" {
-		if g.NextPlayer().Type != core.PlayerComputer {
+		if currentPlayer.Type != core.PlayerComputer {
 			return p.errorResponse("not computer player's turn", core.ErrNotHumanTurn)
 		}
 
-		// Set state to pending and trigger computer move
 		p.svc.UpdateGameState(cmd.GameID, core.StatePending)
 		p.triggerComputerMove(cmd.GameID, g)
 
-		// Re-fetch for updated state
 		g, _ = p.svc.GetGame(cmd.GameID)
 		response := p.buildGameResponse(cmd.GameID, g)
 		response.LastMove = &core.MoveInfo{
-			PlayerColor: g.NextTurnColor().String(),
+			PlayerColor: currentColor.String(),
 		}
 
 		return ProcessorResponse{
@@ -302,9 +315,30 @@ func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 		}
 	}
 
-	// Handle human move
-	if g.NextPlayer().Type != core.PlayerHuman {
+	// Human move - validate authorization
+	if currentPlayer.Type != core.PlayerHuman {
 		return p.errorResponse("not human player's turn", core.ErrNotHumanTurn)
+	}
+
+	// Authorization: first-move-claims-slot model
+	slotOwner := g.GetSlotOwner(currentColor)
+
+	if slotOwner == "" {
+		// Slot unclaimed - claim it with this move
+		if cmd.UserID != "" {
+			if err := p.svc.ClaimGameSlot(cmd.GameID, currentColor, cmd.UserID); err != nil {
+				return p.errorResponse(fmt.Sprintf("failed to claim slot: %v", err), core.ErrInternalError)
+			}
+		}
+		// Anonymous users can also claim by making a move (slot remains "unclaimed" but move proceeds)
+	} else if cmd.UserID != "" && slotOwner != cmd.UserID {
+		// Slot claimed by different user
+		return p.errorResponse("not your turn - slot claimed by another player", core.ErrUnauthorized)
+	}
+	// If slotOwner == cmd.UserID, authorized to proceed
+	// If slotOwner != "" && cmd.UserID == "", anonymous trying to move claimed slot - block
+	if slotOwner != "" && cmd.UserID == "" {
+		return p.errorResponse("slot claimed - authentication required", core.ErrUnauthorized)
 	}
 
 	// Normalize and validate move format
@@ -314,7 +348,6 @@ func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 	}
 
 	currentFEN := g.CurrentFEN()
-	currentColor := g.NextTurnColor()
 
 	// Validate move with engine
 	p.mu.Lock()

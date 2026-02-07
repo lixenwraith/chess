@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/internal/server/engine/engine.go
 package engine
 
 import (

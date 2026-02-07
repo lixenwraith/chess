@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/internal/client/command/registry.go
 package command
 
 import (

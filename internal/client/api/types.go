@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/internal/client/api/types.go
 package api
 
 import "time"
@@ -71,9 +70,11 @@ type BoardResponse struct {
 }
 
 type AuthResponse struct {
-	Token    string `json:"token"`
-	UserID   string `json:"userId"`
-	Username string `json:"username"`
+	Token     string    `json:"token"`
+	UserID    string    `json:"userId"`
+	Username  string    `json:"username"`
+	Email     string    `json:"email,omitempty"`
+	ExpiresAt time.Time `json:"expiresAt,omitempty"`
 }
 
 type UserResponse struct {

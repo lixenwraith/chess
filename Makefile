@@ -21,6 +21,14 @@ WASM_DIR := web/chess-client-wasm
 WASM_BINARY := $(WASM_DIR)/chess-client.wasm
 WASM_EXEC_JS := $(WASM_DIR)/wasm_exec.js
 WASM_EXEC_SRC := $(GOROOT)/lib/wasm/wasm_exec.js
+WASM_LIB_DIR := $(WASM_DIR)/lib
+
+# xterm.js versions (5.5.0 compatible)
+XTERM_VERSION := 5.5.0
+XTERM_FIT_VERSION := 0.10.0
+XTERM_WEBGL_VERSION := 0.18.0
+XTERM_LINKS_VERSION := 0.11.0
+XTERM_UNICODE_VERSION := 0.8.0
 
 # Default target
 .PHONY: all
@@ -61,15 +69,20 @@ wasm: $(WASM_DIR)
 	@echo "Built WASM client: $(WASM_BINARY)"
 	@echo "Size: $$(du -h $(WASM_BINARY) | cut -f1)"
 
-# Download xterm.js dependencies
+# Download xterm.js and all addons
 .PHONY: wasm-deps
 wasm-deps: $(WASM_DIR)
-	@echo "Downloading xterm.js 5.5.0..."
-	@mkdir -p $(WASM_DIR)/lib
-	@cd $(WASM_DIR)/lib && \
-		curl -sO https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js && \
-		curl -sO https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css
-	@echo "xterm.js 5.5.0 downloaded to $(WASM_DIR)/lib/"
+	@echo "Downloading xterm.js $(XTERM_VERSION) and addons..."
+	@mkdir -p $(WASM_LIB_DIR)
+	@cd $(WASM_LIB_DIR) && \
+		curl -sO https://cdn.jsdelivr.net/npm/@xterm/xterm@$(XTERM_VERSION)/lib/xterm.min.js && \
+		curl -sO https://cdn.jsdelivr.net/npm/@xterm/xterm@$(XTERM_VERSION)/css/xterm.min.css && \
+		curl -sO https://cdn.jsdelivr.net/npm/@xterm/addon-fit@$(XTERM_FIT_VERSION)/lib/addon-fit.min.js && \
+		curl -sO https://cdn.jsdelivr.net/npm/@xterm/addon-webgl@$(XTERM_WEBGL_VERSION)/lib/addon-webgl.min.js && \
+		curl -sO https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@$(XTERM_LINKS_VERSION)/lib/addon-web-links.min.js && \
+		curl -sO https://cdn.jsdelivr.net/npm/@xterm/addon-unicode11@$(XTERM_UNICODE_VERSION)/lib/addon-unicode11.min.js
+	@echo "Downloaded to $(WASM_LIB_DIR)/"
+	@ls -la $(WASM_LIB_DIR)/
 
 # Build WASM with dependencies
 .PHONY: wasm-full

@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/internal/server/http/handler.go
 package http
 
 import (

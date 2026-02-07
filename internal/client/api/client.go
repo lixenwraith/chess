@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/internal/api/client.go
 package api
 
 import (
@@ -224,6 +223,10 @@ func (c *Client) Login(identifier, password string) (*AuthResponse, error) {
 	var resp AuthResponse
 	err := c.doRequest("POST", "/api/v1/auth/login", req, &resp)
 	return &resp, err
+}
+
+func (c *Client) Logout() error {
+	return c.doRequest("POST", "/api/v1/auth/logout", nil, nil)
 }
 
 func (c *Client) GetCurrentUser() (*UserResponse, error) {

@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/internal/server/core/player.go
 package core
 
 import (
@@ -19,6 +18,7 @@ type Player struct {
 	Type       PlayerType `json:"type"`
 	Level      int        `json:"level,omitempty"`      // Only for computer
 	SearchTime int        `json:"searchTime,omitempty"` // Only for computer
+	ClaimedBy  string     `json:"claimedBy,omitempty"`  // UserID that claimed this slot
 }
 
 // PlayerConfig for API requests and configuration
@@ -28,7 +28,7 @@ type PlayerConfig struct {
 	SearchTime int        `json:"searchTime,omitempty" validate:"omitempty,min=100,max=10000"` // Processor sets the min value
 }
 
-// PlayersResponse for API responses - now contains full Player structs
+// PlayersResponse for API responses
 type PlayersResponse struct {
 	White *Player `json:"white"`
 	Black *Player `json:"black"`
@@ -50,10 +50,20 @@ func NewPlayer(config PlayerConfig, color Color) *Player {
 	return player
 }
 
+// IsClaimed returns true if this slot has been claimed by a user
+func (p *Player) IsClaimed() bool {
+	return p.ClaimedBy != ""
+}
+
+// CanBeClaimed returns true if this slot can be claimed
+func (p *Player) CanBeClaimed() bool {
+	return p.Type == PlayerHuman && !p.IsClaimed()
+}
+
 type Color byte
 
 const (
-	ColorWhite = iota + 1
+	ColorWhite Color = iota + 1
 	ColorBlack
 )
 

@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/internal/client/display/board.go
 package display
 
 import (

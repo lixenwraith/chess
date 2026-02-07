@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/internal/client/command/auth.go
 package command
 
 import (
@@ -119,10 +118,20 @@ func loginHandler(s *session.Session, args []string) error {
 }
 
 func logoutHandler(s *session.Session, args []string) error {
+	c := s.GetClient().(*api.Client)
+
+	// Call server to invalidate session if authenticated
+	if s.GetAuthToken() != "" {
+		if err := c.Logout(); err != nil {
+			// Log but don't fail - clear local state anyway
+			display.Println(display.Yellow, "Server logout failed: %s", err.Error())
+		}
+	}
+
+	// Clear local state
 	s.SetAuthToken("")
 	s.SetCurrentUser("")
 	s.SetUsername("")
-	c := s.GetClient().(*api.Client)
 	c.SetToken("")
 
 	display.Println(display.Green, "Logged out")

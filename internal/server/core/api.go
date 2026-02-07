@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/internal/server/core/api.go
 package core
 
 // Request types

@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/internal/server/processor/command.go
 package processor
 
 import (

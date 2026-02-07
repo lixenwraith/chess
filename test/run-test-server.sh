@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# FILE: lixenwraith/chess/test/run-test-server.sh
 
 set -e
 

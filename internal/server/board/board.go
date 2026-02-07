@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/internal/server/board/board.go
 package board
 
 import (

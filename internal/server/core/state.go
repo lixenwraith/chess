@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/internal/server/core/state.go
 package core
 
 type State int

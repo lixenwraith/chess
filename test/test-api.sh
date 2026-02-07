@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# FILE: lixenwraith/chess/test/test-api.sh
 
 # Chess API Robustness Test Suite
 # Tests the refactored chess API with security hardening

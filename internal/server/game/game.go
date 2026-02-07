@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/internal/server/game/game.go
 package game
 
 import (
@@ -149,4 +148,47 @@ func (g *Game) InitialFEN() string {
 		return g.snapshots[0].FEN
 	}
 	return board.StartingFEN
+}
+
+// ClaimSlot claims a player slot for a user
+// Caller must hold the lock
+func (g *Game) ClaimSlot(color core.Color, userID string) error {
+	player := g.players[color]
+	if player == nil {
+		return fmt.Errorf("invalid color")
+	}
+
+	if player.Type != core.PlayerHuman {
+		return fmt.Errorf("cannot claim computer slot")
+	}
+
+	if player.ClaimedBy != "" && player.ClaimedBy != userID {
+		return fmt.Errorf("slot already claimed by another user")
+	}
+
+	player.ClaimedBy = userID
+	return nil
+}
+
+// GetSlotOwner returns the userID that claimed the slot, empty if unclaimed
+// Caller must hold the lock
+func (g *Game) GetSlotOwner(color core.Color) string {
+	player := g.players[color]
+	if player == nil {
+		return ""
+	}
+	return player.ClaimedBy
+}
+
+// IsSlotClaimedBy checks if a specific user owns the slot
+func (g *Game) IsSlotClaimedBy(color core.Color, userID string) bool {
+	return g.GetSlotOwner(color) == userID
+}
+
+// HasComputerPlayer returns true if at least one player is computer
+func (g *Game) HasComputerPlayer() bool {
+	white := g.players[core.ColorWhite]
+	black := g.players[core.ColorBlack]
+	return (white != nil && white.Type == core.PlayerComputer) ||
+		(black != nil && black.Type == core.PlayerComputer)
 }

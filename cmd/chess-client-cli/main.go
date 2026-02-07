@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/cmd/chess-client-cli/main.go
 // Package main implements an interactive cli debugging client for the chess server API.
 package main
 

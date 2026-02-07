@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/internal/server/http/handler.go
 package http
 
 import (
@@ -100,6 +99,9 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, devMode bool) 
 	// Current user (requires auth)
 	auth.Get("/me", AuthRequired(validateToken), h.GetCurrentUserHandler)
 
+	// Logout
+	auth.Post("/logout", AuthRequired(validateToken), h.LogoutHandler)
+
 	// Game routes with standard rate limiting
 	maxReq := rateLimitRate
 	if devMode {
@@ -137,7 +139,7 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, devMode bool) 
 	api.Put("/games/:gameId/players", h.ConfigurePlayers)
 	api.Get("/games/:gameId", h.GetGame)
 	api.Delete("/games/:gameId", h.DeleteGame)
-	api.Post("/games/:gameId/moves", h.MakeMove)
+	api.Post("/games/:gameId/moves", OptionalAuth(validateToken), h.MakeMove)
 	api.Post("/games/:gameId/undo", h.UndoMove)
 	api.Get("/games/:gameId/board", h.GetBoard)
 
@@ -370,7 +372,6 @@ func (h *HTTPHandler) GetGame(c *fiber.Ctx) error {
 func (h *HTTPHandler) MakeMove(c *fiber.Ctx) error {
 	gameID := c.Params("gameId")
 
-	// Validate UUID format
 	if !isValidUUID(gameID) {
 		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
 			Error:   "invalid game ID format",
@@ -379,7 +380,6 @@ func (h *HTTPHandler) MakeMove(c *fiber.Ctx) error {
 		})
 	}
 
-	// Ensure middleware validation ran
 	validated, ok := c.Locals("validated").(bool)
 	if !ok || !validated {
 		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
@@ -388,7 +388,6 @@ func (h *HTTPHandler) MakeMove(c *fiber.Ctx) error {
 		})
 	}
 
-	// Retrieve validated parsed body
 	validatedBody := c.Locals("validatedBody")
 	if validatedBody == nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
@@ -399,15 +398,21 @@ func (h *HTTPHandler) MakeMove(c *fiber.Ctx) error {
 	var req core.MoveRequest
 	req = *(validatedBody.(*core.MoveRequest))
 
-	// Create command and execute
+	// Get authenticated user ID if present
+	userID, _ := c.Locals("userID").(string)
+
 	cmd := processor.NewMakeMoveCommand(gameID, req)
+	cmd.UserID = userID // Pass user context for authorization
+
 	resp := h.proc.Execute(cmd)
 
-	// Return appropriate HTTP response with correct status code
 	if !resp.Success {
 		statusCode := fiber.StatusBadRequest
-		if resp.Error.Code == core.ErrGameNotFound {
+		switch resp.Error.Code {
+		case core.ErrGameNotFound:
 			statusCode = fiber.StatusNotFound
+		case core.ErrUnauthorized:
+			statusCode = fiber.StatusForbidden
 		}
 		return c.Status(statusCode).JSON(resp.Error)
 	}

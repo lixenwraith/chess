@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/internal/server/http/auth.go
 package http
 
 import (
@@ -9,6 +8,7 @@ import (
 	"unicode"
 
 	"chess/internal/server/core"
+	"chess/internal/server/service"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -90,8 +90,8 @@ func (h *HTTPHandler) RegisterHandler(c *fiber.Ctx) error {
 		req.Email = strings.ToLower(req.Email)
 	}
 
-	// Create user
-	user, err := h.svc.CreateUser(req.Username, req.Email, req.Password)
+	// Create user (temp by default via API)
+	user, err := h.svc.CreateUser(req.Username, req.Email, req.Password, false)
 	if err != nil {
 		if strings.Contains(err.Error(), "already exists") {
 			return c.Status(fiber.StatusConflict).JSON(core.ErrorResponse{
@@ -100,14 +100,30 @@ func (h *HTTPHandler) RegisterHandler(c *fiber.Ctx) error {
 				Details: "username or email already taken",
 			})
 		}
+		if strings.Contains(err.Error(), "limit") || strings.Contains(err.Error(), "capacity") {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+				Error:   "registration temporarily unavailable",
+				Code:    core.ErrResourceLimit,
+				Details: err.Error(),
+			})
+		}
 		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
 			Error: "failed to create user",
 			Code:  core.ErrInternalError,
 		})
 	}
 
+	// Create session for new user
+	sessionID, err := h.svc.CreateUserSession(user.UserID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
+			Error: "failed to create session",
+			Code:  core.ErrInternalError,
+		})
+	}
+
 	// Generate JWT token
-	token, err := h.svc.GenerateUserToken(user.UserID)
+	token, err := h.svc.GenerateUserToken(user.UserID, sessionID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
 			Error: "failed to generate token",
@@ -120,7 +136,7 @@ func (h *HTTPHandler) RegisterHandler(c *fiber.Ctx) error {
 		UserID:    user.UserID,
 		Username:  user.Username,
 		Email:     user.Email,
-		ExpiresAt: time.Now().Add(7 * 24 * time.Hour),
+		ExpiresAt: time.Now().Add(service.SessionTTL),
 	})
 }
 
@@ -173,28 +189,23 @@ func (h *HTTPHandler) LoginHandler(c *fiber.Ctx) error {
 	// Normalize identifier for case-insensitive lookup
 	req.Identifier = strings.ToLower(req.Identifier)
 
-	// Authenticate user
-	user, err := h.svc.AuthenticateUser(req.Identifier, req.Password)
+	// Authenticate user and create session (invalidates previous session)
+	user, sessionID, err := h.svc.AuthenticateUser(req.Identifier, req.Password)
 	if err != nil {
-		// Always return same error to prevent user enumeration
 		return c.Status(fiber.StatusUnauthorized).JSON(core.ErrorResponse{
 			Error: "invalid credentials",
 			Code:  core.ErrInvalidRequest,
 		})
 	}
 
-	// Generate JWT token
-	token, err := h.svc.GenerateUserToken(user.UserID)
+	// Generate JWT token with session ID
+	token, err := h.svc.GenerateUserToken(user.UserID, sessionID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
 			Error: "failed to generate token",
 			Code:  core.ErrInternalError,
 		})
 	}
-
-	// Update last login
-	// TODO: for now, non-blocking if login time update fails, log/block in the future
-	_ = h.svc.UpdateLastLogin(user.UserID)
 
 	return c.JSON(AuthResponse{
 		Token:     token,
@@ -229,4 +240,25 @@ func (h *HTTPHandler) GetCurrentUserHandler(c *fiber.Ctx) error {
 		Email:     user.Email,
 		CreatedAt: user.CreatedAt,
 	})
+}
+
+// LogoutHandler invalidates the current session
+func (h *HTTPHandler) LogoutHandler(c *fiber.Ctx) error {
+	// Extract session ID from token claims
+	sessionID, ok := c.Locals("sessionID").(string)
+	if !ok || sessionID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
+			Error: "no active session",
+			Code:  core.ErrInvalidRequest,
+		})
+	}
+
+	if err := h.svc.InvalidateSession(sessionID); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
+			Error: "failed to logout",
+			Code:  core.ErrInternalError,
+		})
+	}
+
+	return c.JSON(fiber.Map{"message": "logged out"})
 }

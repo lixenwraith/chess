@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/internal/server/processor/queue.go
 package processor
 
 import (

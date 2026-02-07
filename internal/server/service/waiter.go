@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/internal/server/service/waiter.go
 package service
 
 import (

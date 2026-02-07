@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/cmd/chess-server/main.go
 // Package main implements the chess server application with RESTful API,
 // user authentication, and optional web UI serving capabilities.
 package main
@@ -103,6 +102,10 @@ func main() {
 	// 2. Initialize the Service with optional storage and auth
 	svc := service.New(store, jwtSecret)
 
+	// Start cleanup job for expired users/sessions
+	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
+	go svc.RunCleanupJob(cleanupCtx, service.CleanupJobInterval)
+
 	// 3. Initialize the Processor (Orchestrator), injecting the service
 	proc, err := processor.New(svc)
 	if err != nil {
@@ -177,6 +180,8 @@ func main() {
 	if err = proc.Close(); err != nil {
 		log.Printf("Processor close error: %v", err)
 	}
+
+	cleanupCancel() // Stop cleanup job
 
 	// Shutdown service first (includes wait registry cleanup)
 	if err = svc.Shutdown(gracefulShutdownTimeout); err != nil {

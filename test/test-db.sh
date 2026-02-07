@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# FILE: lixenwraith/chess/test/test-db.sh
 
 # Database & Authentication API Integration Test Suite
 # Tests user operations, authentication, and persistence via HTTP API

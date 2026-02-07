@@ -1,20 +1,41 @@
-// FILE: terminal.js
 const term = new Terminal({
     cursorBlink: true,
     convertEol: true,
     fontFamily: 'Menlo, Monaco, "Courier New", monospace',
     fontSize: 14,
+    allowProposedApi: true,
     theme: {
         background: '#1a1b26',
         foreground: '#a9b1d6',
         cursor: '#a9b1d6',
         selection: 'rgba(169, 177, 214, 0.3)'
-    },
-    cols: 120,
-    rows: 40
+    }
 });
 
+// Load addons
+const fitAddon = new FitAddon.FitAddon();
+const webglAddon = new WebglAddon.WebglAddon();
+const webLinksAddon = new WebLinksAddon.WebLinksAddon();
+const unicode11Addon = new Unicode11Addon.Unicode11Addon();
+
+term.loadAddon(fitAddon);
+term.loadAddon(webLinksAddon);
+term.loadAddon(unicode11Addon);
+term.unicode.activeVersion = '11';
+
 term.open(document.getElementById('terminal'));
+
+// WebGL addon must load after open()
+try {
+    term.loadAddon(webglAddon);
+    webglAddon.onContextLoss(() => {
+        webglAddon.dispose();
+    });
+} catch (e) {
+    console.warn('WebGL addon failed, using canvas renderer:', e);
+}
+
+fitAddon.fit();
 term.focus();
 
 let inputBuffer = '';
@@ -51,17 +72,15 @@ term.onData(data => {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-// FIXED: Override GLOBAL fs, not go.fs
 if (!globalThis.fs) {
     globalThis.fs = {};
 }
 
-// Store original methods if they exist
 const originalWrite = globalThis.fs.write;
 const originalRead = globalThis.fs.read;
 
 globalThis.fs.write = function(fd, buf, offset, length, position, callback) {
-    if (fd === 1 || fd === 2) {  // stdout/stderr
+    if (fd === 1 || fd === 2) {
         const text = decoder.decode(buf.slice(offset, offset + length));
         term.write(text);
         callback(null, length);
@@ -73,7 +92,7 @@ globalThis.fs.write = function(fd, buf, offset, length, position, callback) {
 };
 
 globalThis.fs.read = function(fd, buf, offset, length, position, callback) {
-    if (fd === 0) {  // stdin
+    if (fd === 0) {
         const promise = new Promise(resolve => {
             inputResolver = resolve;
         });
@@ -91,7 +110,6 @@ globalThis.fs.read = function(fd, buf, offset, length, position, callback) {
     }
 };
 
-// Create Go runtime AFTER fs override
 const go = new Go();
 
 WebAssembly.instantiateStreaming(fetch('chess-client.wasm'), go.importObject)
@@ -103,8 +121,10 @@ WebAssembly.instantiateStreaming(fetch('chess-client.wasm'), go.importObject)
         console.error('WASM load error:', err);
     });
 
-window.addEventListener('resize', () => {
-    const cols = Math.floor(window.innerWidth / 8);
-    const rows = Math.floor(window.innerHeight / 17);
-    term.resize(cols, rows);
+// Resize handling with debounce for performance
+let resizeTimeout;
+const resizeObserver = new ResizeObserver(() => {
+    clearTimeout(resizeTimeout);
+    resizeTimeout = setTimeout(() => fitAddon.fit(), 16);
 });
+resizeObserver.observe(document.getElementById('terminal'));

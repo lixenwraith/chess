@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/cmd/chess-server/cli/cli.go
 package cli
 
 import (
@@ -168,9 +167,10 @@ func runUserAdd(args []string) error {
 	path := fs.String("path", "", "Database file path (required)")
 	username := fs.String("username", "", "Username (required)")
 	email := fs.String("email", "", "Email address (optional)")
-	password := fs.String("password", "", "Password (use this or -hash, not both)")
-	hash := fs.String("hash", "", "Password hash (use this or -password, not both)")
+	password := fs.String("password", "", "Password (optional, will prompt if not provided)")
+	hash := fs.String("hash", "", "Pre-computed password hash (optional)")
 	interactive := fs.Bool("interactive", false, "Interactive password prompt")
+	temp := fs.Bool("temp", false, "Create as temporary user (24h TTL, default: permanent)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -244,12 +244,23 @@ func runUserAdd(args []string) error {
 		}
 	}
 
+	// Determine account type (CLI default = permanent)
+	accountType := "permanent"
+	var expiresAt *time.Time
+	if *temp {
+		accountType = "temp"
+		expiry := time.Now().UTC().Add(24 * time.Hour)
+		expiresAt = &expiry
+	}
+
 	record := storage.UserRecord{
 		UserID:       userID,
 		Username:     strings.ToLower(*username),
 		Email:        strings.ToLower(*email),
 		PasswordHash: passwordHash,
+		AccountType:  accountType,
 		CreatedAt:    time.Now().UTC(),
+		ExpiresAt:    expiresAt,
 	}
 
 	if err := store.CreateUser(record); err != nil {
@@ -534,23 +545,29 @@ func runUserList(args []string) error {
 
 	// Print results in tabular format
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "User ID\tUsername\tEmail\tCreated\tLast Login")
-	fmt.Fprintln(w, strings.Repeat("-", 100))
+	fmt.Fprintln(w, "User ID\tUsername\tType\tEmail\tCreated\tExpires\tLast Login")
+	fmt.Fprintln(w, strings.Repeat("-", 120))
 
 	for _, u := range users {
 		lastLogin := "never"
 		if u.LastLoginAt != nil {
-			lastLogin = u.LastLoginAt.Format("2006-01-02 15:04:05")
+			lastLogin = u.LastLoginAt.Format("2006-01-02 15:04")
 		}
 		email := u.Email
 		if email == "" {
 			email = "(none)"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+		expires := "never"
+		if u.ExpiresAt != nil {
+			expires = u.ExpiresAt.Format("2006-01-02 15:04")
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			u.UserID[:8]+"...",
 			u.Username,
+			u.AccountType,
 			email,
-			u.CreatedAt.Format("2006-01-02 15:04:05"),
+			u.CreatedAt.Format("2006-01-02 15:04"),
+			expires,
 			lastLogin,
 		)
 	}

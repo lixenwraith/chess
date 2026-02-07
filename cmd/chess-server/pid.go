@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/cmd/chess-server/pid.go
 package main
 
 import (

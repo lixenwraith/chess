@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/internal/server/http/middleware.go
 package http
 
 import (
@@ -23,7 +22,7 @@ func AuthRequired(validateToken TokenValidator) fiber.Handler {
 			})
 		}
 
-		userID, _, err := validateToken(token)
+		userID, claims, err := validateToken(token)
 		if err != nil {
 			return c.Status(fiber.StatusUnauthorized).JSON(core.ErrorResponse{
 				Error: "invalid or expired token",
@@ -32,6 +31,9 @@ func AuthRequired(validateToken TokenValidator) fiber.Handler {
 		}
 
 		c.Locals("userID", userID)
+		if sessionID, ok := claims["session_id"].(string); ok {
+			c.Locals("sessionID", sessionID)
+		}
 		return c.Next()
 	}
 }
@@ -44,11 +46,13 @@ func OptionalAuth(validateToken TokenValidator) fiber.Handler {
 			return c.Next()
 		}
 
-		userID, _, err := validateToken(token)
+		userID, claims, err := validateToken(token)
 		if err == nil {
 			c.Locals("userID", userID)
+			if sessionID, ok := claims["session_id"].(string); ok {
+				c.Locals("sessionID", sessionID)
+			}
 		}
-		// Continue regardless of token validity
 		return c.Next()
 	}
 }

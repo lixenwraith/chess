@@ -1,4 +1,3 @@
-// FILE: lixenwraith/chess/internal/server/core/error.go
 package core
 
 // Error codes
@@ -12,4 +11,6 @@ const (
 	ErrInvalidRequest    = "INVALID_REQUEST"
 	ErrInvalidFEN        = "INVALID_FEN"
 	ErrInternalError     = "INTERNAL_ERROR"
+	ErrResourceLimit     = "RESOURCE_LIMIT"
+	ErrUnauthorized      = "UNAUTHORIZED"
 )
