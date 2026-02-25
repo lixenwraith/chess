@@ -6,3 +6,4 @@ db
 build.sh
 .chess_history
 *.wasm
+catalog.txt

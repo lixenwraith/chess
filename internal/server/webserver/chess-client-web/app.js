@@ -5,12 +5,16 @@ let gameState = {
     turn: 'w',
     isPlayerWhite: true,
     isLocked: false,
-    pollInterval: null,
+    polling: false,
+    pollController: null,
     apiUrl: '',
     selectedSquare: null,
     healthCheckInterval: null,
     networkError: false,
     moveList: [],
+    authToken: null,
+    userId: null,
+    username: null,
 };
 
 // Chess piece Unicode: all black pieces for better fill, white pawn due to inability to override emoji variant display
@@ -42,9 +46,218 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Don't auto-show modal on load
 });
 
+document.getElementById('auth-indicator').addEventListener('click', handleAuthClick);
+document.querySelectorAll('.auth-tab').forEach(tab => {
+    tab.addEventListener('click', (e) => switchAuthTab(e.target.dataset.tab));
+});
+document.getElementById('login-submit-btn').addEventListener('click', handleLogin);
+document.getElementById('register-submit-btn').addEventListener('click', handleRegister);
+document.getElementById('auth-cancel-btn').addEventListener('click', hideAuthModal);
+document.getElementById('auth-cancel-btn-2').addEventListener('click', hideAuthModal);
+
+// Check for existing session on load
+restoreAuthSession();
+
+// Auth functions
+function restoreAuthSession() {
+    const token = localStorage.getItem('authToken');
+    if (token) {
+        gameState.authToken = token;
+        validateSession();
+    }
+}
+
+async function validateSession() {
+    try {
+        const response = await authFetch(`${gameState.apiUrl}/api/v1/auth/me`);
+        if (response.ok) {
+            const user = await response.json();
+            gameState.userId = user.userId;
+            gameState.username = user.username;
+            updateAuthIndicator(true);
+        } else {
+            clearAuthState();
+        }
+    } catch {
+        clearAuthState();
+    }
+}
+
+function clearAuthState() {
+    gameState.authToken = null;
+    gameState.userId = null;
+    gameState.username = null;
+    localStorage.removeItem('authToken');
+    updateAuthIndicator(false);
+}
+
+function updateAuthIndicator(authenticated) {
+    const indicator = document.getElementById('auth-indicator');
+    const light = indicator.querySelector('.light');
+    if (authenticated) {
+        light.setAttribute('data-status', 'authenticated');
+        indicator.setAttribute('data-status', gameState.username);
+    } else {
+        light.setAttribute('data-status', 'anonymous');
+        indicator.setAttribute('data-status', 'anonymous');
+    }
+}
+
+function handleAuthClick() {
+    if (gameState.authToken) {
+        // Logged in - confirm logout
+        if (confirm(`Logout ${gameState.username}?`)) {
+            handleLogout();
+        }
+    } else {
+        showAuthModal();
+    }
+}
+
+function showAuthModal() {
+    document.getElementById('auth-modal-overlay').classList.add('show');
+    document.getElementById('login-identifier').focus();
+    document.addEventListener('keydown', handleAuthModalKeydown);
+}
+
+function hideAuthModal() {
+    document.getElementById('auth-modal-overlay').classList.remove('show');
+    document.querySelectorAll('.auth-form input').forEach(input => input.value = '');
+    document.removeEventListener('keydown', handleAuthModalKeydown);
+}
+
+function handleAuthModalKeydown(e) {
+    const modal = document.getElementById('auth-modal-overlay');
+    if (!modal.classList.contains('show')) return;
+
+    if (e.key === 'Escape') {
+        e.preventDefault();
+        hideAuthModal();
+    } else if (e.key === 'Enter') {
+        e.preventDefault();
+        const loginForm = document.getElementById('login-form');
+        if (loginForm.style.display !== 'none') {
+            handleLogin();
+        } else {
+            handleRegister();
+        }
+    }
+}
+
+function switchAuthTab(tab) {
+    document.querySelectorAll('.auth-tab').forEach(t => t.classList.remove('active'));
+    document.querySelector(`[data-tab="${tab}"]`).classList.add('active');
+
+    document.getElementById('login-form').style.display = tab === 'login' ? 'block' : 'none';
+    document.getElementById('register-form').style.display = tab === 'register' ? 'block' : 'none';
+}
+
+async function handleLogin() {
+    const identifier = document.getElementById('login-identifier').value.trim();
+    const password = document.getElementById('login-password').value;
+
+    if (!identifier || !password) {
+        flashErrorMessage('Fill all fields');
+        return;
+    }
+
+    try {
+        const response = await fetch(`${gameState.apiUrl}/api/v1/auth/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ identifier, password })
+        });
+
+        if (!response.ok) {
+            const err = await response.json();
+            flashErrorMessage(err.error || 'Login failed');
+            return;
+        }
+
+        const auth = await response.json();
+        gameState.authToken = auth.token;
+        gameState.userId = auth.userId;
+        gameState.username = auth.username;
+        localStorage.setItem('authToken', auth.token);
+        updateAuthIndicator(true);
+        hideAuthModal();
+    } catch (error) {
+        flashErrorMessage('Connection failed');
+    }
+}
+
+async function handleRegister() {
+    const username = document.getElementById('register-username').value.trim();
+    const email = document.getElementById('register-email').value.trim();
+    const password = document.getElementById('register-password').value;
+
+    if (!username || !password) {
+        flashErrorMessage('Username and password required');
+        return;
+    }
+
+    if (password.length < 8) {
+        flashErrorMessage('Password min 8 chars');
+        return;
+    }
+
+    try {
+        const body = { username, password };
+        if (email) body.email = email;
+
+        const response = await fetch(`${gameState.apiUrl}/api/v1/auth/register`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+
+        if (!response.ok) {
+            const err = await response.json();
+            flashErrorMessage(err.details || err.error || 'Registration failed');
+            return;
+        }
+
+        const auth = await response.json();
+        gameState.authToken = auth.token;
+        gameState.userId = auth.userId;
+        gameState.username = auth.username;
+        localStorage.setItem('authToken', auth.token);
+        updateAuthIndicator(true);
+        hideAuthModal();
+    } catch (error) {
+        flashErrorMessage('Connection failed');
+    }
+}
+
+async function handleLogout() {
+    if (gameState.authToken) {
+        try {
+            await authFetch(`${gameState.apiUrl}/api/v1/auth/logout`, { method: 'POST' });
+        } catch {
+            // Ignore - clear local state regardless
+        }
+    }
+    clearAuthState();
+}
+
+// Wrapper for authenticated requests
+function authFetch(url, options = {}) {
+    if (gameState.authToken) {
+        options.headers = {
+            ...options.headers,
+            'Authorization': `Bearer ${gameState.authToken}`
+        };
+    }
+    return fetch(url, options);
+}
+
 async function getConfig() {
     try {
         const response = await fetch('/config');
+        const contentType = response.headers.get('content-type') || '';
+        if (!response.ok || !contentType.includes('application/json')) {
+            throw new Error(`unexpected response: ${response.status} ${contentType}`);
+        }
         return await response.json();
     } catch (error) {
         console.error('Failed to get config:', error);
@@ -266,13 +479,11 @@ async function startNewGame() {
     }
 
     try {
-        const response = await fetch(`${gameState.apiUrl}/api/v1/games`, {
+        const response = await authFetch(`${gameState.apiUrl}/api/v1/games`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(requestBody)
         });
-        if (!response.ok) throw new Error('Failed to create game');
-
         if (!response.ok) {
             const errorInfo = handleApiError('create game', null, response);
             throw new Error(errorInfo.statusMessage);
@@ -404,7 +615,7 @@ async function handleHumanMove(from, to) {
     const toEl = document.querySelector(`[data-square="${to}"]`);
 
     try {
-        const response = await fetch(`${gameState.apiUrl}/api/v1/games/${gameState.gameId}/moves`, {
+        const response = await authFetch(`${gameState.apiUrl}/api/v1/games/${gameState.gameId}/moves`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ move })
@@ -441,7 +652,7 @@ async function handleHumanMove(from, to) {
 async function triggerComputerMove() {
     lockBoard();
     try {
-        const response = await fetch(`${gameState.apiUrl}/api/v1/games/${gameState.gameId}/moves`, {
+        const response = await authFetch(`${gameState.apiUrl}/api/v1/games/${gameState.gameId}/moves`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ move: 'cccc' })
@@ -462,43 +673,64 @@ async function triggerComputerMove() {
 }
 
 function startPolling() {
-    gameState.pollInterval = setInterval(async () => {
-        try {
-            const response = await fetch(`${gameState.apiUrl}/api/v1/games/${gameState.gameId}`);
-            if (!response.ok) {
-                // Use error handler but continue polling for 404 (game might be deleted)
-                const errorInfo = handleApiError('poll game state', null, response);
-                if (response.status === 404) {
-                    stopPolling();
-                    unlockBoard();
-                    flashErrorMessage('Game no longer exists');
-                    gameState.gameId = null;
-                    return;
-                }
-                // For other errors, display but keep polling
-                handleApiError('poll game state', null, response);
-                return;
-            }
-
-            const game = await response.json();
-            if (game.state !== 'pending') {
-                stopPolling();
-                updateGameDisplay(game);
-                unlockBoard();
-            }
-            gameState.networkError = false;
-            updateServerIndicator('healthy');
-        } catch (error) {
-            handleApiError('poll game state', error);
-            stopPolling();
-            unlockBoard();
-        }
-    }, 1500);
+    gameState.polling = true;
+    pollOnce();
 }
 
 function stopPolling() {
-    clearInterval(gameState.pollInterval);
-    gameState.pollInterval = null;
+    gameState.polling = false;
+    if (gameState.pollController) {
+        gameState.pollController.abort();
+        gameState.pollController = null;
+    }
+}
+
+async function pollOnce() {
+    if (!gameState.polling || !gameState.gameId) return;
+
+    const moveCount = (gameState.moveList || []).length;
+    gameState.pollController = new AbortController();
+
+    try {
+        const response = await fetch(
+            `${gameState.apiUrl}/api/v1/games/${gameState.gameId}?wait=true&moveCount=${moveCount}`,
+            { signal: gameState.pollController.signal }
+        );
+
+        if (!gameState.polling) return;
+
+        if (!response.ok) {
+            const errorInfo = handleApiError('poll game state', null, response);
+            if (response.status === 404) {
+                stopPolling();
+                unlockBoard();
+                flashErrorMessage('Game no longer exists');
+                gameState.gameId = null;
+                return;
+            }
+            // Retry after delay for transient errors
+            setTimeout(pollOnce, 2000);
+            return;
+        }
+
+        const game = await response.json();
+        gameState.networkError = false;
+        updateServerIndicator('healthy');
+
+        if (game.state !== 'pending') {
+            stopPolling();
+            updateGameDisplay(game);
+            unlockBoard();
+        } else {
+            // Still pending, long-poll again
+            pollOnce();
+        }
+    } catch (error) {
+        if (error.name === 'AbortError') return;
+        handleApiError('poll game state', error);
+        stopPolling();
+        unlockBoard();
+    }
 }
 
 function lockBoard() {
@@ -753,5 +985,5 @@ function flashErrorMessage(message) {
     // Auto-hide after animation completes
     setTimeout(() => {
         overlay.classList.remove('show');
-    }, 500);
+    }, 1500);
 }

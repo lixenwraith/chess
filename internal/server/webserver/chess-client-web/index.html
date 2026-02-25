@@ -37,6 +37,9 @@
                     <div class="indicator" id="turn-indicator" data-tooltip="Turn">
                         <span class="light turn-light" data-status="white">●</span>
                     </div>
+                    <div class="indicator auth-indicator" id="auth-indicator" data-tooltip="Auth">
+                        <span class="light" data-status="anonymous">●</span>
+                    </div>
                     <div class="error-flash-overlay" id="error-flash-overlay">
                         <div class="error-flash-message" id="error-flash-message"></div>
                     </div>
@@ -64,6 +67,53 @@
     </div>
 </div>
 
+<!-- Auth Modal -->
+<div id="auth-modal-overlay" class="modal-overlay">
+    <div class="modal auth-modal">
+        <div class="auth-tabs">
+            <button class="auth-tab active" data-tab="login">Login</button>
+            <button class="auth-tab" data-tab="register">Register</button>
+        </div>
+
+        <!-- Login Form -->
+        <div id="login-form" class="auth-form">
+            <div class="form-group">
+                <label for="login-identifier">Username or Email</label>
+                <input type="text" id="login-identifier" autocomplete="username">
+            </div>
+            <div class="form-group">
+                <label for="login-password">Password</label>
+                <input type="password" id="login-password" autocomplete="current-password">
+            </div>
+            <div class="modal-buttons">
+                <button id="login-submit-btn" class="btn btn-primary">Login</button>
+                <button id="auth-cancel-btn" class="btn btn-secondary">Cancel</button>
+            </div>
+        </div>
+
+        <!-- Register Form -->
+        <div id="register-form" class="auth-form" style="display: none;">
+            <div class="form-group">
+                <label for="register-username">Username</label>
+                <input type="text" id="register-username" autocomplete="username">
+            </div>
+            <div class="form-group">
+                <label for="register-email">Email (optional)</label>
+                <input type="email" id="register-email" autocomplete="email">
+            </div>
+            <div class="form-group">
+                <label for="register-password">Password (min 8 chars)</label>
+                <input type="password" id="register-password" autocomplete="new-password">
+            </div>
+            <div class="modal-buttons">
+                <button id="register-submit-btn" class="btn btn-primary">Register</button>
+                <button id="auth-cancel-btn-2" class="btn btn-secondary">Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Overlay Modal -->
 <div id="modal-overlay" class="modal-overlay">
     <div class="modal">
         <h2>New Game</h2>
