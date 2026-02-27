@@ -28,6 +28,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     const config = await getConfig();
     gameState.apiUrl = config.apiUrl;
 
+    // Check for existing session on load
+    restoreAuthSession();
+
     document.getElementById('new-game-btn').addEventListener('click', showNewGameModal);
     document.getElementById('undo-btn').addEventListener('click', undoMoves);
     document.getElementById('start-game-btn').addEventListener('click', startNewGame);
@@ -55,8 +58,6 @@ document.getElementById('register-submit-btn').addEventListener('click', handleR
 document.getElementById('auth-cancel-btn').addEventListener('click', hideAuthModal);
 document.getElementById('auth-cancel-btn-2').addEventListener('click', hideAuthModal);
 
-// Check for existing session on load
-restoreAuthSession();
 
 // Auth functions
 function restoreAuthSession() {
@@ -117,6 +118,8 @@ function handleAuthClick() {
 function showAuthModal() {
     document.getElementById('auth-modal-overlay').classList.add('show');
     document.getElementById('login-identifier').focus();
+    // Remove first to prevent duplicate registrations
+    document.removeEventListener('keydown', handleAuthModalKeydown);
     document.addEventListener('keydown', handleAuthModalKeydown);
 }
 
@@ -161,6 +164,9 @@ async function handleLogin() {
         return;
     }
 
+    const submitBtn = document.getElementById('login-submit-btn');
+    submitBtn.disabled = true;
+
     try {
         const response = await fetch(`${gameState.apiUrl}/api/v1/auth/login`, {
             method: 'POST',
@@ -170,7 +176,7 @@ async function handleLogin() {
 
         if (!response.ok) {
             const err = await response.json();
-            flashErrorMessage(err.error || 'Login failed');
+            flashErrorMessage(err.error || 'Login failed', 3000);
             return;
         }
 
@@ -183,13 +189,15 @@ async function handleLogin() {
         hideAuthModal();
     } catch (error) {
         flashErrorMessage('Connection failed');
+    } finally {
+        submitBtn.disabled = false;
     }
 }
 
 async function handleRegister() {
     const username = document.getElementById('register-username').value.trim();
     const email = document.getElementById('register-email').value.trim();
-    const password = document.getElementById('register-password').value;
+    const password = document.getElementById('register-password').value; // intentionally not trimmed for passwords
 
     if (!username || !password) {
         flashErrorMessage('Username and password required');
@@ -200,6 +208,17 @@ async function handleRegister() {
         flashErrorMessage('Password min 8 chars');
         return;
     }
+
+    // Match server-side requirement: at least one letter AND one digit
+    const hasLetter = /[a-zA-Z]/.test(password);
+    const hasNumber = /[0-9]/.test(password);
+    if (!hasLetter || !hasNumber) {
+        flashErrorMessage('Password needs a letter and number');
+        return;
+    }
+
+    const submitBtn = document.getElementById('register-submit-btn');
+    submitBtn.disabled = true;
 
     try {
         const body = { username, password };
@@ -213,7 +232,7 @@ async function handleRegister() {
 
         if (!response.ok) {
             const err = await response.json();
-            flashErrorMessage(err.details || err.error || 'Registration failed');
+            flashErrorMessage(err.details || err.error || 'Registration failed', 3000);
             return;
         }
 
@@ -226,6 +245,8 @@ async function handleRegister() {
         hideAuthModal();
     } catch (error) {
         flashErrorMessage('Connection failed');
+    } finally {
+        submitBtn.disabled = false;
     }
 }
 
@@ -252,17 +273,7 @@ function authFetch(url, options = {}) {
 }
 
 async function getConfig() {
-    try {
-        const response = await fetch('/config');
-        const contentType = response.headers.get('content-type') || '';
-        if (!response.ok || !contentType.includes('application/json')) {
-            throw new Error(`unexpected response: ${response.status} ${contentType}`);
-        }
-        return await response.json();
-    } catch (error) {
-        console.error('Failed to get config:', error);
-        return { apiUrl: 'http://localhost:8080' };
-    }
+    return { apiUrl: '/chess' };
 }
 
 function startHealthCheck() {
@@ -972,18 +983,17 @@ function handleApiError(action, error, response = null) {
     };
 }
 
-function flashErrorMessage(message) {
+function flashErrorMessage(message, duration = 1500) {
     const overlay = document.getElementById('error-flash-overlay');
     const messageEl = document.getElementById('error-flash-message');
 
-    // Set message text
     messageEl.textContent = message;
-
-    // Show overlay
     overlay.classList.add('show');
 
-    // Auto-hide after animation completes
-    setTimeout(() => {
+    // Clear any pending timeout to avoid premature hide on rapid calls
+    if (overlay._flashTimeout) clearTimeout(overlay._flashTimeout);
+    overlay._flashTimeout = setTimeout(() => {
         overlay.classList.remove('show');
-    }, 1500);
+        overlay._flashTimeout = null;
+    }, duration);
 }

@@ -30,8 +30,8 @@ func runClient() (restart bool) {
 	}()
 
 	s := &session.Session{
-		APIBaseURL: "http://localhost:8080",
-		Client:     api.New("http://localhost:8080"),
+		APIBaseURL: defaultAPIBase,
+		Client:     api.New(defaultAPIBase),
 		Verbose:    false,
 	}
 
@@ -133,3 +133,4 @@ func buildPrompt(s *session.Session) string {
 
 	return display.Prompt(b.String())
 }
+
