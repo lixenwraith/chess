@@ -155,6 +155,15 @@ function switchAuthTab(tab) {
     document.getElementById('register-form').style.display = tab === 'register' ? 'block' : 'none';
 }
 
+// Shared helper: safely parse error response regardless of Content-Type
+async function parseErrorResponse(response) {
+    try {
+        return await response.json();
+    } catch {
+        return { error: `Server error (${response.status})`, details: null };
+    }
+}
+
 async function handleLogin() {
     const identifier = document.getElementById('login-identifier').value.trim();
     const password = document.getElementById('login-password').value;
@@ -175,8 +184,8 @@ async function handleLogin() {
         });
 
         if (!response.ok) {
-            const err = await response.json();
-            flashErrorMessage(err.error || 'Login failed', 3000);
+            const err = await parseErrorResponse(response);
+            flashErrorMessage(err.details || err.error || 'Login failed', 3000);
             return;
         }
 
@@ -197,22 +206,17 @@ async function handleLogin() {
 async function handleRegister() {
     const username = document.getElementById('register-username').value.trim();
     const email = document.getElementById('register-email').value.trim();
-    const password = document.getElementById('register-password').value; // intentionally not trimmed for passwords
+    const password = document.getElementById('register-password').value;
 
     if (!username || !password) {
         flashErrorMessage('Username and password required');
         return;
     }
-
     if (password.length < 8) {
         flashErrorMessage('Password min 8 chars');
         return;
     }
-
-    // Match server-side requirement: at least one letter AND one digit
-    const hasLetter = /[a-zA-Z]/.test(password);
-    const hasNumber = /[0-9]/.test(password);
-    if (!hasLetter || !hasNumber) {
+    if (!/[a-zA-Z]/.test(password) || !/[0-9]/.test(password)) {
         flashErrorMessage('Password needs a letter and number');
         return;
     }
@@ -231,7 +235,7 @@ async function handleRegister() {
         });
 
         if (!response.ok) {
-            const err = await response.json();
+            const err = await parseErrorResponse(response);
             flashErrorMessage(err.details || err.error || 'Registration failed', 3000);
             return;
         }

@@ -90,7 +90,7 @@ func (q *EngineQueue) worker(id int) {
 			// Send result if receiver still listening
 			select {
 			case task.Response <- result:
-			case <-time.After(100 * time.Millisecond):
+			case <-time.After(15 * time.Millisecond):
 				// Receiver abandoned, discard result
 			}
 
@@ -206,3 +206,4 @@ func (q *EngineQueue) Shutdown(timeout time.Duration) error {
 		return fmt.Errorf("shutdown timeout exceeded")
 	}
 }
+

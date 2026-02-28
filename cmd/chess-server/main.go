@@ -75,6 +75,9 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to initialize storage: %v", err)
 		}
+		if err := store.InitDB(); err != nil {
+			log.Fatalf("Failed to initialize schema: %v", err)
+		}
 		defer func() {
 			if err := store.Close(); err != nil {
 				log.Printf("Warning: failed to close storage cleanly: %v", err)
@@ -190,3 +193,4 @@ func main() {
 
 	log.Println("Servers exited")
 }
+

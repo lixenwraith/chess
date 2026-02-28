@@ -1,6 +1,7 @@
 package http
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -93,18 +94,18 @@ func (h *HTTPHandler) RegisterHandler(c *fiber.Ctx) error {
 	// Create user (temp by default via API)
 	user, err := h.svc.CreateUser(req.Username, req.Email, req.Password, false)
 	if err != nil {
+		if errors.Is(err, service.ErrAtCapacity) || errors.Is(err, service.ErrPermanentSlotsFull) {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+				Error:   "registration temporarily unavailable",
+				Code:    core.ErrResourceLimit,
+				Details: err.Error(),
+			})
+		}
 		if strings.Contains(err.Error(), "already exists") {
 			return c.Status(fiber.StatusConflict).JSON(core.ErrorResponse{
 				Error:   "user already exists",
 				Code:    core.ErrInvalidRequest,
 				Details: "username or email already taken",
-			})
-		}
-		if strings.Contains(err.Error(), "limit") || strings.Contains(err.Error(), "capacity") {
-			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
-				Error:   "registration temporarily unavailable",
-				Code:    core.ErrResourceLimit,
-				Details: err.Error(),
 			})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
@@ -262,3 +263,4 @@ func (h *HTTPHandler) LogoutHandler(c *fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{"message": "logged out"})
 }
+

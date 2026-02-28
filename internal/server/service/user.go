@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -9,6 +10,12 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lixenwraith/auth"
+)
+
+var (
+	ErrStorageDisabled    = errors.New("storage disabled")
+	ErrAtCapacity         = errors.New("at capacity")
+	ErrPermanentSlotsFull = errors.New("permanent slots full")
 )
 
 // User represents a registered user account
@@ -24,13 +31,13 @@ type User struct {
 // CreateUser creates new user with registration limits enforcement
 func (s *Service) CreateUser(username, email, password string, permanent bool) (*User, error) {
 	if s.store == nil {
-		return nil, fmt.Errorf("storage disabled")
+		return nil, ErrStorageDisabled
 	}
 
 	// Check registration limits
 	total, permCount, _, err := s.store.GetUserCounts()
 	if err != nil {
-		return nil, fmt.Errorf("failed to check user limits: %w", err)
+		return nil, fmt.Errorf("failed to get user count: %w", err)
 	}
 
 	// Determine account type
@@ -39,7 +46,7 @@ func (s *Service) CreateUser(username, email, password string, permanent bool) (
 
 	if permanent {
 		if permCount >= PermanentSlots {
-			return nil, fmt.Errorf("permanent user slots full (%d/%d)", permCount, PermanentSlots)
+			return nil, fmt.Errorf("%w (%d/%d)", ErrPermanentSlotsFull, permCount, PermanentSlots)
 		}
 		accountType = "permanent"
 	} else {
@@ -50,7 +57,7 @@ func (s *Service) CreateUser(username, email, password string, permanent bool) (
 	// Handle capacity - remove oldest temp user if at max
 	if total >= MaxUsers {
 		if err := s.removeOldestTempUser(); err != nil {
-			return nil, fmt.Errorf("at capacity and cannot make room: %w", err)
+			return nil, fmt.Errorf("%w: %v", ErrAtCapacity, err)
 		}
 	}
 
@@ -276,3 +283,4 @@ func (s *Service) CreateUserSession(userID string) (string, error) {
 
 	return sessionID, nil
 }
+

@@ -36,9 +36,9 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, devMode bool) 
 	// Initialize Fiber app
 	app := fiber.New(fiber.Config{
 		ErrorHandler: customErrorHandler,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  30 * time.Second,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 35 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	})
 
 	// Global middleware (order matters)
@@ -518,3 +518,4 @@ func (h *HTTPHandler) GetBoard(c *fiber.Ctx) error {
 
 	return c.JSON(resp.Data)
 }
+

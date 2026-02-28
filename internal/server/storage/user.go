@@ -26,9 +26,9 @@ func DefaultUserLimits() UserLimits {
 // GetUserCounts returns current user counts by type
 func (s *Store) GetUserCounts() (total, permanent, temp int, err error) {
 	query := `SELECT 
-		COUNT(*) as total,
-		SUM(CASE WHEN account_type = 'permanent' THEN 1 ELSE 0 END) as permanent,
-		SUM(CASE WHEN account_type = 'temp' THEN 1 ELSE 0 END) as temp
+	    COUNT(*) as total,
+	    COALESCE(SUM(CASE WHEN account_type = 'permanent' THEN 1 ELSE 0 END), 0) as permanent,
+	    COALESCE(SUM(CASE WHEN account_type = 'temp' THEN 1 ELSE 0 END), 0) as temp
 	FROM users`
 
 	err = s.db.QueryRow(query).Scan(&total, &permanent, &temp)
@@ -38,6 +38,7 @@ func (s *Store) GetUserCounts() (total, permanent, temp int, err error) {
 // GetOldestTempUser returns the oldest temporary user for replacement
 func (s *Store) GetOldestTempUser() (*UserRecord, error) {
 	var user UserRecord
+	var email sql.NullString
 	query := `SELECT user_id, username, email, password_hash, account_type, created_at, expires_at, last_login_at
 		FROM users 
 		WHERE account_type = 'temp'
@@ -45,13 +46,14 @@ func (s *Store) GetOldestTempUser() (*UserRecord, error) {
 		LIMIT 1`
 
 	err := s.db.QueryRow(query).Scan(
-		&user.UserID, &user.Username, &user.Email,
+		&user.UserID, &user.Username, &email,
 		&user.PasswordHash, &user.AccountType, &user.CreatedAt,
 		&user.ExpiresAt, &user.LastLoginAt,
 	)
 	if err != nil {
 		return nil, err
 	}
+	user.Email = email.String
 	return &user, nil
 }
 
@@ -165,14 +167,16 @@ func (s *Store) GetAllUsers() ([]UserRecord, error) {
 	var users []UserRecord
 	for rows.Next() {
 		var user UserRecord
+		var email sql.NullString
 		err := rows.Scan(
-			&user.UserID, &user.Username, &user.Email,
+			&user.UserID, &user.Username, &email,
 			&user.PasswordHash, &user.AccountType, &user.CreatedAt,
 			&user.ExpiresAt, &user.LastLoginAt,
 		)
 		if err != nil {
 			return nil, err
 		}
+		user.Email = email.String
 		users = append(users, user)
 	}
 
@@ -192,51 +196,57 @@ func (s *Store) UpdateUserLastLoginSync(userID string, loginTime time.Time) erro
 // GetUserByUsername retrieves user by username with case-insensitive matching
 func (s *Store) GetUserByUsername(username string) (*UserRecord, error) {
 	var user UserRecord
+	var email sql.NullString
 	query := `SELECT user_id, username, email, password_hash, account_type, created_at, expires_at, last_login_at
 		FROM users WHERE username = ? COLLATE NOCASE`
 
 	err := s.db.QueryRow(query, username).Scan(
-		&user.UserID, &user.Username, &user.Email,
+		&user.UserID, &user.Username, &email,
 		&user.PasswordHash, &user.AccountType, &user.CreatedAt,
 		&user.ExpiresAt, &user.LastLoginAt,
 	)
 	if err != nil {
 		return nil, err
 	}
+	user.Email = email.String
 	return &user, nil
 }
 
 // GetUserByEmail retrieves user by email with case-insensitive matching
 func (s *Store) GetUserByEmail(email string) (*UserRecord, error) {
 	var user UserRecord
+	var emailNull sql.NullString
 	query := `SELECT user_id, username, email, password_hash, account_type, created_at, expires_at, last_login_at
 		FROM users WHERE email = ? COLLATE NOCASE`
 
 	err := s.db.QueryRow(query, email).Scan(
-		&user.UserID, &user.Username, &user.Email,
+		&user.UserID, &user.Username, &emailNull,
 		&user.PasswordHash, &user.AccountType, &user.CreatedAt,
 		&user.ExpiresAt, &user.LastLoginAt,
 	)
 	if err != nil {
 		return nil, err
 	}
+	user.Email = emailNull.String
 	return &user, nil
 }
 
 // GetUserByID retrieves user by unique user ID
 func (s *Store) GetUserByID(userID string) (*UserRecord, error) {
 	var user UserRecord
+	var email sql.NullString
 	query := `SELECT user_id, username, email, password_hash, account_type, created_at, expires_at, last_login_at
 		FROM users WHERE user_id = ?`
 
 	err := s.db.QueryRow(query, userID).Scan(
-		&user.UserID, &user.Username, &user.Email,
+		&user.UserID, &user.Username, &email,
 		&user.PasswordHash, &user.AccountType, &user.CreatedAt,
 		&user.ExpiresAt, &user.LastLoginAt,
 	)
 	if err != nil {
 		return nil, err
 	}
+	user.Email = email.String
 	return &user, nil
 }
 

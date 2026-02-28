@@ -9,7 +9,7 @@ import (
 
 const (
 	// WaitTimeout is the maximum time a client can wait for notifications
-	WaitTimeout = 25 * time.Second
+	WaitTimeout = 30 * time.Second
 
 	// WaitChannelBuffer size for notification channels
 	WaitChannelBuffer = 1
@@ -175,3 +175,4 @@ func (w *WaitRegistry) removeWaiter(gameID string, req *WaitRequest) {
 	// Stop timer if still running
 	req.Timer.Stop()
 }
+
