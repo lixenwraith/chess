@@ -7,3 +7,4 @@ build.sh
 .chess_history
 *.wasm
 catalog.txt
+combined.txt

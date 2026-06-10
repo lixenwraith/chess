@@ -27,8 +27,8 @@ func DefaultUserLimits() UserLimits {
 func (s *Store) GetUserCounts() (total, permanent, temp int, err error) {
 	query := `SELECT 
 	    COUNT(*) as total,
-	    COALESCE(SUM(CASE WHEN account_type = 'permanent' THEN 1 ELSE 0 END), 0) as permanent,
-	    COALESCE(SUM(CASE WHEN account_type = 'temp' THEN 1 ELSE 0 END), 0) as temp
+	    COUNT(CASE WHEN account_type = 'permanent' THEN 1 END) as permanent,
+	    COUNT(CASE WHEN account_type = 'temp' THEN 1 END) as temp
 	FROM users`
 
 	err = s.db.QueryRow(query).Scan(&total, &permanent, &temp)

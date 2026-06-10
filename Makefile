@@ -10,6 +10,8 @@ GO := go
 GOROOT := $(shell go env GOROOT)
 GOFLAGS := -trimpath
 LDFLAGS := -s -w
+CGO_SERVER := CGO_ENABLED=1
+CGO_CLIENT := CGO_ENABLED=0
 
 # Build info
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -42,27 +44,29 @@ build: server client
 .PHONY: server
 server: $(SERVER_BINARY)
 
+# Build server — CGO required for go-sqlite3
 $(SERVER_BINARY): $(BINARY_DIR)
-	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(SERVER_BINARY) $(SERVER_SOURCE)
+	$(CGO_SERVER) $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(SERVER_BINARY) $(SERVER_SOURCE)
 	@echo "Built server: $(SERVER_BINARY)"
 
 # Build client only
 .PHONY: client
 client: $(CLIENT_BINARY)
 
+# Build client — pure Go, no CGO
 $(CLIENT_BINARY): $(BINARY_DIR)
-	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(CLIENT_BINARY) $(CLIENT_SOURCE)
+	$(CGO_CLIENT) $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(CLIENT_BINARY) $(CLIENT_SOURCE)
 	@echo "Built client: $(CLIENT_BINARY)"
 
 # Create bin directory
 $(BINARY_DIR):
 	@mkdir -p $(BINARY_DIR)
 
-# Build WASM client
+# Build WASM client — CGO incompatible with js/wasm target
 .PHONY: wasm
 wasm: $(WASM_DIR)
 	@echo "Building WASM client..."
-	GOOS=js GOARCH=wasm $(GO) build $(GOFLAGS) \
+	$(CGO_CLIENT) GOOS=js GOARCH=wasm $(GO) build $(GOFLAGS) \
 		-ldflags "$(LDFLAGS)" \
 		-o $(WASM_BINARY) $(CLIENT_SOURCE)
 	@cp "$(WASM_EXEC_SRC)" $(WASM_DIR)/
@@ -148,11 +152,18 @@ db-clean:
 	# ☣ DESTRUCTIVE: Removes database
 	rm -f db/chess.db db/chess.db-*
 
-# Development build (with race detector)
+# Cross-compile server for FreeBSD from Linux (requires zig or freebsd cross toolchain)
+# Usage: make server-freebsd-cross CC="zig cc -target x86_64-freebsd"
+.PHONY: server-freebsd-cross
+server-freebsd-cross: $(BINARY_DIR)
+	$(CGO_SERVER) GOOS=freebsd GOARCH=amd64 CC="$(CC)" \ $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(SERVER_BINARY) $(SERVER_SOURCE)
+	@echo "Built FreeBSD server (cross): $(SERVER_BINARY)"
+
+# Development build (with race detector) — native only, CGO required for server
 .PHONY: dev
 dev:
-	$(GO) build -race -o $(SERVER_BINARY) $(SERVER_SOURCE)
-	$(GO) build -race -o $(CLIENT_BINARY) $(CLIENT_SOURCE)
+	$(CGO_SERVER) $(GO) build -race -o $(SERVER_BINARY) $(SERVER_SOURCE)
+	$(CGO_CLIENT) $(GO) build -race -o $(CLIENT_BINARY) $(CLIENT_SOURCE)
 	@echo "Built with race detector enabled"
 
 # Clean build artifacts
