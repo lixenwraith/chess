@@ -659,6 +659,53 @@ input[type="range"]::-webkit-slider-thumb {
     cursor: pointer;
 }
 
+/* --- Modal status message (Issue 2) --- */
+.modal-message {
+    display: none;
+    margin-bottom: 1rem;
+    padding: 0.6rem 0.75rem;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    text-align: center;
+}
+
+.modal-message.show {
+    display: block;
+}
+
+.modal-message.error {
+    background: rgba(247, 118, 142, 0.12);
+    color: var(--tokyo-red);
+    border: 1px solid rgba(247, 118, 142, 0.4);
+}
+
+.modal-message.success {
+    background: rgba(158, 206, 106, 0.12);
+    color: var(--tokyo-green);
+    border: 1px solid rgba(158, 206, 106, 0.4);
+}
+
+/* --- Disabled state while a modal request is in flight (Issue 1) --- */
+.auth-form input:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.auth-tab:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.fen-input:disabled,
+input[type="range"]:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.radio-group input:disabled + span {
+    opacity: 0.5;
+}
+
 /* Mobile/Responsiveness */
 @media (max-width: 978px) {
 

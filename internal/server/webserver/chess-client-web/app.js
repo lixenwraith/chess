@@ -15,6 +15,8 @@ let gameState = {
     authToken: null,
     userId: null,
     username: null,
+    authBusy: false,
+    newGameBusy: false,
 };
 
 // Chess piece Unicode: all black pieces for better fill, white pawn due to inability to override emoji variant display
@@ -22,6 +24,26 @@ const pieceMap = {
     'p': '♙', 'r': '♜', 'n': '♞', 'b': '♝', 'q': '♛', 'k': '♚',
     'P': '♙', 'R': '♜', 'N': '♞', 'B': '♝', 'Q': '♛', 'K': '♚'
 };
+
+// How long a success message stays visible in a modal before it auto-closes
+const MODAL_SUCCESS_DISPLAY_MS = 700;
+
+// Shared helpers: show/clear a status line inside a modal. Distinct from
+// flashErrorMessage, which is not visible while a modal's backdrop is up.
+function setModalMessage(elementId, message, type = 'error') {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    el.textContent = message;
+    el.classList.remove('error', 'success');
+    el.classList.add('show', type);
+}
+
+function clearModalMessage(elementId) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    el.textContent = '';
+    el.classList.remove('show', 'error', 'success');
+}
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', async () => {
@@ -115,6 +137,20 @@ function handleAuthClick() {
     }
 }
 
+// Disables/enables every interactive control in the auth modal at once, and tracks
+// whether a login/register request is in flight (or its success message is showing).
+// Guards re-entrancy from the Enter-key handler, which bypasses individual button
+// disabled state, and stops the user editing fields or switching tabs mid-request.
+function setAuthModalBusy(busy) {
+    gameState.authBusy = busy;
+    document.getElementById('login-submit-btn').disabled = busy;
+    document.getElementById('register-submit-btn').disabled = busy;
+    document.getElementById('auth-cancel-btn').disabled = busy;
+    document.getElementById('auth-cancel-btn-2').disabled = busy;
+    document.querySelectorAll('.auth-tab').forEach(t => t.disabled = busy);
+    document.querySelectorAll('.auth-form input').forEach(i => i.disabled = busy);
+}
+
 function showAuthModal() {
     document.getElementById('auth-modal-overlay').classList.add('show');
     document.getElementById('login-identifier').focus();
@@ -127,12 +163,21 @@ function hideAuthModal() {
     document.getElementById('auth-modal-overlay').classList.remove('show');
     document.querySelectorAll('.auth-form input').forEach(input => input.value = '');
     document.removeEventListener('keydown', handleAuthModalKeydown);
+    clearModalMessage('auth-modal-message');
+    setAuthModalBusy(false);
 }
 
 function handleAuthModalKeydown(e) {
     const modal = document.getElementById('auth-modal-overlay');
     if (!modal.classList.contains('show')) return;
 
+    // While a request is in flight, block just Enter (re-submit) and Escape
+    // (close); everything else (Tab, copy shortcuts, etc.) passes through.
+    if (gameState.authBusy) {
+        if (e.key === 'Enter' || e.key === 'Escape') e.preventDefault();
+        return;
+    }
+ 
     if (e.key === 'Escape') {
         e.preventDefault();
         hideAuthModal();
@@ -153,6 +198,7 @@ function switchAuthTab(tab) {
 
     document.getElementById('login-form').style.display = tab === 'login' ? 'block' : 'none';
     document.getElementById('register-form').style.display = tab === 'register' ? 'block' : 'none';
+    clearModalMessage('auth-modal-message');
 }
 
 // Shared helper: safely parse error response regardless of Content-Type
@@ -165,93 +211,125 @@ async function parseErrorResponse(response) {
 }
 
 async function handleLogin() {
+    if (gameState.authBusy) return;
+
     const identifier = document.getElementById('login-identifier').value.trim();
     const password = document.getElementById('login-password').value;
 
     if (!identifier || !password) {
-        flashErrorMessage('Fill all fields');
+        setModalMessage('auth-modal-message', 'Fill all fields', 'error');
         return;
     }
 
-    const submitBtn = document.getElementById('login-submit-btn');
-    submitBtn.disabled = true;
+    setAuthModalBusy(true);
+    clearModalMessage('auth-modal-message');
 
+    let response;
     try {
-        const response = await fetch(`${gameState.apiUrl}/api/v1/auth/login`, {
+        response = await fetch(`${gameState.apiUrl}/api/v1/auth/login`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ identifier, password })
         });
-
-        if (!response.ok) {
-            const err = await parseErrorResponse(response);
-            flashErrorMessage(err.details || err.error || 'Login failed', 3000);
-            return;
-        }
-
-        const auth = await response.json();
-        gameState.authToken = auth.token;
-        gameState.userId = auth.userId;
-        gameState.username = auth.username;
-        localStorage.setItem('authToken', auth.token);
-        updateAuthIndicator(true);
-        hideAuthModal();
     } catch (error) {
-        flashErrorMessage('Connection failed');
-    } finally {
-        submitBtn.disabled = false;
+        const errorInfo = handleApiError('login', error);
+        setModalMessage('auth-modal-message', errorInfo.statusMessage, 'error');
+        setAuthModalBusy(false);
+        return;
     }
+
+    if (!response.ok) {
+        const err = await parseErrorResponse(response);
+        setModalMessage('auth-modal-message', err.details || err.error || 'Login failed', 'error');
+        setAuthModalBusy(false);
+        return;
+    }
+
+    let auth;
+    try {
+        auth = await response.json();
+    } catch (error) {
+        console.error('Login: response OK but JSON parse failed:', error);
+        setModalMessage('auth-modal-message', 'Unexpected response from server', 'error');
+        setAuthModalBusy(false);
+        return;
+    }
+
+    gameState.authToken = auth.token;
+    gameState.userId = auth.userId;
+    gameState.username = auth.username;
+    localStorage.setItem('authToken', auth.token);
+    updateAuthIndicator(true);
+
+    setModalMessage('auth-modal-message', `Logged in as ${auth.username}`, 'success');
+    setTimeout(hideAuthModal, MODAL_SUCCESS_DISPLAY_MS);
 }
 
 async function handleRegister() {
+    if (gameState.authBusy) return;
+
     const username = document.getElementById('register-username').value.trim();
     const email = document.getElementById('register-email').value.trim();
     const password = document.getElementById('register-password').value;
 
     if (!username || !password) {
-        flashErrorMessage('Username and password required');
+        setModalMessage('auth-modal-message', 'Username and password required', 'error');
         return;
     }
     if (password.length < 8) {
-        flashErrorMessage('Password min 8 chars');
+        setModalMessage('auth-modal-message', 'Password min 8 chars', 'error');
         return;
     }
     if (!/[a-zA-Z]/.test(password) || !/[0-9]/.test(password)) {
-        flashErrorMessage('Password needs a letter and number');
+        setModalMessage('auth-modal-message', 'Password needs a letter and number', 'error');
         return;
     }
 
-    const submitBtn = document.getElementById('register-submit-btn');
-    submitBtn.disabled = true;
+    setAuthModalBusy(true);
+    clearModalMessage('auth-modal-message');
 
+    const body = { username, password };
+    if (email) body.email = email;
+
+    let response;
     try {
-        const body = { username, password };
-        if (email) body.email = email;
-
-        const response = await fetch(`${gameState.apiUrl}/api/v1/auth/register`, {
+        response = await fetch(`${gameState.apiUrl}/api/v1/auth/register`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
         });
-
-        if (!response.ok) {
-            const err = await parseErrorResponse(response);
-            flashErrorMessage(err.details || err.error || 'Registration failed', 3000);
-            return;
-        }
-
-        const auth = await response.json();
-        gameState.authToken = auth.token;
-        gameState.userId = auth.userId;
-        gameState.username = auth.username;
-        localStorage.setItem('authToken', auth.token);
-        updateAuthIndicator(true);
-        hideAuthModal();
     } catch (error) {
-        flashErrorMessage('Connection failed');
-    } finally {
-        submitBtn.disabled = false;
+        const errorInfo = handleApiError('register', error);
+        setModalMessage('auth-modal-message', errorInfo.statusMessage, 'error');
+        setAuthModalBusy(false);
+        return;
     }
+
+    if (!response.ok) {
+        const err = await parseErrorResponse(response);
+        setModalMessage('auth-modal-message', err.details || err.error || 'Registration failed', 'error');
+        setAuthModalBusy(false);
+        return;
+    }
+
+    let auth;
+    try {
+        auth = await response.json();
+    } catch (error) {
+        console.error('Register: response OK but JSON parse failed:', error);
+        setModalMessage('auth-modal-message', 'Unexpected response from server', 'error');
+        setAuthModalBusy(false);
+        return;
+    }
+
+    gameState.authToken = auth.token;
+    gameState.userId = auth.userId;
+    gameState.username = auth.username;
+    localStorage.setItem('authToken', auth.token);
+    updateAuthIndicator(true);
+
+    setModalMessage('auth-modal-message', `Account created, welcome ${auth.username}`, 'success');
+    setTimeout(hideAuthModal, MODAL_SUCCESS_DISPLAY_MS);
 }
 
 async function handleLogout() {
@@ -375,6 +453,19 @@ function updateTurnIndicator(state, turn) {
     indicator.setAttribute('data-status', tooltipText);
 }
 
+// Disables/enables every interactive control in the new-game modal at once, and
+// tracks whether a create-game request is in flight (or its success message is
+// showing). Same rationale as setAuthModalBusy.
+function setNewGameModalBusy(busy) {
+    gameState.newGameBusy = busy;
+    document.getElementById('start-game-btn').disabled = busy;
+    document.getElementById('cancel-btn').disabled = busy;
+    document.getElementById('computer-level').disabled = busy;
+    document.getElementById('search-time').disabled = busy;
+    document.getElementById('starting-fen').disabled = busy;
+    document.querySelectorAll('input[name="player-color"]').forEach(r => r.disabled = busy);
+}
+
 function showNewGameModal() {
     const modal = document.getElementById('modal-overlay');
     modal.classList.add('show');
@@ -385,6 +476,8 @@ function hideNewGameModal() {
     const modal = document.getElementById('modal-overlay');
     modal.classList.remove('show');
     teardownModalKeyboardNav();
+    clearModalMessage('new-game-modal-message');
+    setNewGameModalBusy(false);
 }
 
 function setupModalKeyboardNav() {
@@ -399,6 +492,14 @@ function handleModalKeydown(e) {
     const modal = document.getElementById('modal-overlay');
     if (!modal.classList.contains('show')) return;
 
+    // While a request is in flight, block just Enter (re-submit) and Escape
+    // (close); the color/level/time shortcuts fall through as no-ops since
+    // those controls are disabled and there's nothing else bound to those keys.
+    if (gameState.newGameBusy) {
+        if (e.key === 'Enter' || e.key === 'Escape') e.preventDefault();
+        return;
+    }
+ 
     switch(e.key) {
         case 'Enter':
             e.preventDefault();
@@ -474,14 +575,16 @@ function copyHistory() {
 }
 
 async function startNewGame() {
+    if (gameState.newGameBusy) return;
+
     const playerColor = document.querySelector('input[name="player-color"]:checked').value;
     const computerLevel = parseInt(document.getElementById('computer-level').value);
     const searchTime = parseInt(document.getElementById('search-time').value);
     const startingFEN = document.getElementById('starting-fen').value.trim();
-    gameState.isPlayerWhite = (playerColor === 'white');
+    const willBePlayerWhite = (playerColor === 'white');
 
-    const whiteConfig = gameState.isPlayerWhite ? { type: 1 } : { type: 2, level: computerLevel, searchTime: searchTime };
-    const blackConfig = gameState.isPlayerWhite ? { type: 2, level: computerLevel, searchTime: searchTime } : { type: 1 };
+    const whiteConfig = willBePlayerWhite ? { type: 1 } : { type: 2, level: computerLevel, searchTime: searchTime };
+    const blackConfig = willBePlayerWhite ? { type: 2, level: computerLevel, searchTime: searchTime } : { type: 1 };
 
     const requestBody = {
         white: whiteConfig,
@@ -493,34 +596,51 @@ async function startNewGame() {
         requestBody.fen = startingFEN;
     }
 
+    setNewGameModalBusy(true);
+    clearModalMessage('new-game-modal-message');
+
+    let response;
     try {
-        const response = await authFetch(`${gameState.apiUrl}/api/v1/games`, {
+        response = await authFetch(`${gameState.apiUrl}/api/v1/games`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(requestBody)
         });
-        if (!response.ok) {
-            const errorInfo = handleApiError('create game', null, response);
-            throw new Error(errorInfo.statusMessage);
-        }
-
-        const game = await response.json();
-        gameState.gameId = game.gameId;
-        gameState.moveList = [];
-        hideNewGameModal();
-        initializeBoard();
-        updateGameDisplay(game);
-        document.getElementById('undo-btn').disabled = true;
-        if (!gameState.isPlayerWhite) triggerComputerMove();
-
     } catch (error) {
-        if (error.message === 'Failed to fetch') {
-            handleApiError('create game', error);
-        } else {
-            flashErrorMessage(error.message);
-        }
-        updateTurnIndicator('', '');
+        const errorInfo = handleApiError('create game', error);
+        setModalMessage('new-game-modal-message', errorInfo.statusMessage, 'error');
+        setNewGameModalBusy(false);
+        return;
     }
+
+    if (!response.ok) {
+        const errorInfo = handleApiError('create game', null, response);
+        setModalMessage('new-game-modal-message', errorInfo.statusMessage, 'error');
+        setNewGameModalBusy(false);
+        return;
+    }
+
+    let game;
+    try {
+        game = await response.json();
+    } catch (error) {
+        console.error('Create game: response OK but JSON parse failed:', error);
+        setModalMessage('new-game-modal-message', 'Unexpected response from server', 'error');
+        setNewGameModalBusy(false);
+        return;
+    }
+
+    // isPlayerWhite is only committed to global state now that success is confirmed
+    gameState.isPlayerWhite = willBePlayerWhite;
+    gameState.gameId = game.gameId;
+    gameState.moveList = [];
+    initializeBoard();
+    updateGameDisplay(game);
+    document.getElementById('undo-btn').disabled = true;
+    if (!gameState.isPlayerWhite) triggerComputerMove();
+
+    setModalMessage('new-game-modal-message', `Game started - you play ${willBePlayerWhite ? 'White' : 'Black'}`, 'success');
+    setTimeout(hideNewGameModal, MODAL_SUCCESS_DISPLAY_MS);
 }
 
 function initializeBoard() {
