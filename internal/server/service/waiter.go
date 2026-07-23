@@ -1,6 +1,7 @@
 package service
 
 import (
+	"chess/internal/server/core"
 	"context"
 	"fmt"
 	"sync"
@@ -84,24 +85,19 @@ func (w *WaitRegistry) RegisterWait(gameID string, moveCount int, ctx context.Co
 }
 
 // NotifyGame notifies all clients waiting on a game about state change
-func (w *WaitRegistry) NotifyGame(gameID string, currentMoveCount int) {
+func (w *WaitRegistry) NotifyGame(gameID string, currentMoveCount int, state core.State) {
 	w.mu.RLock()
 	waitList := w.waiters[gameID]
 	w.mu.RUnlock()
-
 	if len(waitList) == 0 {
 		return
 	}
-
-	// Non-blocking notification to all waiters
+	settled := state != core.StateOngoing && state != core.StatePending
 	for _, req := range waitList {
-		// Only notify if move count changed
-		if req.MoveCount != currentMoveCount {
+		if settled || req.MoveCount != currentMoveCount {
 			select {
 			case req.Notify <- struct{}{}:
-				// Notification sent
 			default:
-				// Channel full or closed, skip slow client
 			}
 		}
 	}
@@ -175,4 +171,3 @@ func (w *WaitRegistry) removeWaiter(gameID string, req *WaitRequest) {
 	// Stop timer if still running
 	req.Timer.Stop()
 }
-

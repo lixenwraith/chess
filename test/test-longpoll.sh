@@ -125,7 +125,7 @@ test_multiple_waiters() {
 
 # Test 3: Timeout behavior
 test_timeout() {
-    log_test "Timeout behavior (this takes 25 seconds)"
+    log_test "Timeout behavior (this takes 30 seconds)"
 
     # Create a game
     GAME_ID=$(create_game 1 1)
@@ -139,10 +139,10 @@ test_timeout() {
     elapsed=$((end_time - start_time))
 
     # Check timeout was ~25 seconds
-    if [ "$elapsed" -ge 24 ] && [ "$elapsed" -le 26 ]; then
-        log_info "✓ Request timed out after ~25 seconds"
+    if [ "$elapsed" -ge 29 ] && [ "$elapsed" -le 31 ]; then
+        log_info "✓ Request timed out after ~30 seconds"
     else
-        log_error "✗ Timeout was $elapsed seconds (expected ~25)"
+        log_error "✗ Timeout was $elapsed seconds (expected ~30)"
         exit 1
     fi
 

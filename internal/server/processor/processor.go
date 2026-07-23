@@ -114,7 +114,9 @@ func (p *Processor) isMoveSafe(move string) bool {
 	return true
 }
 
-// handleCreateGame creates a new game and triggers computer move if needed
+// handleCreateGame creates a new game. The initial FEN is classified BEFORE
+// persisting: a terminal initial position is terminal in the creation response,
+// and engine failure fails the request instead of creating a half-valid game.
 func (p *Processor) handleCreateGame(cmd Command) ProcessorResponse {
 	args, ok := cmd.Args.(core.CreateGameRequest)
 	if !ok {
@@ -122,10 +124,10 @@ func (p *Processor) handleCreateGame(cmd Command) ProcessorResponse {
 	}
 
 	// Enforce minimum searchTime for computer players
-	if args.White.Type == core.PlayerComputer && args.White.SearchTime < 100 {
+	if args.White.Type == core.PlayerComputer && args.White.SearchTime < minSearchTime {
 		args.White.SearchTime = minSearchTime
 	}
-	if args.Black.Type == core.PlayerComputer && args.Black.SearchTime < 100 {
+	if args.Black.Type == core.PlayerComputer && args.Black.SearchTime < minSearchTime {
 		args.Black.SearchTime = minSearchTime
 	}
 
@@ -138,10 +140,9 @@ func (p *Processor) handleCreateGame(cmd Command) ProcessorResponse {
 		)
 	}
 
-	// Generate game ID
 	gameID := p.svc.GenerateGameID()
 
-	// Validate and canonicalize FEN if provided
+	// Validate FEN safety, then classify via engine
 	initialFEN := board.StartingFEN
 	if args.FEN != "" {
 		if !p.isFENSafe(args.FEN) {
@@ -151,16 +152,18 @@ func (p *Processor) handleCreateGame(cmd Command) ProcessorResponse {
 	}
 
 	p.mu.Lock()
-	p.validationEng.NewGame()
-	p.validationEng.SetPosition(initialFEN, []string{})
-	validatedFEN, err := p.validationEng.GetFEN()
+	err := p.validationEng.NewGame()
+	var validatedFEN string
+	initialState := core.StateOngoing
+	if err == nil {
+		validatedFEN, initialState, err = p.classifyLocked(initialFEN)
+	}
 	p.mu.Unlock()
-
 	if err != nil {
-		return p.errorResponse(fmt.Sprintf("invalid FEN: %v", err), core.ErrInvalidRequest)
+		return p.errorResponse(fmt.Sprintf("engine validation failed: %v", err), core.ErrInternalError)
 	}
 
-	// Parse to get starting turn
+	// Parse canonical FEN to get starting turn
 	b, err := board.ParseFEN(validatedFEN)
 	if err != nil {
 		return p.errorResponse(fmt.Sprintf("FEN parse error: %v", err), core.ErrInvalidRequest)
@@ -170,39 +173,33 @@ func (p *Processor) handleCreateGame(cmd Command) ProcessorResponse {
 	whitePlayer := core.NewPlayer(args.White, core.ColorWhite)
 	blackPlayer := core.NewPlayer(args.Black, core.ColorBlack)
 
-	// FIX: Only assign authenticated user to ONE human slot
-	// If both are human, authenticated user gets white; black remains unclaimed
+	// Only assign authenticated user to ONE human slot.
+	// If both are human, authenticated user gets white; black remains unclaimed.
 	if cmd.UserID != "" {
 		if args.White.Type == core.PlayerHuman {
 			whitePlayer.ID = cmd.UserID
 			whitePlayer.ClaimedBy = cmd.UserID
 		} else if args.Black.Type == core.PlayerHuman {
-			// Only claim black if white is not human (i.e., H vs C scenario)
 			blackPlayer.ID = cmd.UserID
 			blackPlayer.ClaimedBy = cmd.UserID
 		}
 	}
 
-	// Create game in service with fully-formed players
 	if err = p.svc.CreateGame(gameID, whitePlayer, blackPlayer, validatedFEN, b.Turn()); err != nil {
 		return p.errorResponse(fmt.Sprintf("failed to create game: %v", err), core.ErrInternalError)
 	}
+	if initialState != core.StateOngoing {
+		p.svc.UpdateGameState(gameID, initialState)
+	}
 
-	// Check if the initial FEN represents a completed game
-	p.checkGameEnd(gameID, validatedFEN, core.OppositeColor(b.Turn()))
-
-	// Get created game
 	g, err := p.svc.GetGame(gameID)
 	if err != nil {
 		return p.errorResponse("game creation failed", core.ErrInternalError)
 	}
 
-	// Build response
-	response := p.buildGameResponse(gameID, g)
-
 	return ProcessorResponse{
 		Success: true,
-		Data:    response,
+		Data:    p.buildGameResponse(gameID, g),
 	}
 }
 
@@ -264,7 +261,11 @@ func (p *Processor) handleGetGame(cmd Command) ProcessorResponse {
 	}
 }
 
-// handleMakeMove processes human moves with authorization
+// handleMakeMove processes human moves with authorization, and the "cccc"
+// computer-move trigger. Post-move classification runs BEFORE the move is
+// applied; move + final state + metadata commit atomically with one
+// notification, so a waking long-poller can never observe "ongoing" on a
+// terminal position.
 func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 	args, ok := cmd.Args.(core.MoveRequest)
 	if !ok {
@@ -332,11 +333,8 @@ func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 		}
 		// Anonymous users can also claim by making a move (slot remains "unclaimed" but move proceeds)
 	} else if cmd.UserID != "" && slotOwner != cmd.UserID {
-		// Slot claimed by different user
 		return p.errorResponse("not your turn - slot claimed by another player", core.ErrUnauthorized)
 	}
-	// If slotOwner == cmd.UserID, authorized to proceed
-	// If slotOwner != "" && cmd.UserID == "", anonymous trying to move claimed slot - block
 	if slotOwner != "" && cmd.UserID == "" {
 		return p.errorResponse("slot claimed - authentication required", core.ErrUnauthorized)
 	}
@@ -349,60 +347,53 @@ func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 
 	currentFEN := g.CurrentFEN()
 
-	// Validate move with engine
+	// Validate move and classify the resulting position in one engine session
 	p.mu.Lock()
-	p.validationEng.SetPosition(currentFEN, []string{move})
-	newFEN, err := p.validationEng.GetFEN()
+	err = p.validationEng.SetPosition(currentFEN, []string{move})
+	var newFEN string
+	finalState := core.StateOngoing
+	if err == nil {
+		newFEN, finalState, err = p.classifyCurrentLocked()
+	}
 	p.mu.Unlock()
-
-	if err != nil || newFEN == currentFEN {
+	if err != nil {
+		// Game untouched at pre-move position; retry runs on a respawned engine
+		return p.errorResponse("engine unavailable", core.ErrInternalError)
+	}
+	if newFEN == currentFEN {
 		return p.errorResponse("illegal move", core.ErrInvalidMove)
 	}
 
-	// Apply move to game state via service
-	if err = p.svc.ApplyMove(cmd.GameID, move, newFEN); err != nil {
+	// Atomic commit: move + state + metadata, single notification
+	if err = p.svc.ApplyMoveWithState(cmd.GameID, move, newFEN, finalState, &game.MoveResult{
+		Move:        move,
+		PlayerColor: currentColor,
+		GameState:   finalState,
+	}); err != nil {
 		return p.errorResponse(fmt.Sprintf("failed to apply move: %v", err), core.ErrInternalError)
 	}
 
-	// Store move result metadata
-	p.svc.SetLastMoveResult(cmd.GameID, &game.MoveResult{
-		Move:        move,
-		PlayerColor: currentColor,
-		GameState:   core.StateOngoing,
-	})
-
-	// Check for checkmate/stalemate
-	p.checkGameEnd(cmd.GameID, newFEN, currentColor)
-
-	// Get updated game
+	// buildGameResponse populates LastMove from the committed LastResult
 	g, _ = p.svc.GetGame(cmd.GameID)
-	response := p.buildGameResponse(cmd.GameID, g)
-
-	// Add human move info
-	response.LastMove = &core.MoveInfo{
-		Move:        move,
-		PlayerColor: currentColor.String(),
-	}
-
 	return ProcessorResponse{
 		Success: true,
-		Data:    response,
+		Data:    p.buildGameResponse(cmd.GameID, g),
 	}
 }
 
-// handleUndoMove reverts game state
+// handleUndoMove reverts game state. StateStuck is deliberately permitted:
+// undo -> StateOngoing is the recovery path for engine failures. Terminal
+// states are also permitted so a finished game can be rewound. Any reverted-to
+// snapshot had legal moves made from it, so resetting to Ongoing is sound
+// without re-classification.
 func (p *Processor) handleUndoMove(cmd Command) ProcessorResponse {
 	g, err := p.svc.GetGame(cmd.GameID)
 	if err != nil {
 		return p.errorResponse("game not found", core.ErrGameNotFound)
 	}
 
-	// Check game state
-	switch g.State() {
-	case core.StatePending:
+	if g.State() == core.StatePending {
 		return p.errorResponse("cannot undo while computer move is in progress", core.ErrInvalidRequest)
-	case core.StateStuck:
-		return p.errorResponse("cannot undo in stuck game", core.ErrInvalidRequest)
 	}
 
 	args := core.UndoRequest{Count: 1}
@@ -423,11 +414,9 @@ func (p *Processor) handleUndoMove(cmd Command) ProcessorResponse {
 	p.svc.UpdateGameState(cmd.GameID, core.StateOngoing)
 
 	g, _ = p.svc.GetGame(cmd.GameID)
-	response := p.buildGameResponse(cmd.GameID, g)
-
 	return ProcessorResponse{
 		Success: true,
-		Data:    response,
+		Data:    p.buildGameResponse(cmd.GameID, g),
 	}
 }
 
@@ -474,64 +463,55 @@ func (p *Processor) handleGetBoard(cmd Command) ProcessorResponse {
 	}
 }
 
-// triggerComputerMove initiates async engine calculation
+// triggerComputerMove initiates async engine calculation. The callback
+// re-classifies via the validation engine: worker output is never trusted for
+// end-state determination, and no-move results are verified against the
+// position rather than the IsMate info-line byproduct.
 func (p *Processor) triggerComputerMove(gameID string, g *game.Game) {
 	fen := g.CurrentFEN()
 	color := g.NextTurnColor()
 	player := g.NextPlayer()
 
-	// Submit to queue with callback and computer config
 	p.queue.SubmitAsync(gameID, fen, color, player, func(result EngineResult) {
-		// Check if game still exists
 		currentGame, err := p.svc.GetGame(gameID)
-		if err != nil {
-			return // Game was deleted
+		if err != nil || currentGame.State() != core.StatePending {
+			return // Deleted, or state resolved elsewhere
 		}
-
-		// Only process if still in pending state
-		if currentGame.State() != core.StatePending {
-			return
-		}
-
 		if result.Error != nil {
-			log.Printf("Engine error for game %s: %v", gameID, result.Error)
+			log.Printf("engine error for game %s: %v", gameID, result.Error)
 			p.svc.UpdateGameState(gameID, core.StateStuck)
 			return
 		}
-
-		// Use centralized state determination
-		state := p.determineGameEndState(core.OppositeColor(color), &engine.SearchResult{
-			BestMove: result.Move,
-			Score:    result.Score,
-			Depth:    result.Depth,
-			IsMate:   result.IsMate,
-			MateIn:   result.MateIn,
-		})
-
-		if state != core.StateOngoing {
+		if result.Move == "" || result.Move == "(none)" {
+			// Worker says no legal moves; verify against the validation engine.
+			p.mu.Lock()
+			_, state, cerr := p.classifyLocked(fen)
+			p.mu.Unlock()
+			if cerr != nil || state == core.StateOngoing {
+				p.svc.UpdateGameState(gameID, core.StateStuck) // engines disagree
+				return
+			}
 			p.svc.UpdateGameState(gameID, state)
 			return
 		}
 
-		// Apply computer move
 		p.mu.Lock()
-		p.validationEng.SetPosition(fen, []string{result.Move})
-		newFEN, _ := p.validationEng.GetFEN()
+		aerr := p.validationEng.SetPosition(fen, []string{result.Move})
+		var newFEN string
+		finalState := core.StateOngoing
+		if aerr == nil {
+			newFEN, finalState, aerr = p.classifyCurrentLocked()
+		}
 		p.mu.Unlock()
+		if aerr != nil || newFEN == fen {
+			p.svc.UpdateGameState(gameID, core.StateStuck)
+			return
+		}
 
-		p.svc.ApplyMove(gameID, result.Move, newFEN)
-		p.svc.SetLastMoveResult(gameID, &game.MoveResult{
-			Move:        result.Move,
-			PlayerColor: color,
-			Score:       result.Score,
-			Depth:       result.Depth,
+		p.svc.ApplyMoveWithState(gameID, result.Move, newFEN, finalState, &game.MoveResult{
+			Move: result.Move, PlayerColor: color,
+			Score: result.Score, Depth: result.Depth, GameState: finalState,
 		})
-
-		// Reset to ongoing first
-		p.svc.UpdateGameState(gameID, core.StateOngoing)
-
-		// Check if opponent is checkmated
-		p.checkGameEnd(gameID, newFEN, color)
 	})
 }
 
@@ -554,18 +534,58 @@ func (p *Processor) determineGameEndState(lastMoveBy core.Color, searchResult *e
 	return core.StateOngoing
 }
 
-// checkGameEnd determines if game has ended
-func (p *Processor) checkGameEnd(gameID, fen string, lastMoveBy core.Color) {
-	p.mu.Lock()
-	p.validationEng.SetPosition(fen, []string{})
-	search, _ := p.validationEng.Search(100)
-	p.mu.Unlock()
-
-	// Use centralized state determination
-	state := p.determineGameEndState(lastMoveBy, search)
-	if state != core.StateOngoing {
-		p.svc.UpdateGameState(gameID, state)
+// classifyCurrentLocked classifies whatever position is loaded in the
+// validation engine. Caller holds p.mu, immediately after a SetPosition.
+func (p *Processor) classifyCurrentLocked() (fen string, state core.State, err error) {
+	diag, err := p.validationEng.Diagnose()
+	if err != nil {
+		return "", core.StateOngoing, err
 	}
+	legal, err := p.validationEng.HasLegalMoves()
+	if err != nil {
+		return "", core.StateOngoing, err
+	}
+	if legal {
+		return diag.FEN, core.StateOngoing, nil
+	}
+	if !diag.InCheck {
+		return diag.FEN, core.StateStalemate, nil
+	}
+	b, err := board.ParseFEN(diag.FEN)
+	if err != nil {
+		return "", core.StateOngoing, err
+	}
+	if b.Turn() == core.ColorWhite {
+		return diag.FEN, core.StateBlackWins, nil
+	}
+	return diag.FEN, core.StateWhiteWins, nil
+}
+
+// classifyLocked sets a position from fen and classifies it. Caller holds p.mu.
+func (p *Processor) classifyLocked(fen string) (string, core.State, error) {
+	if err := p.validationEng.SetPosition(fen, nil); err != nil {
+		return "", core.StateOngoing, err
+	}
+	return p.classifyCurrentLocked()
+}
+
+// checkGameEnd: retry once (second attempt runs on a respawned process), then
+// fail SAFE to StateStuck. Leaving a possibly-terminal position Ongoing is the
+// original bug class; Stuck is now recoverable via undo (see handleUndoMove).
+func (p *Processor) checkGameEnd(gameID, fen string) {
+	for attempt := 0; attempt < 2; attempt++ {
+		p.mu.Lock()
+		_, state, err := p.classifyLocked(fen)
+		p.mu.Unlock()
+		if err == nil {
+			if state != core.StateOngoing {
+				p.svc.UpdateGameState(gameID, state)
+			}
+			return
+		}
+		log.Printf("game %s: end-state check attempt %d failed: %v", gameID, attempt+1, err)
+	}
+	p.svc.UpdateGameState(gameID, core.StateStuck)
 }
 
 // buildGameResponse constructs standard game response

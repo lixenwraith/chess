@@ -333,9 +333,10 @@ func (h *HTTPHandler) GetGame(c *fiber.Ctx) error {
 	}
 
 	currentMoveCount := len(g.Moves())
-
+	st := g.State()
+	settled := st != core.StateOngoing && st != core.StatePending
 	// If move count already different, return immediately
-	if moveCount != currentMoveCount {
+	if moveCount != currentMoveCount || settled {
 		cmd := processor.NewGetGameCommand(gameID)
 		resp := h.proc.Execute(cmd)
 		if !resp.Success {
@@ -518,4 +519,3 @@ func (h *HTTPHandler) GetBoard(c *fiber.Ctx) error {
 
 	return c.JSON(resp.Data)
 }
-

@@ -12,7 +12,7 @@ Central command handler containing business logic. Single `Execute(Command)` ent
 In-memory state storage with authentication support. Thread-safe game map protected by RWMutex. Manages game lifecycle, snapshots, player configuration, user accounts, and JWT token generation. Coordinates with storage layer for persistence of both games and users.
 
 #### Long-Polling Registry (`internal/service/waiter.go`)
-Manages clients waiting for game state changes via HTTP long-polling. Tracks move counts per client, sends notifications on state changes, enforces 25-second timeout. Non-blocking notification pattern handles slow clients gracefully. Coordinates with service layer for game updates and deletion events.
+Manages clients waiting for game state changes via HTTP long-polling. Tracks move counts per client, sends notifications on state changes, enforces 30-second timeout. Non-blocking notification pattern handles slow clients gracefully. Coordinates with service layer for game updates and deletion events.
 
 #### Authentication Module (`internal/service/user.go`, `internal/http/auth.go`)
 - **Password Hashing**: Argon2id for secure password storage
@@ -72,7 +72,7 @@ SQLite persistence with async writes for games, synchronous writes for authentic
 1. Client sends `GET /games/{id}?wait=true&moveCount=N`
 2. Handler creates context from HTTP connection
 3. Registers wait with WaitRegistry using game ID and move count
-4. If game state unchanged, blocks up to 25 seconds
+4. If game state unchanged, blocks up to 30 seconds
 5. On any game update, NotifyGame sends to all waiters
 6. Returns immediately with current state
 7. Client disconnection cancels wait via context

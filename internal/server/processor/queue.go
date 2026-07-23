@@ -3,6 +3,7 @@ package processor
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -69,31 +70,27 @@ func (q *EngineQueue) start() {
 // worker processes engine tasks
 func (q *EngineQueue) worker(id int) {
 	defer q.wg.Done()
-
-	// Each worker gets its own engine instance
-	eng, err := engine.New()
-	if err != nil {
-		fmt.Printf("Worker %d failed to initialize engine: %v\n", id, err)
-		return
+	var eng *engine.UCI
+	for {
+		var err error
+		if eng, err = engine.New(); err == nil {
+			break
+		}
+		log.Printf("worker %d: engine init failed: %v; retrying", id, err)
+		select {
+		case <-q.ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
 	}
 	defer eng.Close()
-
 	for {
 		select {
 		case task, ok := <-q.tasks:
 			if !ok {
-				return // Channel closed
+				return
 			}
-
-			result := q.processTask(eng, task)
-
-			// Send result if receiver still listening
-			select {
-			case task.Response <- result:
-			case <-time.After(15 * time.Millisecond):
-				// Receiver abandoned, discard result
-			}
-
+			task.Response <- q.processTask(eng, task) // Response is buffered(1); never blocks
 		case <-q.ctx.Done():
 			return
 		}
@@ -102,45 +99,36 @@ func (q *EngineQueue) worker(id int) {
 
 // processTask executes a single engine calculation
 func (q *EngineQueue) processTask(eng *engine.UCI, task EngineTask) EngineResult {
-	result := EngineResult{
-		GameID: task.GameID,
+	result := EngineResult{GameID: task.GameID}
+	if err := eng.NewGame(); err != nil {
+		result.Error = err
+		return result
 	}
-
-	// Apply computer configuration if provided
 	if task.Player.Type == core.PlayerComputer {
-		eng.SetSkillLevel(task.Player.Level)
+		if err := eng.SetSkillLevel(task.Player.Level); err != nil {
+			result.Error = err
+			return result
+		}
 	}
-
-	// Setup position
-	eng.SetPosition(task.FEN, []string{})
-
-	// Determine search time
-	searchTime := 1000 // Default 1 second
+	if err := eng.SetPosition(task.FEN, nil); err != nil {
+		result.Error = err
+		return result
+	}
+	searchTime := 1000
 	if task.Player.Type == core.PlayerComputer && task.Player.SearchTime > 0 {
 		searchTime = task.Player.SearchTime
 	}
-
-	// Search for best move
 	search, err := eng.Search(searchTime)
 	if err != nil {
-		result.Error = fmt.Errorf("engine search failed: %v", err)
+		result.Error = fmt.Errorf("engine search failed: %w", err)
 		return result
 	}
-
-	// Check for no legal moves
 	if search.BestMove == "" || search.BestMove == "(none)" {
-		result.Move = ""
-		result.IsMate = search.IsMate
-		result.MateIn = search.MateIn
+		result.IsMate, result.MateIn = search.IsMate, search.MateIn
 		return result
 	}
-
-	result.Move = search.BestMove
-	result.Score = search.Score
-	result.Depth = search.Depth
-	result.IsMate = search.IsMate
-	result.MateIn = search.MateIn
-
+	result.Move, result.Score, result.Depth = search.BestMove, search.Score, search.Depth
+	result.IsMate, result.MateIn = search.IsMate, search.MateIn
 	return result
 }
 
@@ -159,32 +147,22 @@ func (q *EngineQueue) Submit(task EngineTask) error {
 // SubmitAsync submits a task without blocking for result
 func (q *EngineQueue) SubmitAsync(gameID, fen string, color core.Color, player *core.Player, callback func(EngineResult)) error {
 	respChan := make(chan EngineResult, 1)
-
-	task := EngineTask{
-		GameID:   gameID,
-		FEN:      fen,
-		Color:    color,
-		Player:   player,
-		Response: respChan,
-	}
-
-	if err := q.Submit(task); err != nil {
+	if err := q.Submit(EngineTask{GameID: gameID, FEN: fen, Color: color, Player: player, Response: respChan}); err != nil {
 		return err
 	}
-
-	// Handle result in background
+	budget := 1000
+	if player.Type == core.PlayerComputer && player.SearchTime > 0 {
+		budget = player.SearchTime
+	}
+	wait := time.Duration(budget)*time.Millisecond*2 + 30*time.Second // search budget + queue-wait headroom
 	go func() {
 		select {
 		case result := <-respChan:
 			callback(result)
-		case <-time.After(5 * time.Second):
-			callback(EngineResult{
-				GameID: gameID,
-				Error:  fmt.Errorf("engine timeout"),
-			})
+		case <-time.After(wait):
+			callback(EngineResult{GameID: gameID, Error: fmt.Errorf("engine timeout")})
 		}
 	}()
-
 	return nil
 }
 
@@ -206,4 +184,3 @@ func (q *EngineQueue) Shutdown(timeout time.Duration) error {
 		return fmt.Errorf("shutdown timeout exceeded")
 	}
 }
-

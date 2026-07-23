@@ -225,27 +225,30 @@ test_case "2.3: Login with Username"
 RESPONSE=$(api_request POST "$API_URL/auth/login" \
     -H "Content-Type: application/json" \
     -d "{\"identifier\": \"$TEST_USER1\", \"password\": \"$TEST_PASS1\"}")
-TOKEN_ALICE=$(echo "$RESPONSE" | jq -r '.token' 2>/dev/null)
+TOKEN_ALICE_S1=$(echo "$RESPONSE" | jq -r '.token' 2>/dev/null)   # kept for 2.4b
 USER_ID_ALICE=$(echo "$RESPONSE" | jq -r '.userId' 2>/dev/null)
-if [ -n "$TOKEN_ALICE" ] && [ "$TOKEN_ALICE" != "null" ]; then
-    echo -e "${GREEN}  ✓ Login successful for $TEST_USER1${NC}"
-    ((PASS++))
+if [ -n "$TOKEN_ALICE_S1" ] && [ "$TOKEN_ALICE_S1" != "null" ]; then
+    echo -e "${GREEN}  ✓ Login successful for $TEST_USER1${NC}"; ((PASS++))
 else
-    echo -e "${RED}  ✗ Login failed${NC}"
-    ((FAIL++))
+    echo -e "${RED}  ✗ Login failed${NC}"; ((FAIL++))
 fi
 
-test_case "2.4: Login with Email"
+test_case "2.4: Login with Email (re-login: supersedes previous session)"
 RESPONSE=$(api_request POST "$API_URL/auth/login" \
     -H "Content-Type: application/json" \
     -d "{\"identifier\": \"$TEST_EMAIL1\", \"password\": \"$TEST_PASS1\"}")
-if echo "$RESPONSE" | jq -r '.token' 2>/dev/null | grep -q "^ey"; then
-    echo -e "${GREEN}  ✓ Email login successful${NC}"
-    ((PASS++))
+TOKEN_ALICE=$(echo "$RESPONSE" | jq -r '.token' 2>/dev/null)      # ONLY this token is valid from here on
+if echo "$TOKEN_ALICE" | grep -q "^ey"; then
+    echo -e "${GREEN}  ✓ Email login successful${NC}"; ((PASS++))
 else
-    echo -e "${RED}  ✗ Email login failed${NC}"
-    ((FAIL++))
+    echo -e "${RED}  ✗ Email login failed${NC}"; ((FAIL++))
 fi
+
+test_case "2.4b: Single-Session Enforcement (prior token invalidated by re-login)"
+STATUS=$(api_request GET "$API_URL/auth/me" \
+    -o /dev/null -w "%{http_code}" \
+    -H "Authorization: Bearer $TOKEN_ALICE_S1")
+assert_status 401 "$STATUS" "Superseded session token rejected"
 
 test_case "2.5: Invalid Credentials"
 STATUS=$(api_request POST "$API_URL/auth/login" \
@@ -298,20 +301,19 @@ else
     ((FAIL++))
 fi
 
-test_case "3.3: Both Players Same Authenticated User"
+test_case "3.3: HvH Creation Claims Only One Slot for Creator"
 RESPONSE=$(api_request POST "$API_URL/games" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer $TOKEN_ALICE" \
     -d '{"white": {"type": 1}, "black": {"type": 1}}')
 WHITE_ID=$(echo "$RESPONSE" | jq -r '.players.white.id' 2>/dev/null)
 BLACK_ID=$(echo "$RESPONSE" | jq -r '.players.black.id' 2>/dev/null)
+BLACK_CLAIMED=$(echo "$RESPONSE" | jq -r '.players.black.claimedBy // empty' 2>/dev/null)
 
-if [ "$WHITE_ID" = "$USER_ID_ALICE" ] && [ "$BLACK_ID" = "$USER_ID_ALICE" ]; then
-    echo -e "${GREEN}  ✓ Same user can play both sides${NC}"
-    ((PASS++))
+if [ "$WHITE_ID" = "$USER_ID_ALICE" ] && [ "$BLACK_ID" != "$USER_ID_ALICE" ] && [ -z "$BLACK_CLAIMED" ]; then
+    echo -e "${GREEN}  ✓ Creator claims white only; black remains claimable${NC}"; ((PASS++))
 else
-    echo -e "${RED}  ✗ Both sides should be same user${NC}"
-    ((FAIL++))
+    echo -e "${RED}  ✗ Slot assignment wrong: white=$WHITE_ID black=$BLACK_ID claimedBy=$BLACK_CLAIMED${NC}"; ((FAIL++))
 fi
 
 # ==============================================================================

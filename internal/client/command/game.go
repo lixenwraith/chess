@@ -6,7 +6,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"chess/internal/client/api"
 	"chess/internal/client/display"
@@ -234,6 +233,9 @@ func joinGameHandler(s *session.Session, args []string) error {
 	return nil
 }
 
+// moveHandler submits a human move. Terminal/error outcomes are reported via
+// the shared printOutcome (no-op on "ongoing"/"pending"); the computer-turn
+// hint stays local since it only applies after a successful human move.
 func moveHandler(s *session.Session, args []string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("usage: move <uci-move>")
@@ -256,29 +258,13 @@ func moveHandler(s *session.Session, args []string) error {
 	s.CurrentGameState = resp
 	display.Println(display.Green, "Move accepted")
 
-	// Check if game ended
-	switch resp.State {
-	case "checkmate":
-		winner := "Black"
-		if resp.Turn == "b" { // Turn switches after move, so if black's turn after checkmate, white won
-			winner = "White"
-		}
-		display.Println(display.Green, "\nCHECKMATE! %s wins!", winner)
-	case "stalemate":
-		display.Println(display.Yellow, "\nSTALEMATE! Game drawn.")
-	case "draw":
-		display.Println(display.Yellow, "\nDRAW! Game drawn.")
-	case "ongoing":
-		// Check if computer needs to play
-		currentTurn := resp.Turn
-		var computerPlayer *api.PlayerInfo
-		if currentTurn == "w" && resp.Players.White.Type == 2 {
-			computerPlayer = &resp.Players.White
-		} else if currentTurn == "b" && resp.Players.Black.Type == 2 {
-			computerPlayer = &resp.Players.Black
-		}
+	printOutcome(resp)
 
-		if computerPlayer != nil {
+	// Hint to trigger the computer if the game continues on a computer's turn
+	if resp.State == "ongoing" {
+		isComputerTurn := (resp.Turn == "w" && resp.Players.White.Type == 2) ||
+			(resp.Turn == "b" && resp.Players.Black.Type == 2)
+		if isComputerTurn {
 			display.Println(display.Magenta, "\nComputer's turn. Use 'computer' or 'c' to trigger move.")
 		}
 	}
@@ -286,6 +272,12 @@ func moveHandler(s *session.Session, args []string) error {
 	return nil
 }
 
+// computerMoveHandler triggers a computer move and waits for the result via
+// the server's long-poll. With the state-aware waiter, a single poll wakes on
+// either the applied move (move count delta) or a state-only settle
+// (mate-without-move, stuck) — no fixed-interval GET hammering, no hard cap
+// below the server's max searchTime. Polls loop only if the wake races the
+// pending window (e.g. queue wait), each round costing at most WaitTimeout.
 func computerMoveHandler(s *session.Session, args []string) error {
 	gameID := s.CurrentGame
 	if gameID == "" {
@@ -294,53 +286,80 @@ func computerMoveHandler(s *session.Session, args []string) error {
 
 	c := s.Client
 
+	// Baseline BEFORE triggering: the long-poll returns immediately if the
+	// move count already differs from this value.
+	baselineMoves := s.LastMoveCount
+	if s.CurrentGameState != nil {
+		baselineMoves = len(s.CurrentGameState.Moves)
+	}
+
 	resp, err := c.MakeMove(gameID, "cccc")
 	if err != nil {
 		return err
 	}
 
-	if resp.State == "pending" {
-		display.Println(display.Magenta, "Computer is thinking...")
-
-		// Poll for completion
-		for i := 0; i < 50; i++ {
-			time.Sleep(200 * time.Millisecond)
-			resp2, err := c.GetGame(gameID)
-			if err == nil && resp2.State != "pending" {
-				s.LastMoveCount = len(resp2.Moves)
-				s.CurrentGameState = resp2
-				if resp2.LastMove != nil {
-					display.Print(display.Magenta, "Computer played: %s", resp2.LastMove.Move)
-					if resp2.LastMove.Depth > 0 {
-						fmt.Printf(" (depth %d, score %d)", resp2.LastMove.Depth, resp2.LastMove.Score)
-					}
-					fmt.Println()
-				}
-
-				// Check if game ended after computer move
-				switch resp2.State {
-				case "checkmate":
-					winner := "Black"
-					if resp2.Turn == "b" {
-						winner = "White"
-					}
-					display.Println(display.Green, "\nCHECKMATE! %s wins!", winner)
-				case "stalemate":
-					display.Println(display.Yellow, "\nSTALEMATE! Game drawn.")
-				case "draw":
-					display.Println(display.Yellow, "\nDRAW! Game drawn.")
-				}
-
-				return nil
-			}
-		}
-		return fmt.Errorf("timeout waiting for computer move")
+	if resp.State != "pending" {
+		// Server resolved synchronously (shouldn't normally happen)
+		s.LastMoveCount = len(resp.Moves)
+		s.CurrentGameState = resp
+		display.Println(display.Green, "Move triggered")
+		printOutcome(resp)
+		return nil
 	}
 
-	s.LastMoveCount = len(resp.Moves)
-	s.CurrentGameState = resp
-	display.Println(display.Green, "Move triggered")
+	display.Println(display.Magenta, "Computer is thinking...")
+
+	// Up to 3 long-poll rounds (~90s ceiling) covers max searchTime (10s)
+	// plus pathological queue wait, without hanging indefinitely.
+	const maxPolls = 3
+	var final *api.GameResponse
+	for i := 0; i < maxPolls; i++ {
+		polled, err := c.GetGameWithPoll(gameID, baselineMoves)
+		if err != nil {
+			return err
+		}
+		if polled.State != "pending" {
+			final = polled
+			break
+		}
+		// Woke on timeout while still pending; poll again.
+	}
+	if final == nil {
+		return fmt.Errorf("computer move still pending after %d poll rounds", maxPolls)
+	}
+
+	s.LastMoveCount = len(final.Moves)
+	s.CurrentGameState = final
+
+	// A move may legitimately be absent: mate-without-move detection or a
+	// stuck transition settle the state without applying anything.
+	if final.LastMove != nil && len(final.Moves) > baselineMoves {
+		display.Print(display.Magenta, "Computer played: %s", final.LastMove.Move)
+		if final.LastMove.Depth > 0 {
+			fmt.Printf(" (depth %d, score %d)", final.LastMove.Depth, final.LastMove.Score)
+		}
+		fmt.Println()
+	}
+
+	printOutcome(final)
 	return nil
+}
+
+// printOutcome reports terminal or error states using the server's actual
+// State.String() values ("white wins"/"black wins", not "checkmate").
+func printOutcome(resp *api.GameResponse) {
+	switch resp.State {
+	case "white wins":
+		display.Println(display.Green, "\nCHECKMATE! White wins!")
+	case "black wins":
+		display.Println(display.Green, "\nCHECKMATE! Black wins!")
+	case "stalemate":
+		display.Println(display.Yellow, "\nSTALEMATE! Game drawn.")
+	case "draw":
+		display.Println(display.Yellow, "\nDRAW! Game drawn.")
+	case "stuck":
+		display.Println(display.Yellow, "\nEngine error — 'undo' to recover, or 'new'/'delete'.")
+	}
 }
 
 func undoHandler(s *session.Session, args []string) error {
@@ -490,7 +509,7 @@ func pollHandler(s *session.Session, args []string) error {
 	moveCount := s.GetLastMoveCount()
 
 	display.Println(display.Cyan, "Long-polling for updates (move count: %d)...", moveCount)
-	display.Println(display.Cyan, "This may take up to 25 seconds")
+	display.Println(display.Cyan, "This may take up to 30 seconds")
 
 	resp, err := c.GetGameWithPoll(gameID, moveCount)
 	if err != nil {

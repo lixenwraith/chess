@@ -120,9 +120,11 @@ function updateAuthIndicator(authenticated) {
     if (authenticated) {
         light.setAttribute('data-status', 'authenticated');
         indicator.setAttribute('data-status', gameState.username);
+        indicator.setAttribute('data-tooltip', 'Account');
     } else {
         light.setAttribute('data-status', 'anonymous');
-        indicator.setAttribute('data-status', 'anonymous');
+        indicator.setAttribute('data-status', 'click to login');
+        indicator.setAttribute('data-tooltip', 'Login');
     }
 }
 
@@ -438,6 +440,9 @@ function updateTurnIndicator(state, turn) {
                 status = 'unknown';
                 tooltipText = 'Game Over';
         }
+    } else if (state === 'stuck') {
+        status = 'degraded';
+        tooltipText = 'Engine Error';
     } else if (turn === 'w') {
         status = 'white';
         tooltipText = 'White';
@@ -637,7 +642,10 @@ async function startNewGame() {
     initializeBoard();
     updateGameDisplay(game);
     document.getElementById('undo-btn').disabled = true;
-    if (!gameState.isPlayerWhite) triggerComputerMove();
+    const computerTurn = gameState.isPlayerWhite ? 'b' : 'w';
+    if (isPlayable(game.state) && game.turn === computerTurn) {
+        triggerComputerMove();
+    }
 
     setModalMessage('new-game-modal-message', `Game started - you play ${willBePlayerWhite ? 'White' : 'Black'}`, 'success');
     setTimeout(hideNewGameModal, MODAL_SUCCESS_DISPLAY_MS);
@@ -711,7 +719,7 @@ function handleSquareClick(e) {
     if (gameState.isLocked) return;
 
     // Block moves after game over
-    if (isGameOver(gameState.state)) return;
+    if (!isPlayable(gameState.state)) return;
 
     const squareEl = e.currentTarget;
     const { square, pieceColor } = squareEl.dataset;
@@ -776,7 +784,7 @@ async function handleHumanMove(from, to) {
         flashSquare(fromEl, true);
         flashSquare(toEl, true);
         updateGameDisplay(game);
-        if (!isGameOver(game.state)) {
+        if (isPlayable(game.state)) {
             triggerComputerMove();
         }
     } catch (error) {
@@ -906,6 +914,9 @@ async function undoMoves() {
         const game = await response.json();
         gameState.state = game.state;
         updateGameDisplay(game);
+        if (game.state === 'stuck') {
+            flashErrorMessage('Engine error — Undo to recover or start a new game');
+        }
     } catch (error) {
         if (error.message === 'Failed to fetch') {
             handleApiError('undo', error);
@@ -1020,6 +1031,9 @@ function markMatedKing(game) {
 
 function isGameOver(state) {
     return ['white wins', 'black wins', 'stalemate', 'draw'].includes(state);
+}
+function isPlayable(state) {
+    return !isGameOver(state) && state !== 'stuck';
 }
 
 function handleApiError(action, error, response = null) {

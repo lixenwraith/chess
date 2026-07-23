@@ -135,7 +135,7 @@ chess > delete <gameId>      # Delete specific game
 ```
 
 #### `poll` / `p`
-Long-poll for game updates (waits up to 25 seconds).
+Long-poll for game updates (waits up to 30 seconds).
 ```
 chess > poll
 ```

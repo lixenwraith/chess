@@ -113,7 +113,7 @@ func (s *Service) ApplyMove(gameID, moveUCI, newFEN string) error {
 	g.AddSnapshot(newFEN, moveUCI, nextTurn)
 
 	// Notify waiting clients about the state change
-	s.waiter.NotifyGame(gameID, len(g.Moves()))
+	s.waiter.NotifyGame(gameID, len(g.Moves()), g.State())
 
 	// Persist if storage enabled
 	if s.store != nil {
@@ -132,6 +132,36 @@ func (s *Service) ApplyMove(gameID, moveUCI, newFEN string) error {
 	return nil
 }
 
+// ApplyMoveWithState atomically records a move, its resulting state, and move
+// metadata, then notifies waiters exactly once with the settled state.
+func (s *Service) ApplyMoveWithState(gameID, moveUCI, newFEN string, state core.State, result *game.MoveResult) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	g, ok := s.games[gameID]
+	if !ok {
+		return fmt.Errorf("game not found: %s", gameID)
+	}
+
+	currentTurn := g.NextTurnColor()
+	g.AddSnapshot(newFEN, moveUCI, core.OppositeColor(currentTurn))
+	g.SetState(state)
+	if result != nil {
+		g.SetLastResult(result)
+	}
+
+	s.waiter.NotifyGame(gameID, len(g.Moves()), state)
+
+	if s.store != nil {
+		s.store.RecordMove(storage.MoveRecord{
+			GameID: gameID, MoveNumber: len(g.Moves()), MoveUCI: moveUCI,
+			FENAfterMove: newFEN, PlayerColor: currentTurn.String(),
+			MoveTimeUTC: time.Now().UTC(),
+		})
+	}
+	return nil
+}
+
 // UpdateGameState sets the game's end state (checkmate, stalemate, etc)
 func (s *Service) UpdateGameState(gameID string, state core.State) error {
 	s.mu.Lock()
@@ -143,11 +173,8 @@ func (s *Service) UpdateGameState(gameID string, state core.State) error {
 	}
 
 	g.SetState(state)
-
-	// Notify if game ended
-	if state != core.StateOngoing && state != core.StatePending {
-		s.waiter.NotifyGame(gameID, len(g.Moves()))
-	}
+	// Notify unconditionally; the registry decides.
+	s.waiter.NotifyGame(gameID, len(g.Moves()), state)
 
 	return nil
 }
@@ -183,7 +210,7 @@ func (s *Service) UndoMoves(gameID string, count int) error {
 	}
 
 	// Notify waiting clients about the undo
-	s.waiter.NotifyGame(gameID, len(g.Moves()))
+	s.waiter.NotifyGame(gameID, len(g.Moves()), g.State())
 
 	// Delete undone moves from storage if enabled
 	if s.store != nil {
@@ -215,3 +242,4 @@ func (s *Service) DeleteGame(gameID string) error {
 	delete(s.games, gameID)
 	return nil
 }
+

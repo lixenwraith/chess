@@ -647,16 +647,24 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 /* Auth Indicator */
+.auth-indicator {
+    cursor: pointer;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    transition: border-color .2s, background .2s;
+}
+
+.auth-indicator:hover {
+    border-color: var(--host-royal);
+    background: rgba(95, 87, 245, 0.15);
+}
+
 .auth-indicator .light[data-status="anonymous"] {
-    color: var(--tokyo-border);
+    color: var(--tokyo-yellow);
 }
 
 .auth-indicator .light[data-status="authenticated"] {
     color: var(--tokyo-green);
-}
-
-.auth-indicator {
-    cursor: pointer;
 }
 
 /* --- Modal status message (Issue 2) --- */
@@ -871,41 +879,20 @@ input[type="range"]:disabled {
 }
 
 @media (max-width: 530px) {
-    body {
-        overflow-y: auto;
-        overflow-x: auto;
-        min-width: clamp(440px, 100vw, 530px);
+    body { min-width: 0; overflow-x: hidden; }
+    .outer-container { width: 100%; min-width: 0; }
+    .container { width: calc(100% - 16px); min-width: 0; }
+    .board-container {
+        width: min(92vw, 440px);
+        height: min(92vw, 440px);
+        padding: 12px;
     }
-
-    .outer-container {
-        width: clamp(440px, 100vw, 530px);
-        min-width: clamp(440px, 100vw, 530px);
-        padding: 8px;
-        min-height: 100vh;
-        height: auto;
-        display: flex;
-        justify-content: center;
-        align-items: flex-start;
-        overflow: visible;
+    .board-wrapper {
+        width: calc(min(92vw, 440px) - 24px);
+        height: calc(min(92vw, 440px) - 24px);
     }
-
-    .container {
-        width: calc(100% - 16px);
-        min-width: clamp(424px, calc(100vw - 16px), 514px);
-        border-radius: 12px;
-        min-height: calc(100vh - 16px);
-        height: auto;
-        padding: 1rem;
-        margin: 0;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        overflow: visible;
-    }
-
-    .board-container,
     .info-panel {
-        width: clamp(360px, 83vw, 440px);
-        min-width: clamp(360px, 83vw, 440px);
+        width: min(92vw, 440px);
+        min-width: 0;
     }
 }
