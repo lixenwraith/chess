@@ -1,5 +1,7 @@
 package core
 
+import "time"
+
 // Request types
 
 type CreateGameRequest struct {
@@ -27,7 +29,7 @@ type GameResponse struct {
 	GameID   string          `json:"gameId"`
 	FEN      string          `json:"fen"`
 	Turn     string          `json:"turn"`  // "w" or "b"
-	State    string          `json:"state"` // "ongoing", "white_wins", etc
+	State    string          `json:"state"` // "ongoing", "white wins", etc
 	Moves    []string        `json:"moves"`
 	Players  PlayersResponse `json:"players"`
 	LastMove *MoveInfo       `json:"lastMove,omitempty"`
@@ -43,6 +45,46 @@ type MoveInfo struct {
 type BoardResponse struct {
 	FEN   string `json:"fen"`
 	Board string `json:"board"` // ASCII representation
+}
+
+// GameHistoryResponse is the durable replay representation of a game. Moves
+// are ordered and include the resulting FEN so clients do not need an engine
+// to replay a stored game.
+type GameHistoryResponse struct {
+	GameID       string          `json:"gameId"`
+	InitialFEN   string          `json:"initialFen"`
+	Result       string          `json:"result,omitempty"`
+	StartTimeUTC time.Time       `json:"startTimeUtc"`
+	EndTimeUTC   *time.Time      `json:"endTimeUtc,omitempty"`
+	Players      PlayersResponse `json:"players"`
+	Moves        []HistoryMove   `json:"moves"`
+}
+
+type HistoryMove struct {
+	MoveNumber   int       `json:"moveNumber"`
+	MoveUCI      string    `json:"moveUci"`
+	FENAfterMove string    `json:"fenAfterMove"`
+	PlayerColor  string    `json:"playerColor"`
+	MoveTimeUTC  time.Time `json:"moveTimeUtc"`
+}
+
+// GameSummary is intentionally sufficient for a client-side game picker; the
+// full move list remains on the per-game history endpoint.
+type GameSummary struct {
+	GameID       string          `json:"gameId"`
+	InitialFEN   string          `json:"initialFen"`
+	Result       string          `json:"result,omitempty"`
+	StartTimeUTC time.Time       `json:"startTimeUtc"`
+	EndTimeUTC   *time.Time      `json:"endTimeUtc,omitempty"`
+	MoveCount    int             `json:"moveCount"`
+	Players      PlayersResponse `json:"players"`
+}
+
+type GameListResponse struct {
+	Games      []GameSummary `json:"games"`
+	Limit      int           `json:"limit"`
+	Offset     int           `json:"offset"`
+	NextOffset *int          `json:"nextOffset,omitempty"`
 }
 
 type ErrorResponse struct {

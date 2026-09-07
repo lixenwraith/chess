@@ -40,7 +40,8 @@ func runClient() (restart bool) {
 
 	display.Println(display.Cyan, "Chess Debug Client")
 	display.Println(display.Cyan, "API: %s", s.APIBaseURL)
-	fmt.Println("Type 'help' for commands\n")
+	fmt.Println("Type 'help' for commands")
+	fmt.Println()
 
 	registry := command.NewRegistry(s)
 
@@ -133,4 +134,3 @@ func buildPrompt(s *session.Session) string {
 
 	return display.Prompt(b.String())
 }
-

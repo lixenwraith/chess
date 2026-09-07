@@ -52,9 +52,11 @@ type PlayersResponse struct {
 
 type PlayerInfo struct {
 	ID         string `json:"id"`
+	Color      int    `json:"color"`
 	Type       int    `json:"type"`
 	Level      int    `json:"level,omitempty"`
 	SearchTime int    `json:"searchTime,omitempty"`
+	ClaimedBy  string `json:"claimedBy,omitempty"`
 }
 
 type MoveInfo struct {
@@ -95,4 +97,39 @@ type HealthResponse struct {
 	Status  string `json:"status"`
 	Time    int64  `json:"time"`
 	Storage string `json:"storage,omitempty"`
+}
+
+type GameHistoryResponse struct {
+	GameID       string          `json:"gameId"`
+	InitialFEN   string          `json:"initialFen"`
+	Result       string          `json:"result,omitempty"`
+	StartTimeUTC time.Time       `json:"startTimeUtc"`
+	EndTimeUTC   *time.Time      `json:"endTimeUtc,omitempty"`
+	Players      PlayersResponse `json:"players"`
+	Moves        []HistoryMove   `json:"moves"`
+}
+
+type HistoryMove struct {
+	MoveNumber   int       `json:"moveNumber"`
+	MoveUCI      string    `json:"moveUci"`
+	FENAfterMove string    `json:"fenAfterMove"`
+	PlayerColor  string    `json:"playerColor"`
+	MoveTimeUTC  time.Time `json:"moveTimeUtc"`
+}
+
+type GameSummary struct {
+	GameID       string          `json:"gameId"`
+	InitialFEN   string          `json:"initialFen"`
+	Result       string          `json:"result,omitempty"`
+	StartTimeUTC time.Time       `json:"startTimeUtc"`
+	EndTimeUTC   *time.Time      `json:"endTimeUtc,omitempty"`
+	MoveCount    int             `json:"moveCount"`
+	Players      PlayersResponse `json:"players"`
+}
+
+type GameListResponse struct {
+	Games      []GameSummary `json:"games"`
+	Limit      int           `json:"limit"`
+	Offset     int           `json:"offset"`
+	NextOffset *int          `json:"nextOffset,omitempty"`
 }

@@ -103,7 +103,9 @@ Returns server and storage status.
 Storage states:
 - `"disabled"` - No storage path configured
 - `"ok"` - Database operational with auth enabled
-- `"degraded"` - Write failures detected, operating memory-only
+- `"degraded"` - A persistence write failed or the write queue filled; live games continue in memory, but durable history is no longer complete
+
+The top-level `status` is also `"degraded"` when storage is degraded.
 
 ### Create Game
 `POST /games`
@@ -171,6 +173,82 @@ Response includes all game data. Compare `moves` array length to detect changes.
 - Client disconnection cancels wait immediately
 - Game deletion notifies all waiting clients
 
+### Get Durable Game History
+`GET /games/{gameId}/history`
+
+Returns the persisted replay line even after the live game has been unloaded
+from memory or the server has restarted. History is public to anyone who knows
+the game ID, matching the existing public live-game read model. Persistent
+storage must be enabled.
+
+The response contains the initial FEN and an ordered FEN after every move, so a
+client can replay the game without running a chess engine.
+
+**Response (200):**
+```json
+{
+  "gameId": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
+  "initialFen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+  "result": "white_wins",
+  "startTimeUtc": "2026-09-07T12:00:00Z",
+  "endTimeUtc": "2026-09-07T12:15:00Z",
+  "players": {
+    "white": {"id": "user-id", "color": 1, "type": 1, "claimedBy": "user-id"},
+    "black": {"id": "player-id", "color": 2, "type": 1}
+  },
+  "moves": [
+    {
+      "moveNumber": 1,
+      "moveUci": "e2e4",
+      "fenAfterMove": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+      "playerColor": "w",
+      "moveTimeUtc": "2026-09-07T12:00:05Z"
+    }
+  ]
+}
+```
+
+`result` is omitted while a game is ongoing. Persisted terminal values are
+`white_wins`, `black_wins`, `draw`, and `stalemate`.
+
+Returns 404 when the game has no durable record and 503 when persistence is
+disabled.
+
+### List My Stored Games
+`GET /users/me/games?limit=50&offset=0`
+
+Returns games associated with the authenticated user at creation time or by a
+later first-move slot claim. Requires `Authorization: Bearer <token>` and
+persistent storage.
+
+- `limit`: 1-100; defaults to 50
+- `offset`: 0-1,000,000; defaults to 0
+
+Each item contains game ID, initial FEN, result/timestamps, players, and move
+count. `nextOffset` is present only when another page exists.
+
+**Response (200):**
+```json
+{
+  "games": [
+    {
+      "gameId": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
+      "initialFen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+      "result": "white_wins",
+      "startTimeUtc": "2026-09-07T12:00:00Z",
+      "endTimeUtc": "2026-09-07T12:15:00Z",
+      "moveCount": 41,
+      "players": {
+        "white": {"id": "user-id", "color": 1, "type": 1, "claimedBy": "user-id"},
+        "black": {"id": "player-id", "color": 2, "type": 1}
+      }
+    }
+  ],
+  "limit": 50,
+  "offset": 0
+}
+```
+
 ### Make Move
 `POST /games/{gameId}/moves`
 
@@ -204,7 +282,8 @@ Returns ASCII board visualization.
 ### Delete Game
 `DELETE /games/{gameId}`
 
-Removes game from memory. Returns 204 on success.
+Unloads the live game from memory. Its persisted game and move history remain
+available through the history endpoint. Returns 204 on success.
 
 ## Error Format
 ```json
@@ -220,6 +299,8 @@ Error codes:
 - `INVALID_MOVE` - Illegal chess move
 - `NOT_HUMAN_TURN` - Wrong player type for turn
 - `GAME_OVER` - Game already ended
+- `GAME_CONFLICT` - Game changed while a move was being validated; refresh and retry
+- `STORAGE_UNAVAILABLE` - Durable history/list storage is disabled or degraded
 - `RATE_LIMIT_EXCEEDED` - Request limit exceeded
 - `INVALID_REQUEST` - Malformed request
 - `INVALID_CONTENT_TYPE` - Missing/wrong Content-Type header
@@ -242,4 +323,6 @@ Tokens are HS256-signed JWTs valid for 7 days. Include in Authorization header:
 Authorization: Bearer <token>
 ```
 
-Token claims include `sub` (user ID), `username`, `email`, and `exp` (expiration).
+Token claims include `sub` (user ID), `username`, `email`, `session_id`, and
+`exp` (expiration). Authentication requires the session to exist, be unexpired,
+and belong to the JWT subject.

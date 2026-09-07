@@ -357,7 +357,20 @@ function authFetch(url, options = {}) {
 }
 
 async function getConfig() {
-    return { apiUrl: '/chess' };
+    try {
+        const response = await fetch('./config', { cache: 'no-store' });
+        if (!response.ok) throw new Error(`config returned ${response.status}`);
+        const config = await response.json();
+        if (typeof config.apiUrl !== 'string' || !config.apiUrl.trim()) {
+            throw new Error('config is missing apiUrl');
+        }
+        return { apiUrl: config.apiUrl.replace(/\/+$/, '') };
+    } catch (error) {
+        // Static production hosting currently reverse-proxies the API here.
+        // The embedded server supplies /config and does not use this fallback.
+        console.debug('Using default API route:', error.message);
+        return { apiUrl: '/chess' };
+    }
 }
 
 function startHealthCheck() {
@@ -835,7 +848,7 @@ async function pollOnce() {
     gameState.pollController = new AbortController();
 
     try {
-        const response = await fetch(
+        const response = await authFetch(
             `${gameState.apiUrl}/api/v1/games/${gameState.gameId}?wait=true&moveCount=${moveCount}`,
             { signal: gameState.pollController.signal }
         );
@@ -895,7 +908,7 @@ async function undoMoves() {
     }
 
     try {
-        const response = await fetch(`${gameState.apiUrl}/api/v1/games/${gameState.gameId}/undo`, {
+        const response = await authFetch(`${gameState.apiUrl}/api/v1/games/${gameState.gameId}/undo`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ count: 2 })

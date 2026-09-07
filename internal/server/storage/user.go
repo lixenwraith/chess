@@ -2,16 +2,22 @@ package storage
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
+)
+
+var (
+	ErrUserAlreadyExists = errors.New("username or email already exists")
+	ErrUserCapacity      = errors.New("user capacity reached")
+	ErrPermanentCapacity = errors.New("permanent user capacity reached")
 )
 
 // UserLimits defines registration constraints
 type UserLimits struct {
 	MaxUsers       int
 	PermanentSlots int
-	TempTTL        time.Duration
 }
 
 // DefaultUserLimits returns default POC limits
@@ -19,7 +25,6 @@ func DefaultUserLimits() UserLimits {
 	return UserLimits{
 		MaxUsers:       100,
 		PermanentSlots: 10,
-		TempTTL:        24 * time.Hour,
 	}
 }
 
@@ -59,16 +64,38 @@ func (s *Store) GetOldestTempUser() (*UserRecord, error) {
 
 // DeleteExpiredTempUsers removes temporary users past their expiry
 func (s *Store) DeleteExpiredTempUsers() (int64, error) {
-	query := `DELETE FROM users WHERE account_type = 'temp' AND expires_at < ?`
+	query := `DELETE FROM users
+		WHERE account_type = 'temp' AND expires_at IS NOT NULL AND expires_at < ?`
 	result, err := s.db.Exec(query, time.Now().UTC())
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	deleted, err := result.RowsAffected()
+	if err == nil && deleted > 0 {
+		slog.Debug("storage expired temporary users deleted", "count", deleted)
+	}
+	return deleted, err
 }
 
-// CreateUser creates user with transaction isolation to prevent race conditions
+// CreateUser creates an administratively managed user without applying the
+// public-registration capacity policy.
 func (s *Store) CreateUser(record UserRecord) error {
+	return s.createUser(record, nil, nil)
+}
+
+// CreateUserWithinLimits atomically applies registration limits, evicts the
+// oldest temporary account when required, creates the user, and optionally
+// creates its initial session. No account is evicted on a duplicate request,
+// and a session failure rolls back the user and eviction together.
+func (s *Store) CreateUserWithinLimits(
+	record UserRecord,
+	session *SessionRecord,
+	limits UserLimits,
+) error {
+	return s.createUser(record, session, &limits)
+}
+
+func (s *Store) createUser(record UserRecord, session *SessionRecord, limits *UserLimits) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -81,7 +108,37 @@ func (s *Store) CreateUser(record UserRecord) error {
 		return err
 	}
 	if exists {
-		return fmt.Errorf("username or email already exists")
+		return ErrUserAlreadyExists
+	}
+
+	if limits != nil {
+		var total, permanent int
+		if err := tx.QueryRow(`SELECT COUNT(*),
+			COUNT(CASE WHEN account_type = 'permanent' THEN 1 END)
+			FROM users`).Scan(&total, &permanent); err != nil {
+			return fmt.Errorf("count users: %w", err)
+		}
+		if record.AccountType == "permanent" && permanent >= limits.PermanentSlots {
+			return ErrPermanentCapacity
+		}
+		if total >= limits.MaxUsers {
+			result, err := tx.Exec(`DELETE FROM users WHERE user_id = (
+				SELECT user_id FROM users
+				WHERE account_type = 'temp'
+				ORDER BY created_at ASC
+				LIMIT 1
+			)`)
+			if err != nil {
+				return fmt.Errorf("evict oldest temporary user: %w", err)
+			}
+			deleted, err := result.RowsAffected()
+			if err != nil {
+				return fmt.Errorf("inspect temporary user eviction: %w", err)
+			}
+			if deleted != 1 {
+				return ErrUserCapacity
+			}
+		}
 	}
 
 	// Insert user
@@ -96,14 +153,36 @@ func (s *Store) CreateUser(record UserRecord) error {
 	if err != nil {
 		return err
 	}
+	if session != nil {
+		if session.UserID != record.UserID {
+			return errors.New("initial session user does not match new user")
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO sessions (session_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)`,
+			session.SessionID, session.UserID, session.CreatedAt, session.ExpiresAt,
+		); err != nil {
+			return fmt.Errorf("create initial session: %w", err)
+		}
+	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	slog.Debug("storage user created",
+		"user_id", record.UserID,
+		"account_type", record.AccountType,
+		"initial_session", session != nil,
+	)
+	return nil
 }
 
 // DeleteUserByID removes a user by ID (synchronous, for replacement logic)
 func (s *Store) DeleteUserByID(userID string) error {
 	query := `DELETE FROM users WHERE user_id = ?`
 	_, err := s.db.Exec(query, userID)
+	if err == nil {
+		slog.Debug("storage user deleted", "user_id", userID)
+	}
 	return err
 }
 
@@ -121,7 +200,9 @@ func (s *Store) userExists(tx *sql.Tx, username, email string) (bool, error) {
 	args := []any{username}
 
 	if email != "" {
-		query = `SELECT COUNT(*) FROM users WHERE username = ? COLLATE NOCASE OR email = ? COLLATE NOCASE`
+		query = `SELECT COUNT(*) FROM users
+			WHERE username = ? COLLATE NOCASE
+				OR (email = ? COLLATE NOCASE AND email IS NOT NULL AND email != '')`
 		args = append(args, email)
 	}
 
@@ -217,7 +298,7 @@ func (s *Store) GetUserByEmail(email string) (*UserRecord, error) {
 	var user UserRecord
 	var emailNull sql.NullString
 	query := `SELECT user_id, username, email, password_hash, account_type, created_at, expires_at, last_login_at
-		FROM users WHERE email = ? COLLATE NOCASE`
+		FROM users WHERE email = ? COLLATE NOCASE AND email IS NOT NULL AND email != ''`
 
 	err := s.db.QueryRow(query, email).Scan(
 		&user.UserID, &user.Username, &emailNull,
@@ -250,21 +331,8 @@ func (s *Store) GetUserByID(userID string) (*UserRecord, error) {
 	return &user, nil
 }
 
-// DeleteUser removes a user from the database (async)
+// DeleteUser removes a user synchronously. Account operations are consistency
+// sensitive and should not be reported successful before SQLite commits them.
 func (s *Store) DeleteUser(userID string) error {
-	if !s.healthStatus.Load() {
-		return nil
-	}
-
-	select {
-	case s.writeChan <- func(tx *sql.Tx) error {
-		query := `DELETE FROM users WHERE user_id = ?`
-		_, err := tx.Exec(query, userID)
-		return err
-	}:
-		return nil
-	default:
-		log.Printf("Storage write queue full, dropping user deletion")
-		return nil
-	}
+	return s.DeleteUserByID(userID)
 }
