@@ -1,6 +1,7 @@
 package http
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -29,7 +30,7 @@ func NewHTTPHandler(proc *processor.Processor, svc *service.Service) *HTTPHandle
 	return &HTTPHandler{proc: proc, svc: svc}
 }
 
-func NewFiberApp(proc *processor.Processor, svc *service.Service, devMode bool) *fiber.App {
+func NewFiberApp(proc *processor.Processor, svc *service.Service, devMode, logRequests bool) *fiber.App {
 	// Create handler
 	h := NewHTTPHandler(proc, svc)
 
@@ -43,9 +44,13 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, devMode bool) 
 
 	// Global middleware (order matters)
 	app.Use(recover.New())
-	app.Use(logger.New(logger.Config{
-		Format: "${time} ${status} ${method} ${path} ${latency}\n",
-	}))
+	if logRequests {
+		app.Use(logger.New(logger.Config{
+			Format:     "${time} HTTP ${status} ${method} ${path} ${latency}\n",
+			TimeFormat: time.RFC3339,
+			TimeZone:   "UTC",
+		}))
+	}
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: "*",
 		AllowMethods: "GET,POST,PUT,DELETE,OPTIONS",
@@ -136,12 +141,14 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, devMode bool) 
 
 	// Register game routes with auth middleware
 	api.Post("/games", OptionalAuth(validateToken), h.CreateGame) // Optional auth for player ID association
+	api.Get("/games/:gameId/history", h.GetGameHistory)
 	api.Put("/games/:gameId/players", h.ConfigurePlayers)
 	api.Get("/games/:gameId", h.GetGame)
 	api.Delete("/games/:gameId", h.DeleteGame)
 	api.Post("/games/:gameId/moves", OptionalAuth(validateToken), h.MakeMove)
 	api.Post("/games/:gameId/undo", h.UndoMove)
 	api.Get("/games/:gameId/board", h.GetBoard)
+	api.Get("/users/me/games", AuthRequired(validateToken), h.GetCurrentUserGames)
 
 	return app
 }
@@ -191,10 +198,15 @@ func customErrorHandler(c *fiber.Ctx, err error) error {
 
 // Health check endpoint with storage status
 func (h *HTTPHandler) Health(c *fiber.Ctx) error {
+	storageHealth := h.svc.GetStorageHealth()
+	status := "healthy"
+	if storageHealth == "degraded" {
+		status = "degraded"
+	}
 	return c.JSON(fiber.Map{
-		"status":  "healthy",
+		"status":  status,
 		"time":    time.Now().Unix(),
-		"storage": h.svc.GetStorageHealth(),
+		"storage": storageHealth,
 	})
 }
 
@@ -324,7 +336,7 @@ func (h *HTTPHandler) GetGame(c *fiber.Ctx) error {
 	}
 
 	// First check if game exists and get current state
-	g, err := h.svc.GetGame(gameID)
+	g, err := h.svc.GetGameView(gameID)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(core.ErrorResponse{
 			Error: "game not found",
@@ -332,8 +344,8 @@ func (h *HTTPHandler) GetGame(c *fiber.Ctx) error {
 		})
 	}
 
-	currentMoveCount := len(g.Moves())
-	st := g.State()
+	currentMoveCount := len(g.Moves)
+	st := g.State
 	settled := st != core.StateOngoing && st != core.StatePending
 	// If move count already different, return immediately
 	if moveCount != currentMoveCount || settled {
@@ -414,6 +426,8 @@ func (h *HTTPHandler) MakeMove(c *fiber.Ctx) error {
 			statusCode = fiber.StatusNotFound
 		case core.ErrUnauthorized:
 			statusCode = fiber.StatusForbidden
+		case core.ErrConflict:
+			statusCode = fiber.StatusConflict
 		}
 		return c.Status(statusCode).JSON(resp.Error)
 	}
@@ -470,7 +484,7 @@ func (h *HTTPHandler) UndoMove(c *fiber.Ctx) error {
 	return c.JSON(resp.Data)
 }
 
-// DeleteGame ends and cleans up a game
+// DeleteGame unloads a live game while retaining its durable history.
 func (h *HTTPHandler) DeleteGame(c *fiber.Ctx) error {
 	gameID := c.Params("gameId")
 
@@ -518,4 +532,84 @@ func (h *HTTPHandler) GetBoard(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(resp.Data)
+}
+
+// GetGameHistory serves persisted replay data. Histories are public by game ID,
+// matching the existing public live-game read model.
+func (h *HTTPHandler) GetGameHistory(c *fiber.Ctx) error {
+	gameID := c.Params("gameId")
+	if !isValidUUID(gameID) {
+		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
+			Error: "invalid game ID format", Code: core.ErrInvalidRequest,
+			Details: "game ID must be a valid UUID",
+		})
+	}
+
+	history, err := h.svc.GetGameHistory(gameID)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrStorageDisabled), errors.Is(err, service.ErrStorageUnavailable):
+			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+				Error: "game history storage unavailable", Code: core.ErrStorageUnavailable,
+			})
+		case errors.Is(err, service.ErrGameNotFound):
+			return c.Status(fiber.StatusNotFound).JSON(core.ErrorResponse{
+				Error: "game history not found", Code: core.ErrGameNotFound,
+			})
+		default:
+			return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
+				Error: "failed to load game history", Code: core.ErrInternalError,
+			})
+		}
+	}
+	return c.JSON(history)
+}
+
+// GetCurrentUserGames returns a bounded list suitable for CLI and web game
+// pickers. The extra row used to compute nextOffset stays internal.
+func (h *HTTPHandler) GetCurrentUserGames(c *fiber.Ctx) error {
+	userID, ok := c.Locals("userID").(string)
+	if !ok || userID == "" {
+		return c.Status(fiber.StatusUnauthorized).JSON(core.ErrorResponse{
+			Error: "unauthorized", Code: core.ErrUnauthorized,
+		})
+	}
+
+	limit, err := queryInt(c, "limit", 50, 1, 100)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
+			Error: "invalid pagination", Code: core.ErrInvalidRequest, Details: err.Error(),
+		})
+	}
+	offset, err := queryInt(c, "offset", 0, 0, 1_000_000)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
+			Error: "invalid pagination", Code: core.ErrInvalidRequest, Details: err.Error(),
+		})
+	}
+
+	games, err := h.svc.GetUserGames(userID, limit, offset)
+	if err != nil {
+		if errors.Is(err, service.ErrStorageDisabled) || errors.Is(err, service.ErrStorageUnavailable) {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+				Error: "stored games unavailable", Code: core.ErrStorageUnavailable,
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
+			Error: "failed to load stored games", Code: core.ErrInternalError,
+		})
+	}
+	return c.JSON(games)
+}
+
+func queryInt(c *fiber.Ctx, name string, defaultValue, minimum, maximum int) (int, error) {
+	raw := c.Query(name)
+	if raw == "" {
+		return defaultValue, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < minimum || value > maximum {
+		return 0, fmt.Errorf("%s must be between %d and %d", name, minimum, maximum)
+	}
+	return value, nil
 }

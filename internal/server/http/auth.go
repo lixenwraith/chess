@@ -91,9 +91,14 @@ func (h *HTTPHandler) RegisterHandler(c *fiber.Ctx) error {
 		req.Email = strings.ToLower(req.Email)
 	}
 
-	// Create user (temp by default via API)
-	user, err := h.svc.CreateUser(req.Username, req.Email, req.Password, false)
+	// Create the user and initial session atomically (temp by default via API).
+	user, sessionID, err := h.svc.RegisterUser(req.Username, req.Email, req.Password, false)
 	if err != nil {
+		if errors.Is(err, service.ErrStorageDisabled) || errors.Is(err, service.ErrStorageUnavailable) {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+				Error: "authentication storage unavailable", Code: core.ErrStorageUnavailable,
+			})
+		}
 		if errors.Is(err, service.ErrAtCapacity) || errors.Is(err, service.ErrPermanentSlotsFull) {
 			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
 				Error:   "registration temporarily unavailable",
@@ -110,15 +115,6 @@ func (h *HTTPHandler) RegisterHandler(c *fiber.Ctx) error {
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
 			Error: "failed to create user",
-			Code:  core.ErrInternalError,
-		})
-	}
-
-	// Create session for new user
-	sessionID, err := h.svc.CreateUserSession(user.UserID)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
-			Error: "failed to create session",
 			Code:  core.ErrInternalError,
 		})
 	}
@@ -193,6 +189,11 @@ func (h *HTTPHandler) LoginHandler(c *fiber.Ctx) error {
 	// Authenticate user and create session (invalidates previous session)
 	user, sessionID, err := h.svc.AuthenticateUser(req.Identifier, req.Password)
 	if err != nil {
+		if errors.Is(err, service.ErrStorageDisabled) || errors.Is(err, service.ErrStorageUnavailable) {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+				Error: "authentication storage unavailable", Code: core.ErrStorageUnavailable,
+			})
+		}
 		return c.Status(fiber.StatusUnauthorized).JSON(core.ErrorResponse{
 			Error: "invalid credentials",
 			Code:  core.ErrInvalidRequest,
@@ -263,4 +264,3 @@ func (h *HTTPHandler) LogoutHandler(c *fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{"message": "logged out"})
 }
-

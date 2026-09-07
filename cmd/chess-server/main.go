@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -43,13 +44,34 @@ func main() {
 		storagePath = flag.String("storage-path", "", "Path to SQLite database file (disables persistence if empty)")
 		pidPath     = flag.String("pid", "", "Optional path to write PID file")
 		pidLock     = flag.Bool("pid-lock", false, "Lock PID file to allow only one instance (requires -pid)")
+		logLevel    = flag.String("log-level", "info", "Log level: debug, info, warn, or error")
+		logHTTP     = flag.Bool("log-http", true, "Log HTTP requests")
+		finishedTTL = flag.Duration("finished-game-ttl", service.FinishedGameTTL, "How long completed games remain in memory (0 disables eviction)")
 
 		// Web UI server flags
-		serve   = flag.Bool("serve", false, "Enable web UI server")
-		webHost = flag.String("web-host", "localhost", "Web UI server host")
-		webPort = flag.Int("web-port", 9090, "Web UI server port")
+		serve     = flag.Bool("serve", false, "Enable web UI server")
+		webHost   = flag.String("web-host", "localhost", "Web UI server host")
+		webPort   = flag.Int("web-port", 9090, "Web UI server port")
+		webAPIURL = flag.String("web-api-url", "", "Browser-visible API base URL (defaults to the API listen address)")
 	)
 	flag.Parse()
+
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(*logLevel)); err != nil {
+		log.Fatalf("Invalid -log-level %q: %v", *logLevel, err)
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: level,
+		ReplaceAttr: func(_ []string, attr slog.Attr) slog.Attr {
+			if attr.Key == slog.TimeKey {
+				attr.Value = slog.TimeValue(attr.Value.Time().UTC())
+			}
+			return attr
+		},
+	})))
+	// slog.SetDefault bridges the standard logger through the structured
+	// handler. Avoid embedding a second timestamp inside its message.
+	log.SetFlags(0)
 
 	// Validate PID flags
 	if *pidLock && *pidPath == "" {
@@ -78,11 +100,6 @@ func main() {
 		if err := store.InitDB(); err != nil {
 			log.Fatalf("Failed to initialize schema: %v", err)
 		}
-		defer func() {
-			if err := store.Close(); err != nil {
-				log.Printf("Warning: failed to close storage cleanly: %v", err)
-			}
-		}()
 	} else {
 		log.Printf("Persistent storage disabled (use -storage-path to enable)")
 	}
@@ -104,20 +121,27 @@ func main() {
 
 	// 2. Initialize the Service with optional storage and auth
 	svc := service.New(store, jwtSecret)
+	svc.SetFinishedGameTTL(*finishedTTL)
 
 	// Start cleanup job for expired users/sessions
 	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
-	go svc.RunCleanupJob(cleanupCtx, service.CleanupJobInterval)
+	cleanupDone := make(chan struct{})
+	go func() {
+		defer close(cleanupDone)
+		svc.RunCleanupJob(cleanupCtx, service.CleanupJobInterval)
+	}()
 
 	// 3. Initialize the Processor (Orchestrator), injecting the service
 	proc, err := processor.New(svc)
 	if err != nil {
+		cleanupCancel()
+		<-cleanupDone
 		svc.Shutdown(gracefulShutdownTimeout)
 		log.Fatalf("Failed to initialize processor: %v", err)
 	}
 
 	// 4. Initialize the Fiber App/HTTP Handler, injecting processor and service
-	app := http.NewFiberApp(proc, svc, *dev)
+	app := http.NewFiberApp(proc, svc, *dev, *logHTTP)
 
 	// API Server configuration
 	apiAddr := fmt.Sprintf("%s:%d", *apiHost, *apiPort)
@@ -151,13 +175,16 @@ func main() {
 	if *serve {
 		webAddr := fmt.Sprintf("%s:%d", *webHost, *webPort)
 		apiURL := fmt.Sprintf("http://%s", apiAddr)
+		if *webAPIURL != "" {
+			apiURL = *webAPIURL
+		}
 
 		go func() {
 			log.Printf("Web UI Server starting...")
 			log.Printf("Web UI Listening on: http://%s", webAddr)
 			log.Printf("Web UI API target: %s", apiURL)
 
-			if err := webserver.Start(*webHost, *webPort, apiURL); err != nil {
+			if err := webserver.Start(*webHost, *webPort, apiURL, *logHTTP); err != nil {
 				log.Printf("Web UI server error: %v", err)
 			}
 		}()
@@ -179,18 +206,18 @@ func main() {
 		log.Printf("Server forced to shutdown: %v", err)
 	}
 
-	// Close processor after service shutdown
+	cleanupCancel() // Stop cleanup before closing processor and storage.
+	<-cleanupDone
+
+	// Close processor before the service so engine callbacks have settled.
 	if err = proc.Close(); err != nil {
 		log.Printf("Processor close error: %v", err)
 	}
 
-	cleanupCancel() // Stop cleanup job
-
-	// Shutdown service first (includes wait registry cleanup)
+	// Shutdown service (wait registry, accepted storage writes, database).
 	if err = svc.Shutdown(gracefulShutdownTimeout); err != nil {
 		log.Printf("Service shutdown error: %v", err)
 	}
 
 	log.Println("Servers exited")
 }
-

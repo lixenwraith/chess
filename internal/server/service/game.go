@@ -1,7 +1,9 @@
 package service
 
 import (
+	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"chess/internal/server/core"
@@ -11,8 +13,32 @@ import (
 	"github.com/google/uuid"
 )
 
+var (
+	ErrGameNotFound = errors.New("game not found")
+	ErrGameChanged  = errors.New("game changed while move was being validated")
+	ErrSlotOwner    = errors.New("player slot is owned by another user")
+)
+
+type MoveCommit struct {
+	ExpectedFEN   string
+	ExpectedState core.State
+	ExpectedTurn  core.Color
+	ActorUserID   string
+	MoveUCI       string
+	NewFEN        string
+	State         core.State
+	Result        *game.MoveResult
+	At            time.Time
+}
+
 // CreateGame registers a new game with pre-constructed players
-func (s *Service) CreateGame(id string, whitePlayer, blackPlayer *core.Player, initialFEN string, startingTurn core.Color) error {
+func (s *Service) CreateGame(
+	id string,
+	whitePlayer, blackPlayer *core.Player,
+	initialFEN string,
+	startingTurn core.Color,
+	initialState core.State,
+) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -29,11 +55,14 @@ func (s *Service) CreateGame(id string, whitePlayer, blackPlayer *core.Player, i
 		s.computerGames.Add(1)
 	}
 
-	// Store game with provided players
-	s.games[id] = game.New(initialFEN, whitePlayer, blackPlayer, startingTurn)
+	now := time.Now().UTC()
+	g := game.New(initialFEN, whitePlayer, blackPlayer, startingTurn)
+	g.SetStateAt(initialState, now)
+	s.games[id] = g
 
 	// Persist if storage enabled
 	if s.store != nil {
+		result, _ := initialState.Result()
 		record := storage.GameRecord{
 			GameID:          id,
 			InitialFEN:      initialFEN,
@@ -41,14 +70,21 @@ func (s *Service) CreateGame(id string, whitePlayer, blackPlayer *core.Player, i
 			WhiteType:       int(whitePlayer.Type),
 			WhiteLevel:      whitePlayer.Level,
 			WhiteSearchTime: whitePlayer.SearchTime,
+			WhiteClaimedBy:  whitePlayer.ClaimedBy,
 			BlackPlayerID:   blackPlayer.ID,
 			BlackType:       int(blackPlayer.Type),
 			BlackLevel:      blackPlayer.Level,
 			BlackSearchTime: blackPlayer.SearchTime,
-			StartTimeUTC:    time.Now().UTC(),
+			BlackClaimedBy:  blackPlayer.ClaimedBy,
+			Result:          result,
+			StartTimeUTC:    now,
+			EndTimeUTC:      g.EndTimeUTC(),
 		}
-		s.store.RecordNewGame(record)
+		if err := s.store.RecordNewGame(record); err != nil {
+			slog.Error("failed to queue game persistence", "game_id", id, "error", err)
+		}
 	}
+	slog.Debug("game created", "game_id", id, "state", initialState.String(), "persistent", s.store != nil)
 
 	return nil
 }
@@ -62,23 +98,85 @@ func (s *Service) UpdatePlayers(gameID string, whitePlayer, blackPlayer *core.Pl
 	if !ok {
 		return fmt.Errorf("game not found: %s", gameID)
 	}
+	if g.State() == core.StatePending {
+		return errors.New("cannot change players while computer is calculating")
+	}
 
-	// Update the game's players
+	oldWhite := g.GetPlayer(core.ColorWhite)
+	oldBlack := g.GetPlayer(core.ColorBlack)
+	oldHasComputer := g.HasComputerPlayer()
+	newHasComputer := whitePlayer.Type == core.PlayerComputer || blackPlayer.Type == core.PlayerComputer
+	if !oldHasComputer && newHasComputer && s.computerGames.Load() >= MaxComputerGames {
+		return fmt.Errorf("computer game limit reached (%d/%d)", s.computerGames.Load(), MaxComputerGames)
+	}
+
+	// Player configuration is mutable, but historical user association is not.
+	// Preserve a human ID while the slot remains human, and preserve any claim
+	// even if the slot later becomes computer-controlled.
+	if oldWhite != nil {
+		if oldWhite.Type == core.PlayerHuman && whitePlayer.Type == core.PlayerHuman {
+			whitePlayer.ID = oldWhite.ID
+		}
+		whitePlayer.ClaimedBy = oldWhite.ClaimedBy
+	}
+	if oldBlack != nil {
+		if oldBlack.Type == core.PlayerHuman && blackPlayer.Type == core.PlayerHuman {
+			blackPlayer.ID = oldBlack.ID
+		}
+		blackPlayer.ClaimedBy = oldBlack.ClaimedBy
+	}
+
 	g.UpdatePlayers(whitePlayer, blackPlayer)
+	if oldHasComputer != newHasComputer {
+		if newHasComputer {
+			s.computerGames.Add(1)
+		} else {
+			s.computerGames.Add(-1)
+		}
+	}
+	if s.store != nil {
+		err := s.store.RecordPlayers(gameID, playerRecord(whitePlayer), playerRecord(blackPlayer))
+		if err != nil {
+			slog.Error("failed to queue player persistence", "game_id", gameID, "error", err)
+		}
+	}
+	slog.Debug("game players updated", "game_id", gameID)
 
 	return nil
 }
 
-// GetGame retrieves a game by ID
-func (s *Service) GetGame(gameID string) (*game.Game, error) {
+// GetGameView retrieves an immutable game snapshot by ID.
+func (s *Service) GetGameView(gameID string) (game.View, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	g, ok := s.games[gameID]
 	if !ok {
-		return nil, fmt.Errorf("game not found: %s", gameID)
+		return game.View{}, fmt.Errorf("%w: %s", ErrGameNotFound, gameID)
 	}
-	return g, nil
+	return g.View(), nil
+}
+
+// BeginComputerMove is an optimistic state transition: only the request that
+// observed the current ongoing position may enqueue engine work.
+func (s *Service) BeginComputerMove(gameID, expectedFEN string, expectedTurn core.Color) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	g, ok := s.games[gameID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrGameNotFound, gameID)
+	}
+	if g.State() != core.StateOngoing || g.CurrentFEN() != expectedFEN || g.NextTurnColor() != expectedTurn {
+		return ErrGameChanged
+	}
+	if player := g.NextPlayer(); player == nil || player.Type != core.PlayerComputer {
+		return errors.New("current player is not a computer")
+	}
+	g.SetStateAt(core.StatePending, time.Now().UTC())
+	s.waiter.NotifyGame(gameID, len(g.Moves()), core.StatePending)
+	slog.Debug("computer move started", "game_id", gameID, "turn", expectedTurn.String())
+	return nil
 }
 
 // GenerateGameID creates a new unique game ID
@@ -95,70 +193,86 @@ func (s *Service) GenerateGameID() string {
 	}
 }
 
-// ApplyMove adds a validated move to the game history
-func (s *Service) ApplyMove(gameID, moveUCI, newFEN string) error {
+// ApplyMoveWithState verifies that the position validated by the processor is
+// still current, then commits the move, optional first-move claim, and result as
+// one in-memory transition and one SQLite transaction.
+func (s *Service) ApplyMoveWithState(gameID string, commit MoveCommit) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	g, ok := s.games[gameID]
 	if !ok {
-		return fmt.Errorf("game not found: %s", gameID)
+		return fmt.Errorf("%w: %s", ErrGameNotFound, gameID)
 	}
 
-	// Determine whose turn it was before this move
 	currentTurn := g.NextTurnColor()
-	nextTurn := core.OppositeColor(currentTurn)
+	if g.CurrentFEN() != commit.ExpectedFEN ||
+		g.State() != commit.ExpectedState ||
+		currentTurn != commit.ExpectedTurn {
+		return ErrGameChanged
+	}
 
-	// Add the new position to game history
-	g.AddSnapshot(newFEN, moveUCI, nextTurn)
-
-	// Notify waiting clients about the state change
-	s.waiter.NotifyGame(gameID, len(g.Moves()), g.State())
-
-	// Persist if storage enabled
-	if s.store != nil {
-		moveNumber := len(g.Moves())
-		record := storage.MoveRecord{
-			GameID:       gameID,
-			MoveNumber:   moveNumber,
-			MoveUCI:      moveUCI,
-			FENAfterMove: newFEN,
-			PlayerColor:  currentTurn.String(),
-			MoveTimeUTC:  time.Now().UTC(),
+	currentPlayer := g.NextPlayer()
+	claimUserID := ""
+	if currentPlayer == nil {
+		return errors.New("current player is missing")
+	}
+	if currentPlayer.Type == core.PlayerHuman {
+		owner := g.GetSlotOwner(currentTurn)
+		switch {
+		case owner != "" && commit.ActorUserID == "":
+			return ErrSlotOwner
+		case owner != "" && owner != commit.ActorUserID:
+			return ErrSlotOwner
+		case owner == "" && commit.ActorUserID != "":
+			claimUserID = commit.ActorUserID
 		}
-		s.store.RecordMove(record)
 	}
 
-	return nil
-}
-
-// ApplyMoveWithState atomically records a move, its resulting state, and move
-// metadata, then notifies waiters exactly once with the settled state.
-func (s *Service) ApplyMoveWithState(gameID, moveUCI, newFEN string, state core.State, result *game.MoveResult) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	g, ok := s.games[gameID]
-	if !ok {
-		return fmt.Errorf("game not found: %s", gameID)
+	at := commit.At.UTC()
+	if commit.At.IsZero() {
+		at = time.Now().UTC()
 	}
-
-	currentTurn := g.NextTurnColor()
-	g.AddSnapshot(newFEN, moveUCI, core.OppositeColor(currentTurn))
-	g.SetState(state)
-	if result != nil {
-		g.SetLastResult(result)
+	if claimUserID != "" {
+		if err := g.ClaimSlot(currentTurn, claimUserID); err != nil {
+			return err
+		}
 	}
-
-	s.waiter.NotifyGame(gameID, len(g.Moves()), state)
+	g.AddSnapshot(commit.NewFEN, commit.MoveUCI, core.OppositeColor(currentTurn))
+	g.SetStateAt(commit.State, at)
+	if commit.Result != nil {
+		g.SetLastResult(commit.Result)
+	}
 
 	if s.store != nil {
-		s.store.RecordMove(storage.MoveRecord{
-			GameID: gameID, MoveNumber: len(g.Moves()), MoveUCI: moveUCI,
-			FENAfterMove: newFEN, PlayerColor: currentTurn.String(),
-			MoveTimeUTC: time.Now().UTC(),
-		})
+		result, _ := commit.State.Result()
+		persistence := storage.MovePersistence{
+			Move: storage.MoveRecord{
+				GameID: gameID, MoveNumber: len(g.Moves()), MoveUCI: commit.MoveUCI,
+				FENAfterMove: commit.NewFEN, PlayerColor: currentTurn.String(), MoveTimeUTC: at,
+			},
+			ClaimColor: currentTurn.String(),
+			ClaimedBy:  claimUserID,
+			Result:     result,
+			EndTimeUTC: g.EndTimeUTC(),
+		}
+		if claimUserID == "" {
+			persistence.ClaimColor = ""
+		}
+		if err := s.store.RecordMove(persistence); err != nil {
+			slog.Error("failed to queue move persistence",
+				"game_id", gameID, "move_number", len(g.Moves()), "error", err)
+		}
 	}
+
+	s.waiter.NotifyGame(gameID, len(g.Moves()), commit.State)
+	slog.Debug("game move applied",
+		"game_id", gameID,
+		"move_number", len(g.Moves()),
+		"move", commit.MoveUCI,
+		"state", commit.State.String(),
+		"slot_claimed", claimUserID != "",
+	)
 	return nil
 }
 
@@ -169,12 +283,21 @@ func (s *Service) UpdateGameState(gameID string, state core.State) error {
 
 	g, ok := s.games[gameID]
 	if !ok {
-		return fmt.Errorf("game not found: %s", gameID)
+		return fmt.Errorf("%w: %s", ErrGameNotFound, gameID)
 	}
 
-	g.SetState(state)
+	previousState := g.State()
+	now := time.Now().UTC()
+	g.SetStateAt(state, now)
+	if s.store != nil && state.IsTerminal() && !previousState.IsTerminal() {
+		result, _ := state.Result()
+		if err := s.store.RecordGameResult(gameID, result, now); err != nil {
+			slog.Error("failed to queue game result persistence", "game_id", gameID, "error", err)
+		}
+	}
 	// Notify unconditionally; the registry decides.
 	s.waiter.NotifyGame(gameID, len(g.Moves()), state)
+	slog.Debug("game state updated", "game_id", gameID, "from", previousState.String(), "to", state.String())
 
 	return nil
 }
@@ -186,7 +309,7 @@ func (s *Service) SetLastMoveResult(gameID string, result *game.MoveResult) erro
 
 	g, ok := s.games[gameID]
 	if !ok {
-		return fmt.Errorf("game not found: %s", gameID)
+		return fmt.Errorf("%w: %s", ErrGameNotFound, gameID)
 	}
 
 	g.SetLastResult(result)
@@ -200,7 +323,10 @@ func (s *Service) UndoMoves(gameID string, count int) error {
 
 	g, ok := s.games[gameID]
 	if !ok {
-		return fmt.Errorf("game not found: %s", gameID)
+		return fmt.Errorf("%w: %s", ErrGameNotFound, gameID)
+	}
+	if g.State() == core.StatePending {
+		return errors.New("cannot undo while computer move is in progress")
 	}
 
 	originalMoveCount := len(g.Moves())
@@ -215,8 +341,11 @@ func (s *Service) UndoMoves(gameID string, count int) error {
 	// Delete undone moves from storage if enabled
 	if s.store != nil {
 		remainingMoves := originalMoveCount - count
-		s.store.DeleteUndoneMoves(gameID, remainingMoves)
+		if err := s.store.RewindGame(gameID, remainingMoves); err != nil {
+			slog.Error("failed to queue game rewind persistence", "game_id", gameID, "error", err)
+		}
 	}
+	slog.Debug("game moves undone", "game_id", gameID, "count", count, "remaining_moves", len(g.Moves()))
 
 	return nil
 }
@@ -228,7 +357,10 @@ func (s *Service) DeleteGame(gameID string) error {
 
 	g, ok := s.games[gameID]
 	if !ok {
-		return fmt.Errorf("game not found: %s", gameID)
+		return fmt.Errorf("%w: %s", ErrGameNotFound, gameID)
+	}
+	if g.State() == core.StatePending {
+		return errors.New("cannot delete game while computer move is in progress")
 	}
 
 	// Decrement computer game count if applicable
@@ -240,6 +372,16 @@ func (s *Service) DeleteGame(gameID string) error {
 	s.waiter.RemoveGame(gameID)
 
 	delete(s.games, gameID)
+	slog.Debug("game unloaded from memory", "game_id", gameID)
 	return nil
 }
 
+func playerRecord(player *core.Player) storage.PlayerRecord {
+	return storage.PlayerRecord{
+		PlayerID:   player.ID,
+		Type:       int(player.Type),
+		Level:      player.Level,
+		SearchTime: player.SearchTime,
+		ClaimedBy:  player.ClaimedBy,
+	}
+}

@@ -3,7 +3,7 @@ package processor
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -33,11 +33,15 @@ type EngineResult struct {
 
 // EngineQueue manages async engine computations
 type EngineQueue struct {
-	tasks   chan EngineTask
-	workers int
-	wg      sync.WaitGroup
-	ctx     context.Context
-	cancel  context.CancelFunc
+	tasks        chan EngineTask
+	workers      int
+	wg           sync.WaitGroup
+	callbackWG   sync.WaitGroup
+	ctx          context.Context
+	cancel       context.CancelFunc
+	submitMu     sync.RWMutex
+	closed       bool
+	shutdownOnce sync.Once
 }
 
 // NewEngineQueue creates a queue with specified worker count
@@ -76,7 +80,7 @@ func (q *EngineQueue) worker(id int) {
 		if eng, err = engine.New(); err == nil {
 			break
 		}
-		log.Printf("worker %d: engine init failed: %v; retrying", id, err)
+		slog.Warn("engine worker initialization failed; retrying", "worker", id, "error", err)
 		select {
 		case <-q.ctx.Done():
 			return
@@ -84,6 +88,7 @@ func (q *EngineQueue) worker(id int) {
 		}
 	}
 	defer eng.Close()
+	slog.Debug("engine worker started", "worker", id)
 	for {
 		select {
 		case task, ok := <-q.tasks:
@@ -99,6 +104,10 @@ func (q *EngineQueue) worker(id int) {
 
 // processTask executes a single engine calculation
 func (q *EngineQueue) processTask(eng *engine.UCI, task EngineTask) EngineResult {
+	started := time.Now()
+	defer func() {
+		slog.Debug("engine task completed", "game_id", task.GameID, "duration", time.Since(started))
+	}()
 	result := EngineResult{GameID: task.GameID}
 	if err := eng.NewGame(); err != nil {
 		result.Error = err
@@ -134,8 +143,18 @@ func (q *EngineQueue) processTask(eng *engine.UCI, task EngineTask) EngineResult
 
 // Submit adds a task to the queue
 func (q *EngineQueue) Submit(task EngineTask) error {
+	q.submitMu.RLock()
+	defer q.submitMu.RUnlock()
+	return q.submitLocked(task)
+}
+
+func (q *EngineQueue) submitLocked(task EngineTask) error {
+	if q.closed {
+		return fmt.Errorf("queue is shutting down")
+	}
 	select {
 	case q.tasks <- task:
+		slog.Debug("engine task queued", "game_id", task.GameID, "queue_depth", len(q.tasks))
 		return nil
 	case <-q.ctx.Done():
 		return fmt.Errorf("queue is shutting down")
@@ -146,8 +165,24 @@ func (q *EngineQueue) Submit(task EngineTask) error {
 
 // SubmitAsync submits a task without blocking for result
 func (q *EngineQueue) SubmitAsync(gameID, fen string, color core.Color, player *core.Player, callback func(EngineResult)) error {
+	if player == nil {
+		return fmt.Errorf("computer player is missing")
+	}
+	if callback == nil {
+		return fmt.Errorf("engine callback is missing")
+	}
 	respChan := make(chan EngineResult, 1)
-	if err := q.Submit(EngineTask{GameID: gameID, FEN: fen, Color: color, Player: player, Response: respChan}); err != nil {
+	q.submitMu.RLock()
+	err := q.submitLocked(EngineTask{
+		GameID: gameID, FEN: fen, Color: color, Player: player, Response: respChan,
+	})
+	if err == nil {
+		// Registered while the submit lock is held, so Shutdown cannot begin
+		// waiting between a successful send and this Add.
+		q.callbackWG.Add(1)
+	}
+	q.submitMu.RUnlock()
+	if err != nil {
 		return err
 	}
 	budget := 1000
@@ -156,11 +191,18 @@ func (q *EngineQueue) SubmitAsync(gameID, fen string, color core.Color, player *
 	}
 	wait := time.Duration(budget)*time.Millisecond*2 + 30*time.Second // search budget + queue-wait headroom
 	go func() {
+		defer q.callbackWG.Done()
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
 		select {
 		case result := <-respChan:
 			callback(result)
-		case <-time.After(wait):
+		case <-timer.C:
 			callback(EngineResult{GameID: gameID, Error: fmt.Errorf("engine timeout")})
+		case <-q.ctx.Done():
+			// Live state is intentionally abandoned during server shutdown. The
+			// last fully committed position remains the durable replay boundary.
+			return
 		}
 	}()
 	return nil
@@ -168,12 +210,18 @@ func (q *EngineQueue) SubmitAsync(gameID, fen string, color core.Color, player *
 
 // Shutdown gracefully stops the queue
 func (q *EngineQueue) Shutdown(timeout time.Duration) error {
-	q.cancel()
-	close(q.tasks)
+	q.shutdownOnce.Do(func() {
+		q.submitMu.Lock()
+		q.closed = true
+		q.cancel()
+		close(q.tasks)
+		q.submitMu.Unlock()
+	})
 
 	done := make(chan struct{})
 	go func() {
 		q.wg.Wait()
+		q.callbackWG.Wait()
 		close(done)
 	}()
 

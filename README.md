@@ -3,7 +3,7 @@
     <td>
       <h1>♚♛♜♝♞</h1>
       <p>
-        <a href="https://golang.org"><img src="https://img.shields.io/badge/Go-1.25-00ADD8?style=flat&logo=go" alt="Go 1.25"></a>
+        <a href="https://golang.org"><img src="https://img.shields.io/badge/Go-1.26-00ADD8?style=flat&logo=go" alt="Go 1.26"></a>
         <a href="https://opensource.org/licenses/BSD-3-Clause"><img src="https://img.shields.io/badge/License-BSD_3--Clause-blue.svg" alt="License BSD-3"></a>
       </p>
     </td>
@@ -24,13 +24,16 @@ Go backend server providing a RESTful API for chess gameplay with user authentic
 - Asynchronous engine move calculation
 - Configurable engine strength and thinking time
 - SQLite persistence with async writes for games
+- Durable game results, player claims, ordered move history, and replay API
+- Authenticated stored-game listing with bounded pagination
+- Configurable structured debug logs for persistence, cleanup, and engine work
 - User management with secure Argon2 password storage
 - PID file management for singleton enforcement
 - Database CLI for storage and user administration
 
 ## Requirements
 
-- Go 1.25+
+- Go 1.26+
 - Stockfish chess engine (`stockfish` in PATH)
 - SQLite3 (for persistence features)
 
@@ -78,7 +81,10 @@ go build ./cmd/chess-server
 ./chess-server -storage-path chess.db
 
 # Development mode with all features
-./chess-server -dev -storage-path chess.db -pid /tmp/chess-server.pid -pid-lock -port 9090
+./chess-server -dev -storage-path chess.db -pid /tmp/chess-server.pid -pid-lock -api-port 9090
+
+# Detailed persistence and HTTP diagnostics
+./chess-server -dev -storage-path chess.db -log-level debug -log-http=true
 
 # Initialize database with user support
 ./chess-server db init -path chess.db
@@ -135,13 +141,16 @@ The chess server includes an embedded web UI for playing games through a browser
 
 # Full example with authentication enabled
 ./chess-server -dev -serve -web-port 9090 -api-port 8080 -storage-path chess.db
+
+# Override the API origin seen by browsers when it differs from the listen address
+./chess-server -serve -web-api-url https://api.example.com
 ```
 
 ### Features
 - Visual chess board with drag-and-drop moves
 - Human vs Computer gameplay
 - Configurable engine strength (0-20)
-- Move history with algebraic notation
+- UCI move history with move numbers
 - FEN display and custom starting positions
 - Real-time server health monitoring
 - User authentication support
@@ -155,6 +164,7 @@ Access the UI at `http://localhost:9090` when server is running with `-serve` fl
 - [Architecture](./doc/architecture.md) - System design with auth layer
 - [Development](./doc/development.md) - Build, test, and user management
 - [Client Guide](./doc/client.md) - Interactive debugging client
+- [Replay Implementation Tasks](./doc/todo.md) - Remaining CLI, web, archive, and production work
 - [Stockfish Integration](./doc/stockfish.md) - Engine communication
 
 ## License

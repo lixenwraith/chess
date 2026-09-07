@@ -18,10 +18,12 @@ const (
 
 // WaitRegistry manages clients waiting for game state changes via long-polling
 type WaitRegistry struct {
-	mu       sync.RWMutex
-	waiters  map[string][]*WaitRequest // gameID → waiting clients
-	shutdown chan struct{}
-	wg       sync.WaitGroup
+	mu           sync.RWMutex
+	waiters      map[string][]*WaitRequest // gameID → waiting clients
+	shutdown     chan struct{}
+	wg           sync.WaitGroup
+	closed       bool
+	shutdownOnce sync.Once
 }
 
 // WaitRequest represents a single client waiting for game updates
@@ -31,6 +33,8 @@ type WaitRequest struct {
 	Timer     *time.Timer     // Timeout timer
 	Context   context.Context // Client connection context
 	GameID    string          // Game being watched
+	done      chan struct{}
+	finish    sync.Once
 }
 
 // NewWaitRegistry creates a new wait registry
@@ -44,7 +48,12 @@ func NewWaitRegistry() *WaitRegistry {
 // RegisterWait registers a client to wait for game state changes
 func (w *WaitRegistry) RegisterWait(gameID string, moveCount int, ctx context.Context) <-chan struct{} {
 	w.mu.Lock()
-	defer w.mu.Unlock()
+	if w.closed {
+		w.mu.Unlock()
+		notify := make(chan struct{})
+		close(notify)
+		return notify
+	}
 
 	// Create wait request
 	req := &WaitRequest{
@@ -52,11 +61,12 @@ func (w *WaitRegistry) RegisterWait(gameID string, moveCount int, ctx context.Co
 		Notify:    make(chan struct{}, WaitChannelBuffer),
 		Context:   ctx,
 		GameID:    gameID,
+		done:      make(chan struct{}),
 	}
 
 	// Setup timeout timer
 	req.Timer = time.AfterFunc(WaitTimeout, func() {
-		w.handleTimeout(req)
+		w.complete(req)
 	})
 
 	// Add to waiters map
@@ -64,20 +74,15 @@ func (w *WaitRegistry) RegisterWait(gameID string, moveCount int, ctx context.Co
 
 	// Setup cleanup on context cancellation
 	w.wg.Add(1)
+	w.mu.Unlock()
 	go func() {
 		defer w.wg.Done()
 		select {
 		case <-ctx.Done():
-			// Client disconnected
-			w.removeWaiter(gameID, req)
-		case <-req.Notify:
-			// Notification received
-			req.Timer.Stop()
-			w.removeWaiter(gameID, req)
+			w.complete(req)
 		case <-w.shutdown:
-			// Server shutting down
-			req.Timer.Stop()
-			close(req.Notify)
+			w.complete(req)
+		case <-req.done:
 		}
 	}()
 
@@ -87,7 +92,7 @@ func (w *WaitRegistry) RegisterWait(gameID string, moveCount int, ctx context.Co
 // NotifyGame notifies all clients waiting on a game about state change
 func (w *WaitRegistry) NotifyGame(gameID string, currentMoveCount int, state core.State) {
 	w.mu.RLock()
-	waitList := w.waiters[gameID]
+	waitList := append([]*WaitRequest(nil), w.waiters[gameID]...)
 	w.mu.RUnlock()
 	if len(waitList) == 0 {
 		return
@@ -95,33 +100,31 @@ func (w *WaitRegistry) NotifyGame(gameID string, currentMoveCount int, state cor
 	settled := state != core.StateOngoing && state != core.StatePending
 	for _, req := range waitList {
 		if settled || req.MoveCount != currentMoveCount {
-			select {
-			case req.Notify <- struct{}{}:
-			default:
-			}
+			w.complete(req)
 		}
 	}
 }
 
 // RemoveGame removes all waiters for a game (called before game deletion)
 func (w *WaitRegistry) RemoveGame(gameID string) {
-	w.mu.Lock()
-	waitList := w.waiters[gameID]
-	delete(w.waiters, gameID)
-	w.mu.Unlock()
+	w.mu.RLock()
+	waitList := append([]*WaitRequest(nil), w.waiters[gameID]...)
+	w.mu.RUnlock()
 
 	// Notify all waiters that game is gone
 	for _, req := range waitList {
-		select {
-		case req.Notify <- struct{}{}:
-		default:
-		}
+		w.complete(req)
 	}
 }
 
 // Shutdown gracefully shuts down the wait registry
 func (w *WaitRegistry) Shutdown(timeout time.Duration) error {
-	close(w.shutdown)
+	w.shutdownOnce.Do(func() {
+		w.mu.Lock()
+		w.closed = true
+		close(w.shutdown)
+		w.mu.Unlock()
+	})
 
 	// Wait for all goroutines with timeout
 	done := make(chan struct{})
@@ -138,36 +141,27 @@ func (w *WaitRegistry) Shutdown(timeout time.Duration) error {
 	}
 }
 
-// handleTimeout handles wait request timeout
-func (w *WaitRegistry) handleTimeout(req *WaitRequest) {
-	// Send timeout notification
-	select {
-	case req.Notify <- struct{}{}:
-		// Timeout notification sent
-	default:
-		// Channel full or closed
-	}
-}
+// complete removes a waiter and closes its notification channel exactly once.
+// The registry never consumes Notify itself: the HTTP handler is its sole
+// consumer, so a state-change signal cannot be lost to a cleanup goroutine.
+func (w *WaitRegistry) complete(req *WaitRequest) {
+	req.finish.Do(func() {
+		req.Timer.Stop()
 
-// removeWaiter removes a specific waiter from the registry
-func (w *WaitRegistry) removeWaiter(gameID string, req *WaitRequest) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	waitList := w.waiters[gameID]
-	for i, waiter := range waitList {
-		if waiter == req {
-			// Remove from slice
-			w.waiters[gameID] = append(waitList[:i], waitList[i+1:]...)
-			break
+		w.mu.Lock()
+		waitList := w.waiters[req.GameID]
+		for i, waiter := range waitList {
+			if waiter == req {
+				w.waiters[req.GameID] = append(waitList[:i], waitList[i+1:]...)
+				break
+			}
 		}
-	}
+		if len(w.waiters[req.GameID]) == 0 {
+			delete(w.waiters, req.GameID)
+		}
+		w.mu.Unlock()
 
-	// Clean up empty entries
-	if len(w.waiters[gameID]) == 0 {
-		delete(w.waiters, gameID)
-	}
-
-	// Stop timer if still running
-	req.Timer.Stop()
+		close(req.done)
+		close(req.Notify)
+	})
 }

@@ -8,7 +8,7 @@ This directory contains comprehensive test suites for the Chess API server, cove
 - `curl` - HTTP client
 - `sqlite3` - SQLite CLI (for database tests)
 - `base64` - Base64 encoder (for JWT tests)
-- Compiled `chessd` binary in accessible path
+- Compiled `bin/chess-server` binary (or pass another path to the scripts)
 
 ## Running the test server
 From repo root
@@ -16,17 +16,21 @@ From repo root
 test/run-test-server.sh
 ```
 
-Pass binary path as first argument of the script if it's not placed in current directory `./chessd`.
-Server will run with '-dev' option, enabling db WAL mode and relaxing rate limiting.
+Pass the binary path as the first argument when it is not at `bin/chess-server`.
+The server runs with `-dev`, debug logging, HTTP request logging, and relaxed rate limiting. WAL is enabled for every persistent server mode.
 Will clean up test database and temporary files, so it's preferred for clean testing.
 Can be used for all the tests.
+
+Logging can be adjusted without editing the script:
+```bash
+LOG_LEVEL=info LOG_HTTP=false test/run-test-server.sh bin/chess-server
+```
 
 ### Pre-configured Users
 | Username | Password | Email |
 |----------|----------|-------|
 | alice | AlicePass123 | alice@example.com |
 | bob | BobPass456 | bob@example.com |
-| charlie | CharliePass789 | - |
 
 ### Features
 - Automatically initializes database schema
@@ -34,6 +38,7 @@ Can be used for all the tests.
 - Runs on port 8080 (API) and 9090 (Web UI)
 - Development mode with relaxed rate limits
 - Fixed JWT secret for consistent tokens
+- Debug persistence and engine-queue logs by default
 - Graceful shutdown on Ctrl+C
 
 ### Manual Testing Examples
@@ -67,8 +72,8 @@ Tests core game mechanics and API endpoints.
 ### Running the test
 ```bash
 # Terminal 1: Start server in development mode
-test/run-test-server.sh ./chessd
-# Direct (no cleanup required): ./chessd -dev
+test/run-test-server.sh bin/chess-server
+# Direct (no cleanup required): bin/chess-server -dev
 
 # Terminal 2: Run API tests
 test/test-api.sh
@@ -92,11 +97,11 @@ Tests user management, authentication, and persistence via API integration.
 ### Running the test
 ```bash
 # Terminal 1: Start test server with database
-# Server is running with -dev option (WAL mode db)
-test/test-db-server.sh ./chessd
+# Server is running with -dev and persistent WAL storage
+test/test-db-server.sh bin/chess-server
 
 # Terminal 2: Run API integration tests
-test/test-db.sh ./chessd
+test/test-db.sh bin/chess-server
 ```
 
 ### Coverage
@@ -123,8 +128,8 @@ Tests real-time game updates via HTTP long-polling.
 ### Running the test
 ```bash
 # Terminal 1: Start server with storage
-test/run-test-server.sh ./chessd
-# Direct (test.db cleanup required): ./chessd -dev -storage-path test.db
+test/run-test-server.sh bin/chess-server
+# Direct (test.db cleanup required): bin/chess-server -dev -storage-path test.db
 
 # Terminal 2: Run long-polling tests
 test/test-longpoll.sh

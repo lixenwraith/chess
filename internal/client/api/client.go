@@ -23,7 +23,7 @@ type Client struct {
 
 func New(baseURL string) *Client {
 	return &Client{
-		BaseURL: baseURL,
+		BaseURL: strings.TrimRight(baseURL, "/"),
 		HTTPClient: &http.Client{
 			Timeout: HttpTimeout,
 		},
@@ -81,7 +81,7 @@ func (c *Client) doRequest(method, path string, body any, result any) error {
 			json.Unmarshal([]byte(bodyStr), &prettyBody)
 			prettyJSON, _ := json.MarshalIndent(prettyBody, "", "  ")
 			display.Println(display.Cyan, "Request Body:")
-			display.Println(display.Reset, string(prettyJSON))
+			display.Println(display.Reset, "%s", string(prettyJSON))
 		} else {
 			display.Print(display.Blue, "%s\n", bodyStr)
 		}
@@ -114,10 +114,10 @@ func (c *Client) doRequest(method, path string, body any, result any) error {
 		if err := json.Unmarshal(respBody, &prettyResp); err == nil {
 			prettyJSON, _ := json.MarshalIndent(prettyResp, "", "  ")
 			display.Println(display.Cyan, "Response Body:")
-			display.Println(display.Reset, string(prettyJSON))
+			display.Println(display.Reset, "%s", string(prettyJSON))
 		} else {
 			display.Println(display.Cyan, "Response:")
-			display.Println(display.Reset, string(respBody))
+			display.Println(display.Reset, "%s", string(respBody))
 		}
 	}
 
@@ -135,7 +135,7 @@ func (c *Client) doRequest(method, path string, body any, result any) error {
 				}
 			}
 		} else if !c.Verbose {
-			display.Println(display.Red, string(respBody))
+			display.Println(display.Red, "%s", string(respBody))
 		}
 		return fmt.Errorf("request failed with status %d", resp.StatusCode)
 	}
@@ -201,6 +201,19 @@ func (c *Client) UndoMoves(gameID string, count int) (*GameResponse, error) {
 func (c *Client) GetBoard(gameID string) (*BoardResponse, error) {
 	var resp BoardResponse
 	err := c.doRequest("GET", "/api/v1/games/"+gameID+"/board", nil, &resp)
+	return &resp, err
+}
+
+func (c *Client) GetGameHistory(gameID string) (*GameHistoryResponse, error) {
+	var resp GameHistoryResponse
+	err := c.doRequest("GET", "/api/v1/games/"+gameID+"/history", nil, &resp)
+	return &resp, err
+}
+
+func (c *Client) GetMyGames(limit, offset int) (*GameListResponse, error) {
+	var resp GameListResponse
+	path := fmt.Sprintf("/api/v1/users/me/games?limit=%d&offset=%d", limit, offset)
+	err := c.doRequest("GET", path, nil, &resp)
 	return &resp, err
 }
 

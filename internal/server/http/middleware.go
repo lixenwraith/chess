@@ -1,9 +1,11 @@
 package http
 
 import (
+	"errors"
 	"strings"
 
 	"chess/internal/server/core"
+	"chess/internal/server/service"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -18,15 +20,20 @@ func AuthRequired(validateToken TokenValidator) fiber.Handler {
 		if token == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(core.ErrorResponse{
 				Error: "missing authorization token",
-				Code:  core.ErrInvalidRequest,
+				Code:  core.ErrUnauthorized,
 			})
 		}
 
 		userID, claims, err := validateToken(token)
 		if err != nil {
+			if errors.Is(err, service.ErrStorageDisabled) || errors.Is(err, service.ErrStorageUnavailable) {
+				return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+					Error: "authentication storage unavailable", Code: core.ErrStorageUnavailable,
+				})
+			}
 			return c.Status(fiber.StatusUnauthorized).JSON(core.ErrorResponse{
 				Error: "invalid or expired token",
-				Code:  core.ErrInvalidRequest,
+				Code:  core.ErrUnauthorized,
 			})
 		}
 
@@ -38,7 +45,8 @@ func AuthRequired(validateToken TokenValidator) fiber.Handler {
 	}
 }
 
-// OptionalAuth validates JWT if present but allows anonymous access
+// OptionalAuth permits an absent token but rejects an invalid token instead of
+// silently downgrading an intended authenticated request to anonymous access.
 func OptionalAuth(validateToken TokenValidator) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		token := extractBearerToken(c.Get("Authorization"))
@@ -47,11 +55,20 @@ func OptionalAuth(validateToken TokenValidator) fiber.Handler {
 		}
 
 		userID, claims, err := validateToken(token)
-		if err == nil {
-			c.Locals("userID", userID)
-			if sessionID, ok := claims["session_id"].(string); ok {
-				c.Locals("sessionID", sessionID)
+		if err != nil {
+			if errors.Is(err, service.ErrStorageDisabled) || errors.Is(err, service.ErrStorageUnavailable) {
+				return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+					Error: "authentication storage unavailable", Code: core.ErrStorageUnavailable,
+				})
 			}
+			return c.Status(fiber.StatusUnauthorized).JSON(core.ErrorResponse{
+				Error: "invalid or expired token", Code: core.ErrUnauthorized,
+			})
+		}
+
+		c.Locals("userID", userID)
+		if sessionID, ok := claims["session_id"].(string); ok {
+			c.Locals("sessionID", sessionID)
 		}
 		return c.Next()
 	}
