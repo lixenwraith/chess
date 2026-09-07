@@ -1,8 +1,10 @@
 package service
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 
 var (
 	ErrStorageDisabled    = errors.New("storage disabled")
+	ErrStorageUnavailable = errors.New("storage unavailable")
 	ErrAtCapacity         = errors.New("at capacity")
 	ErrPermanentSlotsFull = errors.New("permanent slots full")
 )
@@ -30,14 +33,25 @@ type User struct {
 
 // CreateUser creates new user with registration limits enforcement
 func (s *Service) CreateUser(username, email, password string, permanent bool) (*User, error) {
-	if s.store == nil {
-		return nil, ErrStorageDisabled
-	}
+	user, _, err := s.createUser(username, email, password, permanent, false)
+	return user, err
+}
 
-	// Check registration limits
-	total, permCount, _, err := s.store.GetUserCounts()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get user count: %w", err)
+// RegisterUser creates the account and its initial session in one SQLite
+// transaction, so a successful registration always returns a usable account.
+func (s *Service) RegisterUser(username, email, password string, permanent bool) (*User, string, error) {
+	return s.createUser(username, email, password, permanent, true)
+}
+
+func (s *Service) createUser(
+	username, email, password string,
+	permanent, withSession bool,
+) (*User, string, error) {
+	s.userMu.Lock()
+	defer s.userMu.Unlock()
+
+	if s.store == nil {
+		return nil, "", ErrStorageDisabled
 	}
 
 	// Determine account type
@@ -45,32 +59,22 @@ func (s *Service) CreateUser(username, email, password string, permanent bool) (
 	var expiresAt *time.Time
 
 	if permanent {
-		if permCount >= PermanentSlots {
-			return nil, fmt.Errorf("%w (%d/%d)", ErrPermanentSlotsFull, permCount, PermanentSlots)
-		}
 		accountType = "permanent"
 	} else {
 		expiry := time.Now().UTC().Add(TempUserTTL)
 		expiresAt = &expiry
 	}
 
-	// Handle capacity - remove oldest temp user if at max
-	if total >= MaxUsers {
-		if err := s.removeOldestTempUser(); err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrAtCapacity, err)
-		}
-	}
-
 	// Hash password
 	passwordHash, err := auth.HashPassword(password)
 	if err != nil {
-		return nil, fmt.Errorf("failed to hash password: %w", err)
+		return nil, "", fmt.Errorf("failed to hash password: %w", err)
 	}
 
 	// Generate unique user ID
 	userID, err := s.generateUniqueUserID()
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate unique ID: %w", err)
+		return nil, "", fmt.Errorf("failed to generate unique ID: %w", err)
 	}
 
 	// Create user record
@@ -93,35 +97,46 @@ func (s *Service) CreateUser(username, email, password string, permanent bool) (
 		ExpiresAt:    expiresAt,
 	}
 
-	if err = s.store.CreateUser(record); err != nil {
-		return nil, err
+	var sessionID string
+	var session *storage.SessionRecord
+	if withSession {
+		sessionID = uuid.New().String()
+		session = &storage.SessionRecord{
+			SessionID: sessionID,
+			UserID:    userID,
+			CreatedAt: user.CreatedAt,
+			ExpiresAt: user.CreatedAt.Add(SessionTTL),
+		}
 	}
-
-	return user, nil
-}
-
-// removeOldestTempUser removes the oldest temporary user to make room
-func (s *Service) removeOldestTempUser() error {
-	oldest, err := s.store.GetOldestTempUser()
-	if err != nil {
-		return fmt.Errorf("no temp users to remove: %w", err)
+	limits := storage.UserLimits{
+		MaxUsers:       MaxUsers,
+		PermanentSlots: PermanentSlots,
 	}
-
-	// Delete their session first
-	_ = s.store.DeleteSessionByUserID(oldest.UserID)
-
-	// Delete the user
-	if err := s.store.DeleteUserByID(oldest.UserID); err != nil {
-		return fmt.Errorf("failed to remove oldest user: %w", err)
+	if err = s.store.CreateUserWithinLimits(record, session, limits); err != nil {
+		switch {
+		case errors.Is(err, storage.ErrUserAlreadyExists):
+			return nil, "", fmt.Errorf("username or email already exists: %w", err)
+		case errors.Is(err, storage.ErrPermanentCapacity):
+			return nil, "", fmt.Errorf("%w (%d maximum)", ErrPermanentSlotsFull, PermanentSlots)
+		case errors.Is(err, storage.ErrUserCapacity):
+			return nil, "", fmt.Errorf("%w: no temporary account can be replaced", ErrAtCapacity)
+		default:
+			return nil, "", fmt.Errorf("%w: create user: %v", ErrStorageUnavailable, err)
+		}
 	}
+	slog.Debug("user created",
+		"user_id", userID,
+		"account_type", accountType,
+		"initial_session", withSession,
+	)
 
-	return nil
+	return user, sessionID, nil
 }
 
 // AuthenticateUser verifies credentials and creates a new session
 func (s *Service) AuthenticateUser(identifier, password string) (*User, string, error) {
 	if s.store == nil {
-		return nil, "", fmt.Errorf("storage disabled")
+		return nil, "", ErrStorageDisabled
 	}
 
 	var userRecord *storage.UserRecord
@@ -136,6 +151,9 @@ func (s *Service) AuthenticateUser(identifier, password string) (*User, string, 
 
 	if err != nil {
 		auth.HashPassword(password) // Timing attack prevention
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, "", fmt.Errorf("%w: look up user: %v", ErrStorageUnavailable, err)
+		}
 		return nil, "", fmt.Errorf("invalid credentials")
 	}
 
@@ -161,11 +179,14 @@ func (s *Service) AuthenticateUser(identifier, password string) (*User, string, 
 	}
 
 	if err := s.store.CreateSession(sessionRecord); err != nil {
-		return nil, "", fmt.Errorf("failed to create session: %w", err)
+		return nil, "", fmt.Errorf("%w: create session: %v", ErrStorageUnavailable, err)
 	}
+	slog.Debug("user authenticated", "user_id", userRecord.UserID)
 
 	// Update last login
-	_ = s.store.UpdateUserLastLoginSync(userRecord.UserID, time.Now().UTC())
+	if err := s.store.UpdateUserLastLoginSync(userRecord.UserID, time.Now().UTC()); err != nil {
+		slog.Warn("failed to record user login time", "user_id", userRecord.UserID, "error", err)
+	}
 
 	return &User{
 		UserID:      userRecord.UserID,
@@ -180,28 +201,38 @@ func (s *Service) AuthenticateUser(identifier, password string) (*User, string, 
 // ValidateSession checks if a session is valid
 func (s *Service) ValidateSession(sessionID string) (bool, error) {
 	if s.store == nil {
-		return false, fmt.Errorf("storage disabled")
+		return false, ErrStorageDisabled
 	}
-	return s.store.IsSessionValid(sessionID)
+	valid, err := s.store.IsSessionValid(sessionID)
+	if err != nil {
+		return false, fmt.Errorf("%w: validate session: %v", ErrStorageUnavailable, err)
+	}
+	return valid, nil
 }
 
 // InvalidateSession removes a session (logout)
 func (s *Service) InvalidateSession(sessionID string) error {
 	if s.store == nil {
-		return fmt.Errorf("storage disabled")
+		return ErrStorageDisabled
 	}
-	return s.store.DeleteSession(sessionID)
+	if err := s.store.DeleteSession(sessionID); err != nil {
+		return fmt.Errorf("%w: invalidate session: %v", ErrStorageUnavailable, err)
+	}
+	return nil
 }
 
 // GetUserByID retrieves user information by user ID
 func (s *Service) GetUserByID(userID string) (*User, error) {
 	if s.store == nil {
-		return nil, fmt.Errorf("storage disabled")
+		return nil, ErrStorageDisabled
 	}
 
 	userRecord, err := s.store.GetUserByID(userID)
 	if err != nil {
-		return nil, fmt.Errorf("user not found")
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("user not found")
+		}
+		return nil, fmt.Errorf("%w: get user: %v", ErrStorageUnavailable, err)
 	}
 
 	return &User{
@@ -237,12 +268,19 @@ func (s *Service) ValidateToken(token string) (string, map[string]any, error) {
 		return "", nil, err
 	}
 
-	// Validate session is still active
-	if sessionID, ok := claims["session_id"].(string); ok && s.store != nil {
-		valid, err := s.store.IsSessionValid(sessionID)
-		if err != nil || !valid {
-			return "", nil, fmt.Errorf("session invalidated")
-		}
+	if s.store == nil {
+		return "", nil, ErrStorageDisabled
+	}
+	sessionID, ok := claims["session_id"].(string)
+	if !ok || sessionID == "" {
+		return "", nil, fmt.Errorf("token has no persisted session")
+	}
+	valid, err := s.store.IsSessionValidForUser(sessionID, userID)
+	if err != nil {
+		return "", nil, fmt.Errorf("%w: validate token session: %v", ErrStorageUnavailable, err)
+	}
+	if !valid {
+		return "", nil, fmt.Errorf("session invalidated")
 	}
 
 	return userID, claims, nil
@@ -254,19 +292,22 @@ func (s *Service) generateUniqueUserID() (string, error) {
 
 	for i := 0; i < maxAttempts; i++ {
 		id := uuid.New().String()
-		if _, err := s.store.GetUserByID(id); err != nil {
+		if _, err := s.store.GetUserByID(id); errors.Is(err, sql.ErrNoRows) {
 			return id, nil
+		} else if err != nil {
+			return "", fmt.Errorf("%w: check generated user ID: %v", ErrStorageUnavailable, err)
 		}
 	}
 
 	return "", fmt.Errorf("failed to generate unique user ID")
 }
 
-// CreateUserSession creates a session for a user without re-authenticating
-// Used after registration to avoid redundant password hashing
+// CreateUserSession creates a session for a trusted internal caller without
+// re-authenticating. Public registration uses RegisterUser so account and
+// initial session creation remain atomic.
 func (s *Service) CreateUserSession(userID string) (string, error) {
 	if s.store == nil {
-		return "", fmt.Errorf("storage disabled")
+		return "", ErrStorageDisabled
 	}
 
 	sessionID := uuid.New().String()
@@ -278,9 +319,9 @@ func (s *Service) CreateUserSession(userID string) (string, error) {
 	}
 
 	if err := s.store.CreateSession(sessionRecord); err != nil {
-		return "", fmt.Errorf("failed to create session: %w", err)
+		return "", fmt.Errorf("%w: create session: %v", ErrStorageUnavailable, err)
 	}
+	slog.Debug("user session created", "user_id", userID)
 
 	return sessionID, nil
 }
-

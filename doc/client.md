@@ -12,6 +12,14 @@ The chess client is an interactive command-line debugging tool for the chess ser
 - Verbose mode for detailed API request/response inspection
 - Long-polling support for real-time game updates
 
+## Replay Foundation
+
+The Go API client exposes `GetGameHistory(gameID)` and
+`GetMyGames(limit, offset)`, including durable result, timestamps, player
+claims, move count, ordered UCI moves, and FEN after every move. Interactive
+`games`/`replay` commands and terminal playback controls are intentionally
+deferred to the dedicated replay iteration; see [Replay Implementation Tasks](./todo.md).
+
 ## Building
 ```bash
 go build ./cmd/chess-client-cli
@@ -128,10 +136,10 @@ chess > state
 ```
 
 #### `delete` / `d`
-Delete game from server.
+Unload a live game from server memory. Durable history remains available.
 ```
-chess > delete              # Delete current game
-chess > delete <gameId>      # Delete specific game
+chess > delete              # Unload current live game
+chess > delete <gameId>      # Unload specific live game
 ```
 
 #### `poll` / `p`
@@ -230,9 +238,9 @@ ASCII board with colored pieces:
 ```
 
 ### Move History
-Displayed in algebraic notation with move numbers:
+Displayed in UCI notation with move numbers:
 ```
-History: 1.e4 e5 2.Nf3 Nc6 3.Bb5
+History: 1.e2e4 e7e5 2.g1f3 b8c6 3.f1b5
 ```
 
 ## Workflows

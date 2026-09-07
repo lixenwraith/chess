@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -122,23 +124,48 @@ func runQuery(args []string) error {
 
 	// Print results in tabular format
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "Game ID\tWhite Player\tBlack Player\tStart Time")
-	fmt.Fprintln(w, strings.Repeat("-", 80))
+	fmt.Fprintln(w, "Game ID\tWhite Player\tBlack Player\tResult\tStarted\tEnded")
+	fmt.Fprintln(w, strings.Repeat("-", 130))
 
 	for _, g := range games {
-		whiteInfo := fmt.Sprintf("%s (T%d)", g.WhitePlayerID[:8], g.WhiteType)
-		blackInfo := fmt.Sprintf("%s (T%d)", g.BlackPlayerID[:8], g.BlackType)
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-			g.GameID[:8]+"...",
+		whiteInfo := formatStoredPlayer(g.WhitePlayerID, g.WhiteClaimedBy, g.WhiteType)
+		blackInfo := formatStoredPlayer(g.BlackPlayerID, g.BlackClaimedBy, g.BlackType)
+		result := g.Result
+		if result == "" {
+			result = "ongoing"
+		}
+		ended := "-"
+		if g.EndTimeUTC != nil {
+			ended = g.EndTimeUTC.Format("2006-01-02 15:04:05")
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			abbreviateID(g.GameID),
 			whiteInfo,
 			blackInfo,
+			result,
 			g.StartTimeUTC.Format("2006-01-02 15:04:05"),
+			ended,
 		)
 	}
 	w.Flush()
 
 	fmt.Printf("\nFound %d game(s)\n", len(games))
 	return nil
+}
+
+func formatStoredPlayer(playerID, claimedBy string, playerType int) string {
+	value := fmt.Sprintf("%s (T%d)", abbreviateID(playerID), playerType)
+	if claimedBy != "" && claimedBy != playerID {
+		value += " claim:" + abbreviateID(claimedBy)
+	}
+	return value
+}
+
+func abbreviateID(value string) string {
+	if len(value) <= 8 {
+		return value
+	}
+	return value[:8] + "..."
 }
 
 func runUser(subcommand string, args []string) error {
@@ -235,9 +262,11 @@ func runUserAdd(args []string) error {
 	var userID string
 	for attempts := 0; attempts < 10; attempts++ {
 		userID = uuid.New().String()
-		if _, err := store.GetUserByID(userID); err != nil {
+		if _, err := store.GetUserByID(userID); errors.Is(err, sql.ErrNoRows) {
 			// User doesn't exist, ID is unique
 			break
+		} else if err != nil {
+			return fmt.Errorf("failed to check generated user ID: %w", err)
 		}
 		if attempts == 9 {
 			return fmt.Errorf("failed to generate unique user ID after 10 attempts")
@@ -562,7 +591,7 @@ func runUserList(args []string) error {
 			expires = u.ExpiresAt.Format("2006-01-02 15:04")
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			u.UserID[:8]+"...",
+			abbreviateID(u.UserID),
 			u.Username,
 			u.AccountType,
 			email,

@@ -7,6 +7,8 @@ CHESS_SERVER_EXEC=${1:-"bin/chess-server"}
 TEST_DB="test.db"
 PID_FILE="/tmp/chess-server_test.pid"
 API_PORT=${API_PORT:-8080}
+LOG_LEVEL=${LOG_LEVEL:-debug}
+LOG_HTTP=${LOG_HTTP:-true}
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -18,7 +20,7 @@ NC='\033[0m'
 # Check executable
 if [ ! -x "$CHESS_SERVER_EXEC" ]; then
     echo -e "${RED}Error: chess-server executable not found or not executable: $CHESS_SERVER_EXEC${NC}"
-    echo "Provide the path to chess-server binary as first argument or place it in the current directory."
+    echo "Provide the path to chess-server as the first argument or build bin/chess-server."
     echo "Build the binary if not available: go build ./cmd/chess-server"
     exit 1
 fi
@@ -90,7 +92,8 @@ echo "Configuration:"
 echo "  Executable: $CHESS_SERVER_EXEC"
 echo "  Database:   $TEST_DB"
 echo "  Port:       $API_PORT"
-echo "  Mode:       Development (WAL enabled, relaxed rate limits)"
+echo "  Mode:       Development (relaxed rate limits; persistent WAL storage)"
+echo "  Log level:  $LOG_LEVEL (HTTP requests: $LOG_HTTP)"
 echo "  Purpose:    Backend for chess-server tests"
 echo "  PID File:   $PID_FILE"
 echo ""
@@ -105,8 +108,10 @@ echo ""
 
 # Start chess-server in foreground with dev mode and storage
 "$CHESS_SERVER_EXEC" \
-    -dev \
-    -storage-path "$TEST_DB" \
+	-dev \
+	-log-level "$LOG_LEVEL" \
+	-log-http="$LOG_HTTP" \
+	-storage-path "$TEST_DB" \
     -api-port "$API_PORT" \
     -pid "$PID_FILE" \
     -pid-lock

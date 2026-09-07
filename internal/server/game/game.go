@@ -2,6 +2,7 @@ package game
 
 import (
 	"fmt"
+	"time"
 
 	"chess/internal/server/board"
 	"chess/internal/server/core"
@@ -25,20 +26,41 @@ type MoveResult struct {
 }
 
 type Game struct {
-	snapshots  []Snapshot                  `json:"snapshots"`
-	players    map[core.Color]*core.Player `json:"players"`
-	state      core.State                  `json:"state"`
-	lastResult *MoveResult                 `json:"lastResult,omitempty"`
+	snapshots  []Snapshot
+	players    map[core.Color]*core.Player
+	state      core.State
+	lastResult *MoveResult
+	endTimeUTC *time.Time
+}
+
+// View is an immutable copy of the state needed by processors and transports.
+// Service returns views instead of exposing mutable Game pointers outside its
+// lock, preventing torn responses and concurrent move races.
+type View struct {
+	FEN           string
+	InitialFEN    string
+	NextTurnColor core.Color
+	Moves         []string
+	WhitePlayer   *core.Player
+	BlackPlayer   *core.Player
+	State         core.State
+	LastResult    *MoveResult
+	EndTimeUTC    *time.Time
 }
 
 func New(initialFEN string, whitePlayer, blackPlayer *core.Player, startingTurnColor core.Color) *Game {
 	// Determine which player's turn it is initially
 	var initialPlayerID string
+	var initialPlayerType core.PlayerType
 	if startingTurnColor == core.ColorWhite {
 		initialPlayerID = whitePlayer.ID
+		initialPlayerType = whitePlayer.Type
 	} else {
 		initialPlayerID = blackPlayer.ID
+		initialPlayerType = blackPlayer.Type
 	}
+	whiteCopy := *whitePlayer
+	blackCopy := *blackPlayer
 
 	return &Game{
 		snapshots: []Snapshot{
@@ -46,19 +68,69 @@ func New(initialFEN string, whitePlayer, blackPlayer *core.Player, startingTurnC
 				FEN:           initialFEN,
 				PreviousMove:  "",
 				NextTurnColor: startingTurnColor,
+				PlayerType:    initialPlayerType,
 				PlayerID:      initialPlayerID,
 			},
 		},
 		players: map[core.Color]*core.Player{
-			core.ColorWhite: whitePlayer,
-			core.ColorBlack: blackPlayer,
+			core.ColorWhite: &whiteCopy,
+			core.ColorBlack: &blackCopy,
 		},
 		state: core.StateOngoing,
 	}
 }
 
+func (g *Game) View() View {
+	view := View{
+		FEN:           g.CurrentFEN(),
+		InitialFEN:    g.InitialFEN(),
+		NextTurnColor: g.NextTurnColor(),
+		Moves:         g.Moves(),
+		State:         g.state,
+	}
+	if player := g.players[core.ColorWhite]; player != nil {
+		copy := *player
+		view.WhitePlayer = &copy
+	}
+	if player := g.players[core.ColorBlack]; player != nil {
+		copy := *player
+		view.BlackPlayer = &copy
+	}
+	if g.lastResult != nil {
+		copy := *g.lastResult
+		view.LastResult = &copy
+	}
+	if g.endTimeUTC != nil {
+		copy := *g.endTimeUTC
+		view.EndTimeUTC = &copy
+	}
+	return view
+}
+
+func (v View) NextPlayer() *core.Player {
+	if v.NextTurnColor == core.ColorWhite {
+		return v.WhitePlayer
+	}
+	return v.BlackPlayer
+}
+
+func (v View) Player(color core.Color) *core.Player {
+	if color == core.ColorWhite {
+		return v.WhitePlayer
+	}
+	if color == core.ColorBlack {
+		return v.BlackPlayer
+	}
+	return nil
+}
+
 func (g *Game) SetLastResult(result *MoveResult) {
-	g.lastResult = result
+	if result == nil {
+		g.lastResult = nil
+		return
+	}
+	copy := *result
+	g.lastResult = &copy
 }
 
 func (g *Game) LastResult() *MoveResult {
@@ -94,18 +166,23 @@ func (g *Game) AddSnapshot(fen string, move string, nextTurnColor core.Color) {
 		FEN:           fen,
 		PreviousMove:  move,
 		NextTurnColor: nextTurnColor,
+		PlayerType:    nextPlayer.Type,
 		PlayerID:      nextPlayer.ID,
 	})
 }
 
 func (g *Game) UpdatePlayers(whitePlayer, blackPlayer *core.Player) {
-	g.players[core.ColorWhite] = whitePlayer
-	g.players[core.ColorBlack] = blackPlayer
+	whiteCopy := *whitePlayer
+	blackCopy := *blackPlayer
+	g.players[core.ColorWhite] = &whiteCopy
+	g.players[core.ColorBlack] = &blackCopy
 
 	// Update current snapshot's PlayerID to reflect new player
 	if len(g.snapshots) > 0 {
 		currentSnap := &g.snapshots[len(g.snapshots)-1]
-		currentSnap.PlayerID = g.players[currentSnap.NextTurnColor].ID
+		currentPlayer := g.players[currentSnap.NextTurnColor]
+		currentSnap.PlayerID = currentPlayer.ID
+		currentSnap.PlayerType = currentPlayer.Type
 	}
 }
 
@@ -122,6 +199,7 @@ func (g *Game) UndoMoves(count int) error {
 	g.snapshots = g.snapshots[:len(g.snapshots)-count]
 	g.state = core.StateOngoing // Reset game state when undoing
 	g.lastResult = nil          // Clear last result
+	g.endTimeUTC = nil
 	return nil
 }
 
@@ -140,7 +218,27 @@ func (g *Game) State() core.State {
 }
 
 func (g *Game) SetState(s core.State) {
+	g.SetStateAt(s, time.Now().UTC())
+}
+
+func (g *Game) SetStateAt(s core.State, at time.Time) {
+	if s.IsTerminal() {
+		if !g.state.IsTerminal() || g.endTimeUTC == nil {
+			ended := at.UTC()
+			g.endTimeUTC = &ended
+		}
+	} else if g.state.IsTerminal() {
+		g.endTimeUTC = nil
+	}
 	g.state = s
+}
+
+func (g *Game) EndTimeUTC() *time.Time {
+	if g.endTimeUTC == nil {
+		return nil
+	}
+	copy := *g.endTimeUTC
+	return &copy
 }
 
 func (g *Game) InitialFEN() string {

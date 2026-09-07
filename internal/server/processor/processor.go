@@ -1,8 +1,9 @@
 package processor
 
 import (
+	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"regexp"
 	"strings"
 	"sync"
@@ -185,14 +186,11 @@ func (p *Processor) handleCreateGame(cmd Command) ProcessorResponse {
 		}
 	}
 
-	if err = p.svc.CreateGame(gameID, whitePlayer, blackPlayer, validatedFEN, b.Turn()); err != nil {
+	if err = p.svc.CreateGame(gameID, whitePlayer, blackPlayer, validatedFEN, b.Turn(), initialState); err != nil {
 		return p.errorResponse(fmt.Sprintf("failed to create game: %v", err), core.ErrInternalError)
 	}
-	if initialState != core.StateOngoing {
-		p.svc.UpdateGameState(gameID, initialState)
-	}
 
-	g, err := p.svc.GetGame(gameID)
+	g, err := p.svc.GetGameView(gameID)
 	if err != nil {
 		return p.errorResponse("game creation failed", core.ErrInternalError)
 	}
@@ -217,13 +215,13 @@ func (p *Processor) handleConfigurePlayers(cmd Command) ProcessorResponse {
 		args.Black.SearchTime = minSearchTime
 	}
 
-	g, err := p.svc.GetGame(cmd.GameID)
+	g, err := p.svc.GetGameView(cmd.GameID)
 	if err != nil {
 		return p.errorResponse("game not found", core.ErrGameNotFound)
 	}
 
 	// Block configuration changes during computer move
-	if g.State() == core.StatePending {
+	if g.State == core.StatePending {
 		return p.errorResponse("cannot change players while computer is calculating", core.ErrInvalidRequest)
 	}
 
@@ -237,7 +235,7 @@ func (p *Processor) handleConfigurePlayers(cmd Command) ProcessorResponse {
 	}
 
 	// Get updated game
-	g, _ = p.svc.GetGame(cmd.GameID)
+	g, _ = p.svc.GetGameView(cmd.GameID)
 	response := p.buildGameResponse(cmd.GameID, g)
 
 	return ProcessorResponse{
@@ -248,7 +246,7 @@ func (p *Processor) handleConfigurePlayers(cmd Command) ProcessorResponse {
 
 // handleGetGame retrieves game state and triggers computer move if needed
 func (p *Processor) handleGetGame(cmd Command) ProcessorResponse {
-	g, err := p.svc.GetGame(cmd.GameID)
+	g, err := p.svc.GetGameView(cmd.GameID)
 	if err != nil {
 		return p.errorResponse("game not found", core.ErrGameNotFound)
 	}
@@ -272,27 +270,30 @@ func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 		return p.errorResponse("invalid arguments", core.ErrInvalidRequest)
 	}
 
-	g, err := p.svc.GetGame(cmd.GameID)
+	g, err := p.svc.GetGameView(cmd.GameID)
 	if err != nil {
 		return p.errorResponse("game not found", core.ErrGameNotFound)
 	}
 
 	// Validate game state
-	switch g.State() {
+	switch g.State {
 	case core.StatePending:
 		return p.errorResponse("computer move in progress", core.ErrInvalidRequest)
 	case core.StateStuck:
 		return p.errorResponse("game is stuck due to engine error", core.ErrGameOver)
 	case core.StateWhiteWins, core.StateBlackWins, core.StateDraw, core.StateStalemate:
-		return p.errorResponse(fmt.Sprintf("game is over: %s", g.State()), core.ErrGameOver)
+		return p.errorResponse(fmt.Sprintf("game is over: %s", g.State), core.ErrGameOver)
 	case core.StateOngoing:
 		break
 	default:
 		return p.errorResponse("game is in invalid state", core.ErrInvalidRequest)
 	}
 
-	currentColor := g.NextTurnColor()
+	currentColor := g.NextTurnColor
 	currentPlayer := g.NextPlayer()
+	if currentPlayer == nil {
+		return p.errorResponse("current player is missing", core.ErrInternalError)
+	}
 
 	// Handle computer move trigger
 	if strings.TrimSpace(args.Move) == "cccc" {
@@ -300,10 +301,18 @@ func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 			return p.errorResponse("not computer player's turn", core.ErrNotHumanTurn)
 		}
 
-		p.svc.UpdateGameState(cmd.GameID, core.StatePending)
-		p.triggerComputerMove(cmd.GameID, g)
+		if err := p.svc.BeginComputerMove(cmd.GameID, g.FEN, currentColor); err != nil {
+			if errors.Is(err, service.ErrGameChanged) {
+				return p.errorResponse("game changed; refresh and retry", core.ErrConflict)
+			}
+			return p.errorResponse(fmt.Sprintf("failed to start computer move: %v", err), core.ErrInternalError)
+		}
+		if err := p.triggerComputerMove(cmd.GameID, g); err != nil {
+			p.svc.UpdateGameState(cmd.GameID, core.StateStuck)
+			return p.errorResponse(fmt.Sprintf("failed to queue computer move: %v", err), core.ErrResourceLimit)
+		}
 
-		g, _ = p.svc.GetGame(cmd.GameID)
+		g, _ = p.svc.GetGameView(cmd.GameID)
 		response := p.buildGameResponse(cmd.GameID, g)
 		response.LastMove = &core.MoveInfo{
 			PlayerColor: currentColor.String(),
@@ -322,16 +331,11 @@ func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 	}
 
 	// Authorization: first-move-claims-slot model
-	slotOwner := g.GetSlotOwner(currentColor)
+	slotOwner := currentPlayer.ClaimedBy
 
 	if slotOwner == "" {
-		// Slot unclaimed - claim it with this move
-		if cmd.UserID != "" {
-			if err := p.svc.ClaimGameSlot(cmd.GameID, currentColor, cmd.UserID); err != nil {
-				return p.errorResponse(fmt.Sprintf("failed to claim slot: %v", err), core.ErrInternalError)
-			}
-		}
-		// Anonymous users can also claim by making a move (slot remains "unclaimed" but move proceeds)
+		// An authenticated user claims only when the validated move commits.
+		// Anonymous moves deliberately leave the slot unclaimed.
 	} else if cmd.UserID != "" && slotOwner != cmd.UserID {
 		return p.errorResponse("not your turn - slot claimed by another player", core.ErrUnauthorized)
 	}
@@ -345,7 +349,7 @@ func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 		return p.errorResponse("invalid move format", core.ErrInvalidMove)
 	}
 
-	currentFEN := g.CurrentFEN()
+	currentFEN := g.FEN
 
 	// Validate move and classify the resulting position in one engine session
 	p.mu.Lock()
@@ -365,16 +369,22 @@ func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 	}
 
 	// Atomic commit: move + state + metadata, single notification
-	if err = p.svc.ApplyMoveWithState(cmd.GameID, move, newFEN, finalState, &game.MoveResult{
-		Move:        move,
-		PlayerColor: currentColor,
-		GameState:   finalState,
+	if err = p.svc.ApplyMoveWithState(cmd.GameID, service.MoveCommit{
+		ExpectedFEN: currentFEN, ExpectedState: core.StateOngoing, ExpectedTurn: currentColor,
+		ActorUserID: cmd.UserID, MoveUCI: move, NewFEN: newFEN, State: finalState,
+		Result: &game.MoveResult{Move: move, PlayerColor: currentColor, GameState: finalState},
 	}); err != nil {
+		if errors.Is(err, service.ErrSlotOwner) {
+			return p.errorResponse("not your turn - slot claimed by another player", core.ErrUnauthorized)
+		}
+		if errors.Is(err, service.ErrGameChanged) {
+			return p.errorResponse("game changed while move was being validated; refresh and retry", core.ErrConflict)
+		}
 		return p.errorResponse(fmt.Sprintf("failed to apply move: %v", err), core.ErrInternalError)
 	}
 
 	// buildGameResponse populates LastMove from the committed LastResult
-	g, _ = p.svc.GetGame(cmd.GameID)
+	g, _ = p.svc.GetGameView(cmd.GameID)
 	return ProcessorResponse{
 		Success: true,
 		Data:    p.buildGameResponse(cmd.GameID, g),
@@ -387,12 +397,12 @@ func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 // snapshot had legal moves made from it, so resetting to Ongoing is sound
 // without re-classification.
 func (p *Processor) handleUndoMove(cmd Command) ProcessorResponse {
-	g, err := p.svc.GetGame(cmd.GameID)
+	g, err := p.svc.GetGameView(cmd.GameID)
 	if err != nil {
 		return p.errorResponse("game not found", core.ErrGameNotFound)
 	}
 
-	if g.State() == core.StatePending {
+	if g.State == core.StatePending {
 		return p.errorResponse("cannot undo while computer move is in progress", core.ErrInvalidRequest)
 	}
 
@@ -410,25 +420,22 @@ func (p *Processor) handleUndoMove(cmd Command) ProcessorResponse {
 		return p.errorResponse(err.Error(), core.ErrInvalidRequest)
 	}
 
-	// Reset game state to ongoing after undo
-	p.svc.UpdateGameState(cmd.GameID, core.StateOngoing)
-
-	g, _ = p.svc.GetGame(cmd.GameID)
+	g, _ = p.svc.GetGameView(cmd.GameID)
 	return ProcessorResponse{
 		Success: true,
 		Data:    p.buildGameResponse(cmd.GameID, g),
 	}
 }
 
-// handleDeleteGame removes a game
+// handleDeleteGame unloads a game from live memory.
 func (p *Processor) handleDeleteGame(cmd Command) ProcessorResponse {
-	g, err := p.svc.GetGame(cmd.GameID)
+	g, err := p.svc.GetGameView(cmd.GameID)
 	if err != nil {
 		return p.errorResponse("game not found", core.ErrGameNotFound)
 	}
 
 	// Only block deletion if actively computing
-	if g.State() == core.StatePending {
+	if g.State == core.StatePending {
 		return p.errorResponse("cannot delete game while computer move is in progress", core.ErrInvalidRequest)
 	}
 
@@ -443,12 +450,12 @@ func (p *Processor) handleDeleteGame(cmd Command) ProcessorResponse {
 
 // handleGetBoard returns board visualization
 func (p *Processor) handleGetBoard(cmd Command) ProcessorResponse {
-	g, err := p.svc.GetGame(cmd.GameID)
+	g, err := p.svc.GetGameView(cmd.GameID)
 	if err != nil {
 		return p.errorResponse("game not found", core.ErrGameNotFound)
 	}
 
-	b, err := board.ParseFEN(g.CurrentFEN())
+	b, err := board.ParseFEN(g.FEN)
 	if err != nil {
 		return p.errorResponse("error parsing FEN", core.ErrInvalidFEN)
 	}
@@ -457,7 +464,7 @@ func (p *Processor) handleGetBoard(cmd Command) ProcessorResponse {
 	return ProcessorResponse{
 		Success: true,
 		Data: core.BoardResponse{
-			FEN:   g.CurrentFEN(),
+			FEN:   g.FEN,
 			Board: ascii,
 		},
 	}
@@ -467,18 +474,18 @@ func (p *Processor) handleGetBoard(cmd Command) ProcessorResponse {
 // re-classifies via the validation engine: worker output is never trusted for
 // end-state determination, and no-move results are verified against the
 // position rather than the IsMate info-line byproduct.
-func (p *Processor) triggerComputerMove(gameID string, g *game.Game) {
-	fen := g.CurrentFEN()
-	color := g.NextTurnColor()
+func (p *Processor) triggerComputerMove(gameID string, g game.View) error {
+	fen := g.FEN
+	color := g.NextTurnColor
 	player := g.NextPlayer()
 
-	p.queue.SubmitAsync(gameID, fen, color, player, func(result EngineResult) {
-		currentGame, err := p.svc.GetGame(gameID)
-		if err != nil || currentGame.State() != core.StatePending {
+	return p.queue.SubmitAsync(gameID, fen, color, player, func(result EngineResult) {
+		currentGame, err := p.svc.GetGameView(gameID)
+		if err != nil || currentGame.State != core.StatePending || currentGame.FEN != fen {
 			return // Deleted, or state resolved elsewhere
 		}
 		if result.Error != nil {
-			log.Printf("engine error for game %s: %v", gameID, result.Error)
+			slog.Error("computer engine failed", "game_id", gameID, "error", result.Error)
 			p.svc.UpdateGameState(gameID, core.StateStuck)
 			return
 		}
@@ -508,10 +515,19 @@ func (p *Processor) triggerComputerMove(gameID string, g *game.Game) {
 			return
 		}
 
-		p.svc.ApplyMoveWithState(gameID, result.Move, newFEN, finalState, &game.MoveResult{
-			Move: result.Move, PlayerColor: color,
-			Score: result.Score, Depth: result.Depth, GameState: finalState,
-		})
+		if err := p.svc.ApplyMoveWithState(gameID, service.MoveCommit{
+			ExpectedFEN: fen, ExpectedState: core.StatePending, ExpectedTurn: color,
+			MoveUCI: result.Move, NewFEN: newFEN, State: finalState,
+			Result: &game.MoveResult{
+				Move: result.Move, PlayerColor: color,
+				Score: result.Score, Depth: result.Depth, GameState: finalState,
+			},
+		}); err != nil {
+			slog.Error("failed to apply computer move", "game_id", gameID, "error", err)
+			if !errors.Is(err, service.ErrGameChanged) && !errors.Is(err, service.ErrGameNotFound) {
+				p.svc.UpdateGameState(gameID, core.StateStuck)
+			}
+		}
 	})
 }
 
@@ -583,27 +599,28 @@ func (p *Processor) checkGameEnd(gameID, fen string) {
 			}
 			return
 		}
-		log.Printf("game %s: end-state check attempt %d failed: %v", gameID, attempt+1, err)
+		slog.Warn("game end-state check failed",
+			"game_id", gameID, "attempt", attempt+1, "error", err)
 	}
 	p.svc.UpdateGameState(gameID, core.StateStuck)
 }
 
 // buildGameResponse constructs standard game response
-func (p *Processor) buildGameResponse(gameID string, g *game.Game) core.GameResponse {
+func (p *Processor) buildGameResponse(gameID string, g game.View) core.GameResponse {
 	resp := core.GameResponse{
 		GameID: gameID,
-		FEN:    g.CurrentFEN(),
-		Turn:   g.NextTurnColor().String(),
-		State:  g.State().String(),
-		Moves:  g.Moves(),
+		FEN:    g.FEN,
+		Turn:   g.NextTurnColor.String(),
+		State:  g.State.String(),
+		Moves:  g.Moves,
 		Players: core.PlayersResponse{
-			White: g.GetPlayer(core.ColorWhite),
-			Black: g.GetPlayer(core.ColorBlack),
+			White: g.WhitePlayer,
+			Black: g.BlackPlayer,
 		},
 	}
 
 	// Include last move if available
-	if result := g.LastResult(); result != nil {
+	if result := g.LastResult; result != nil {
 		resp.LastMove = &core.MoveInfo{
 			Move:        result.Move,
 			PlayerColor: result.PlayerColor.String(),
@@ -628,6 +645,9 @@ func (p *Processor) errorResponse(message, code string) ProcessorResponse {
 
 // Close cleans up resources
 func (p *Processor) Close() error {
-	p.queue.Shutdown(5 * time.Second)
-	return p.validationEng.Close()
+	queueErr := p.queue.Shutdown(5 * time.Second)
+	p.mu.Lock()
+	engineErr := p.validationEng.Close()
+	p.mu.Unlock()
+	return errors.Join(queueErr, engineErr)
 }

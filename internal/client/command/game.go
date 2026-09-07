@@ -72,7 +72,7 @@ func (r *Registry) registerGameCommands() {
 	r.Register(&Command{
 		Name:        "delete",
 		ShortName:   "d",
-		Description: "Delete a game",
+		Description: "Unload a live game (history retained)",
 		Usage:       "delete [gameId]",
 		Handler:     deleteGameHandler,
 	})
@@ -495,7 +495,7 @@ func deleteGameHandler(s *session.Session, args []string) error {
 		s.SetLastMoveCount(0)
 	}
 
-	fmt.Printf("%sGame deleted: %s%s\n", display.Green, gameID, display.Reset)
+	fmt.Printf("%sLive game unloaded (history retained): %s%s\n", display.Green, gameID, display.Reset)
 	return nil
 }
 

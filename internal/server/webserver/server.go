@@ -16,7 +16,7 @@ import (
 var webFS embed.FS
 
 // Start initializes and starts the web UI server
-func Start(host string, port int, apiURL string) error {
+func Start(host string, port int, apiURL string, logRequests bool) error {
 	app := fiber.New(fiber.Config{
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
@@ -24,13 +24,17 @@ func Start(host string, port int, apiURL string) error {
 	})
 
 	// Middleware
-	app.Use(logger.New(logger.Config{
-		Format: "${time} WEB ${status} ${method} ${path} ${latency}\n",
-	}))
+	if logRequests {
+		app.Use(logger.New(logger.Config{
+			Format:     "${time} WEB ${status} ${method} ${path} ${latency}\n",
+			TimeFormat: time.RFC3339,
+			TimeZone:   "UTC",
+		}))
+	}
 	app.Use(cors.New())
 
-	// Create a sub-filesystem that points to the 'web' directory
-	webContent, err := fs.Sub(webFS, "web")
+	// Create a sub-filesystem rooted at the embedded web client.
+	webContent, err := fs.Sub(webFS, "chess-client-web")
 	if err != nil {
 		return fmt.Errorf("failed to create web sub-filesystem: %w", err)
 	}
@@ -42,7 +46,7 @@ func Start(host string, port int, apiURL string) error {
 		})
 	})
 
-	// Serve static files from the embedded 'web' directory
+	// Serve static files from the embedded client directory.
 	app.Get("*", func(c *fiber.Ctx) error {
 		path := c.Path()
 
