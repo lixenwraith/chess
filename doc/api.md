@@ -26,9 +26,9 @@ Creates new user account and returns JWT token.
 - `email` (string, optional): Valid email address
 - `password` (string, required): Minimum 8 characters, must contain letter and number
 
-Accounts created here are temporary and expire after 24 hours (see
-`db user promote`). Returns 409 when the username or email is taken, and 503
-when registration capacity or password-hashing capacity is exhausted.
+Accounts created here are identical to CLI-created accounts and do not
+expire. Returns 409 when the username or email is taken, and 503 when the
+registration limit (`-max-users`) or password-hashing capacity is exhausted.
 
 **Response (201):**
 ```json
@@ -181,7 +181,9 @@ Response includes all game data. Compare `moves` array length to detect changes.
 `GET /games/{gameId}/history`
 
 Returns the persisted replay line even after the live game has been unloaded
-from memory or the server has restarted. History is public to anyone who knows
+from memory or the server has restarted. Games without a registered player
+are deleted 24 hours after their last activity; their history then returns
+404. History is public to anyone who knows
 the game ID, matching the existing public live-game read model. Persistent
 storage must be enabled.
 
@@ -197,7 +199,7 @@ client can replay the game without running a chess engine.
   "startTimeUtc": "2026-09-07T12:00:00Z",
   "endTimeUtc": "2026-09-07T12:15:00Z",
   "players": {
-    "white": {"id": "user-id", "color": 1, "type": 1, "claimedBy": "user-id"},
+    "white": {"id": "user-id", "color": 1, "type": 1, "claimedBy": "user-id", "name": "alice"},
     "black": {"id": "player-id", "color": 2, "type": 1}
   },
   "moves": [
@@ -213,7 +215,9 @@ client can replay the game without running a chess engine.
 ```
 
 `result` is omitted while a game is ongoing. Persisted terminal values are
-`white_wins`, `black_wins`, `draw`, and `stalemate`.
+`white_wins`, `black_wins`, `draw`, and `stalemate`. A claimed player's `name`
+is their username when the claim was recorded; it survives later renames and
+account deletion, and is omitted for anonymous and computer players.
 
 Returns 400 for a non-canonical game ID, 404 when the game has no durable
 record, and 503 when persistence is disabled or degraded.
@@ -247,7 +251,7 @@ the association survives later player reconfiguration.
       "endTimeUtc": "2026-09-07T12:15:00Z",
       "moveCount": 7,
       "players": {
-        "white": {"id": "user-id", "color": 1, "type": 1, "claimedBy": "user-id"},
+        "white": {"id": "user-id", "color": 1, "type": 1, "claimedBy": "user-id", "name": "alice"},
         "black": {"id": "player-id", "color": 2, "type": 1}
       }
     }

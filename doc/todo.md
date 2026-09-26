@@ -23,19 +23,23 @@ into phases that each ship and test on their own.
   listing indexes are ordered for keyset pagination.
 - [x] Stable JWT key (`-jwt-secret-file`), so a returning user's session
   survives server restarts.
+- [x] Uniform, non-expiring accounts for site and CLI users (D1); 24-hour
+  retention of games without a registered player (D1).
+- [x] Player-name snapshots on claim, returned in history and listings (D4).
+- [x] Scripted FreeBSD jail deployment (`deploy/`).
 - [x] Go client DTOs (`GetGameHistory`, `GetMyGames`) including `finalFen`.
 
-## Decisions Needed Before Phase R2
+## Decisions
 
-| # | Decision | Current behavior | Recommendation |
-|---|---|---|---|
-| D1 | Account lifetime | API registrations are temporary and deleted after 24 h; permanent accounts come only from the CLI (`db user add`, `db user promote`) | Make API accounts permanent with an inactivity expiry (for example 90 days since last login) and raise the caps through flags. Otherwise users cannot come back to replay. |
-| D2 | History visibility | Public to anyone holding the game UUID | Keep capability-URL semantics (122-bit random IDs, never listed publicly) so a replay link can be shared; keep the list authenticated. Add per-game privacy only if needed. |
-| D3 | Where SAN/PGN is produced | Not produced; storage has UCI and FEN per ply | Server-side Go, derived on read from the initial FEN and UCI line. No schema change, one implementation for web and CLI, and no third-party script under the CSP. |
-| D4 | Player names in PGN | Only user IDs; temporary users are deleted | Snapshot display names on each claim (schema v2 columns `white_name`, `black_name`), so PGN tags survive renames and deletions. |
-| D5 | Draw rules | Only checkmate and stalemate end a game | Detect insufficient material, threefold repetition, and the 50/75-move rules in the same Go core (R1); add resign/draw-offer later. PGN `Result` is `*` for unterminated games. |
-| D6 | Undo after a result | Allowed; rewrites durable history | Disallow undo once a game with a claimed human slot is terminal, so saved replays are immutable. |
-| D7 | List pagination | Offset (max 1,000,000) | Keyset cursor on `(start_time_utc, game_id)`; keep offset for compatibility during v1. |
+| # | Decision | Status |
+|---|---|---|
+| D1 | Account lifetime | **Done.** Site registrations and CLI-created accounts are identical and never expire; public registration closes at `-max-users`. Games without a registered player are deleted 24 hours after their last activity (`-anonymous-game-ttl`). |
+| D2 | History visibility | **Decided: shareable by game ID.** The history endpoint stays public to holders of the 122-bit random ID; IDs are never listed publicly and the list endpoint stays authenticated. |
+| D3 | Where SAN/PGN is produced | **Decided: server-side Go** (R1), derived on read from the initial FEN and the UCI line: no schema change, one implementation for web and CLI, no third-party script under the CSP. |
+| D4 | Player names | **Done.** `white_name`/`black_name` snapshot the claimant's username in the claim transaction and survive renames and deletions; exposed as `players.*.name`. |
+| D5 | Draw rules | Open. Recommendation: detect insufficient material, threefold repetition, and the 50/75-move rules in the R1 core; add resign/draw offers later. PGN `Result` is `*` for unterminated games. |
+| D6 | Undo after a result | **Decided: keep allowed**, so a player can step back from a finished game and play a line again. Consequence: a finished game's stored history, result, and end time are rewritten by undo; replay shows the line as it stands now. |
+| D7 | List pagination | Open. Recommendation: keyset cursor on `(start_time_utc, game_id)`, keeping offset during v1; the claim indexes are already ordered for it. |
 
 ## Phase R1 — Notation Core (server, no API change)
 
@@ -47,7 +51,8 @@ replay only; Stockfish remains the move validator for live play.
   castling rights and paths, en passant, promotion.
 - [ ] SAN encode (disambiguation by file, rank, or both; `+`/`#`; `O-O`,
   `O-O-O`; `=Q`) and SAN decode for later PGN import.
-- [ ] PGN writer: Seven Tag Roster, `SetUp`/`FEN` tags for custom starts,
+- [ ] PGN writer: Seven Tag Roster (White/Black from the name snapshots, else
+  "Anonymous" or "Stockfish level N"), `SetUp`/`FEN` tags for custom starts,
   `Termination`, 80-column movetext, `Result` from the stored outcome.
 - [ ] Draw-rule helpers (D5) and an integrity check that replays the stored UCI
   line and compares each generated FEN with the stored `fenAfterMove`.
@@ -66,7 +71,7 @@ Test gate:
 
 ## Phase R2 — Replay API
 
-- [ ] Implement D1, D4 (schema v2 migration), D6, and D7.
+- [ ] Implement D7 (keyset cursor) once decided.
 - [ ] Additive history fields: `san` per move, `outcome`/`termination`, and
   `pgnResult`; keep existing fields unchanged.
 - [ ] `GET /api/v1/games/{id}/pgn?ply=N`: `application/x-chess-pgn`,

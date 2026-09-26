@@ -24,7 +24,8 @@ Go backend server providing a RESTful API for chess gameplay with user authentic
 - Asynchronous engine move calculation
 - Configurable engine strength and thinking time
 - PostgreSQL 18 persistence with ordered async writes for games
-- Durable game results, player claims, ordered move history, and replay API
+- Durable game results, player claims and names, ordered move history, and replay API
+- Games without a registered player are purged 24 hours after their last activity
 - Authenticated stored-game listing with bounded pagination
 - Configurable structured debug logs for persistence, cleanup, and engine work
 - User management with secure Argon2id password storage and scoped JWTs
@@ -107,8 +108,9 @@ Server listens on `http://localhost:8080`. See [API Reference](./doc/api.md) for
 
 The chess server supports user accounts with secure authentication. The
 commands below read the connection string from `CHESS_DSN` (or `-dsn`).
-Accounts registered through the API are temporary (24 hours); CLI-created and
-promoted accounts are permanent.
+Accounts registered on the site and accounts created here are identical and
+do not expire. Games without a registered player are deleted 24 hours after
+their last activity.
 
 ### Creating Users
 ```bash
@@ -132,9 +134,6 @@ promoted accounts are permanent.
 
 # Update email
 ./chess-server db user set-email -username alice -email newemail@example.com
-
-# Make a temporary (API-registered) account permanent
-./chess-server db user promote -username alice
 
 # Delete user
 ./chess-server db user delete -username alice

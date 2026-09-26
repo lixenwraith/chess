@@ -12,8 +12,10 @@ Central command handler containing business logic. Single `Execute(Command)` ent
 In-memory live-game storage with authentication support. A mutex protects each
 game transition and callers receive immutable game views rather than mutable
 game pointers. The service manages game lifecycle, snapshots, player
-configuration, user accounts, JWT tokens, persistence, and terminal-game
-eviction. Eviction removes only the memory copy; durable replay data remains.
+configuration, user accounts, JWT tokens, persistence, and cleanup. Finished
+games leave memory after an hour while their durable rows remain; games with
+no registered player leave memory and the database 24 hours after their last
+activity (see Retention below).
 
 #### Long-Polling Registry (`internal/service/waiter.go`)
 Manages clients waiting for game state changes via HTTP long-polling. Tracks move counts per client, sends notifications on state changes, enforces 30-second timeout. Non-blocking notification pattern handles slow clients gracefully. Coordinates with service layer for game updates and deletion events.
@@ -122,11 +124,12 @@ schema is current, which lets a DML-only runtime role start the server.
 1. The password is hashed outside any lock, within the KDF concurrency bound
 2. Storage takes a transaction-scoped advisory lock, so account creation is
    serialized across the server and CLI processes
-3. Uniqueness is checked before capacity: a duplicate never evicts anyone
-4. At capacity, the oldest temporary user is evicted in that transaction
+3. Uniqueness is checked first, so a duplicate is reported even when registration is full
+4. Public registration is refused once `-max-users` accounts exist; nothing is evicted
 5. The new user and initial session commit together; any failure rolls back the entire operation
 6. Login replaces the user's single session and records `last_login_at` in one statement
 7. Other account mutations commit before success is returned; unique violations map to "already exists"
+8. Registered and CLI-created accounts are identical and never expire
 
 ### Game Write Operations (Asynchronous)
 1. Service layer calls a storage method (`RecordNewGame`, `RecordMove`, `RecordPlayers`, or `RewindGame`)
@@ -210,9 +213,7 @@ users (
     username text NOT NULL UNIQUE,          -- lowercase, 1-64 characters
     email text UNIQUE,                      -- lowercase or NULL
     password_hash text NOT NULL,            -- Argon2id PHC string
-    account_type text NOT NULL,             -- 'temp' | 'permanent'
     created_at timestamptz NOT NULL,
-    expires_at timestamptz,                 -- NULL for permanent accounts
     last_login_at timestamptz
 )
 
@@ -231,6 +232,7 @@ games (
     white_level smallint NOT NULL,          -- 0-20
     white_search_time integer NOT NULL,
     white_claimed_by uuid,                  -- user that owns the slot
+    white_name text,                        -- claimant's username at claim time
     black_... (same columns),
     start_time_utc timestamptz NOT NULL,
     result text,                            -- white_wins, black_wins, draw, stalemate
@@ -248,11 +250,20 @@ moves (
 )
 ```
 
-`schema_version` records the applied version. Partial indexes cover temporary
-account expiry and eviction order, session expiry, and each claim column
-ordered by `(start_time_utc DESC, game_id DESC)` for the game listing. Claims
-and player IDs deliberately have no foreign key to `users`: history outlives
-temporary accounts. See [`deploy/postgresql`](../deploy/postgresql) for
+`schema_version` records the applied version. Indexes cover session expiry,
+each claim column ordered by `(start_time_utc DESC, game_id DESC)` for the game
+listing, and the start time of unclaimed games for the anonymous-game purge.
+Claims and player IDs deliberately have no foreign key to `users`: history
+outlives deleted accounts, and the name snapshot keeps it readable.
+
+### Retention
+- Sessions are deleted after expiry (7 days after the last login).
+- Finished games leave memory after `-finished-game-ttl` (1 hour); their rows stay.
+- Games with no claimed slot are unloaded from memory and deleted from the
+  database 24 hours after their last activity (`-anonymous-game-ttl`). The
+  hourly cleanup evicts idle games first, then queues the delete through the
+  ordered writer while excluding every game still loaded, so no live game can
+  lose its row. See [`deploy/postgresql`](../deploy/postgresql) for
 provisioning and the one-time SQLite import.
 
 ## Security Architecture
@@ -262,8 +273,8 @@ provisioning and the one-time SQLite import.
 2. Argon2id hashing prevents rainbow table attacks
 3. JWT tokens expire after 7 days and must name this service as issuer/audience
 4. Case-insensitive username/email matching prevents duplicate accounts
-5. Unknown accounts, wrong passwords, and expired accounts cost the same
-   Argon2id work and return the same error
+5. Unknown accounts and wrong passwords cost the same Argon2id work and
+   return the same error
 
 ### Rate Limiting Strategy
 - Client IP: the `-proxy-header` value (default `X-Real-IP`) only on connections

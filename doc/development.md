@@ -35,6 +35,8 @@ go build ./cmd/chess-client-cli
 - `-log-level`: `debug`, `info`, `warn`, or `error` (default: `info`)
 - `-log-http`: Enable API and web request logs (default: `true`)
 - `-finished-game-ttl`: How long terminal games stay in memory (default: `1h`; `0` disables eviction)
+- `-anonymous-game-ttl`: How long games without a registered player survive after their last activity, in memory and in the database (default: `24h`; `0` keeps them)
+- `-max-users`: Accounts at which public registration closes (default: `100`; `0` = no limit; the CLI is not limited)
 - `-web-api-url`: Browser-visible API origin for the embedded web client; useful when its public origin differs from the listen address
 
 ### Modes
@@ -112,9 +114,6 @@ run against a missing or outdated schema.
 
 # Import with existing Argon2 hash
 ./chess-server db user set-hash -username alice -hash '$argon2id$v=19$m=65536,t=3,p=2$...'
-
-# Make a temporary (API-registered) account permanent
-./chess-server db user promote -username alice
 
 # Delete user
 ./chess-server db user delete -username alice
@@ -252,7 +251,8 @@ go test -race ./internal/server/storage ./internal/server/service
 - Transient failures before COMMIT are retried; others degrade storage
 - Replay reads wait for prior queued writes and use one REPEATABLE READ transaction
 - Synchronous writes for user operations (data consistency)
-- Registration capacity/eviction, user creation, and initial session are atomic
+- Registration limit check, user creation, and initial session are atomic
+- Games without a registered player are deleted 24 hours after their last activity
 - A full queue or unrecovered write failure degrades to memory-only and is visible in logs and `/health`
 - Usernames and emails stored lowercase with unique constraints
 
@@ -303,7 +303,7 @@ go test -race ./internal/server/storage ./internal/server/service
 
 - JWT tokens don't support refresh (must re-login after expiry)
 - User deletion doesn't cascade to games (games keep player and claim IDs)
-- API registrations are temporary (24 hours) unless promoted with `db user promote`
+- Games played without a registered player are deleted 24 hours after their last activity
 - No password recovery mechanism
 - No email verification for registration
 - Fixed worker pool size for engine calculations
