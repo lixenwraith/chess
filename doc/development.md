@@ -4,7 +4,7 @@
 
 - Go 1.26+
 - Stockfish in PATH
-- SQLite3
+- PostgreSQL 18 (server for persistence; `psql` for the shell test suites)
 - Git
 - curl, jq (for testing)
 
@@ -26,7 +26,10 @@ go build ./cmd/chess-client-cli
 - `-web-host`: Web UI server host (default: localhost)
 - `-web-port`: Web UI server port (default: 9090)
 - `-dev`: Development mode with relaxed rate limits and fixed JWT secret
-- `-storage-path`: SQLite database file path (enables persistence and authentication)
+- `-dsn`: PostgreSQL connection string (default `$CHESS_DSN`); enables persistence and authentication
+- `-jwt-secret-file`: Stable JWT signing key file, mode 0600, at least 32 bytes (default `$CHESS_JWT_SECRET_FILE`)
+- `-trusted-proxies`: Comma-separated reverse-proxy IPs/CIDRs whose `-proxy-header` is trusted
+- `-proxy-header`: Client-IP header from a trusted proxy (default `X-Real-IP`)
 - `-pid`: PID file path for process tracking
 - `-pid-lock`: Enable exclusive locking (requires -pid)
 - `-log-level`: `debug`, `info`, `warn`, or `error` (default: `info`)
@@ -40,84 +43,110 @@ go build ./cmd/chess-client-cli
 ./chess-server
 
 # With persistence and authentication
-./chess-server -storage-path ./db/chess.db
+./chess-server -dsn 'dbname=chess'
 
 # Development with all features
-./chess-server -dev -storage-path chess.db -pid /tmp/chess-server.pid -serve
+./chess-server -dev -dsn 'dbname=chess' -pid /tmp/chess-server.pid -serve
 
 # Detailed persistence, engine-queue, cleanup, and request logs
-./chess-server -dev -storage-path chess.db -serve -log-level debug -log-http=true
+./chess-server -dev -dsn 'dbname=chess' -serve -log-level debug -log-http=true
+
+# Behind a reverse proxy that sets X-Real-IP
+./chess-server -dsn 'dbname=chess' -trusted-proxies 10.0.0.1
 
 # Web UI is public at one origin while the API is exposed at another
 ./chess-server -serve -web-api-url https://api.example.test
 
-# Initialize database with user tables
-./chess-server db init -path chess.db
+# Create or migrate the schema
+./chess-server db init -dsn 'dbname=chess'
 ```
+
+### Local PostgreSQL
+
+Any PostgreSQL 18 works for development. With a local server and peer
+authentication for your OS user:
+
+```bash
+sudo -u postgres createuser "$USER"
+sudo -u postgres createdb -O "$USER" chess
+export CHESS_DSN='dbname=chess'
+```
+
+Production provisioning (roles, schema, `pg_hba.conf`) is in
+[deployment.md](./deployment.md).
 
 ## Database Management
 
+All `db` subcommands take `-dsn`, defaulting to `$CHESS_DSN`; the examples
+below assume it is exported. Commands other than `init` and `delete` refuse to
+run against a missing or outdated schema.
+
 ### Schema Initialization
 ```bash
-# Create all tables (users, games, moves)
-./chess-server db init -path chess.db
+# Create or migrate all tables; safe to repeat
+./chess-server db init
 ```
 
 ### User Management CLI
 ```bash
 # Add user with password
-./chess-server db user add -path chess.db -username alice -password SecurePass123
+./chess-server db user add -username alice -password SecurePass123
 
 # Add user with email
-./chess-server db user add -path chess.db -username bob -email bob@example.com -password BobPass456
+./chess-server db user add -username bob -email bob@example.com -password BobPass456
 
 # Interactive password input
-./chess-server db user add -path chess.db -username charlie -interactive
+./chess-server db user add -username charlie -interactive
 
 # List all users
-./chess-server db user list -path chess.db
+./chess-server db user list
 
 # Update password
-./chess-server db user set-password -path chess.db -username alice -password NewPass789
+./chess-server db user set-password -username alice -password NewPass789
 
 # Update email
-./chess-server db user set-email -path chess.db -username alice -email newemail@example.com
+./chess-server db user set-email -username alice -email newemail@example.com
 
 # Update username
-./chess-server db user set-username -path chess.db -current alice -new alice2
+./chess-server db user set-username -current alice -new alice2
 
 # Import with existing Argon2 hash
-./chess-server db user set-hash -path chess.db -username alice -hash '$argon2id$v=19$m=65536,t=3,p=2$...'
+./chess-server db user set-hash -username alice -hash '$argon2id$v=19$m=65536,t=3,p=2$...'
+
+# Make a temporary (API-registered) account permanent
+./chess-server db user promote -username alice
 
 # Delete user
-./chess-server db user delete -path chess.db -username alice
+./chess-server db user delete -username alice
 ```
 
 ### Game Query CLI
 ```bash
 # Query all games
-./chess-server db query -path chess.db -gameId "*"
+./chess-server db query -gameId "*"
 
 # Query games for specific user
-./chess-server db query -path chess.db -playerId "550e8400-e29b-41d4-a716-446655440000"
+./chess-server db query -playerId "550e8400-e29b-41d4-a716-446655440000"
 
 # Query specific game
-./chess-server db query -path chess.db -gameId "a1b2c3d4-e5f6-7890-1234-567890abcdef"
+./chess-server db query -gameId "a1b2c3d4-e5f6-7890-1234-567890abcdef"
 
-# Delete database (destructive)
-./chess-server db delete -path chess.db
+# Drop every chess table in the DSN's search_path (destructive)
+./chess-server db delete -confirm
 ```
 
 ## Authentication Configuration
 
 ### JWT Secret Management
-- **Production**: A cryptographically secure 32-byte secret is generated on
-  startup. This intentionally invalidates JWTs after a restart even though the
-  SQLite session rows remain; configuring a stable deployment secret is tracked
-  in `doc/todo.md`.
-- **Development** (`-dev`): Fixed secret for testing consistency
-- **Sessions**: Stored for 7 days and renewed on each login; effective token
-  lifetime is also bounded by signing-key rotation
+- **Production**: Provide `-jwt-secret-file` so tokens survive restarts. The
+  file must be a regular file with no group/other permissions and hold at
+  least 32 bytes (`openssl rand -base64 48`). Without it, a random key is
+  generated per process and every token is invalidated on restart, although
+  the session rows remain.
+- **Development** (`-dev`): Fixed secret for testing consistency when no key file is given
+- **Scope**: Tokens are issued for `chess-server` / `chess-api`, carry only the
+  subject and session ID, and are accepted only while their session row exists
+- **Sessions**: Stored for 7 days and renewed on each login
 
 ### Password Requirements
 - Minimum 8 characters
@@ -160,7 +189,7 @@ chess/
 │       │   ├── service.go       # Core service
 │       │   ├── game.go          # Game operations
 │       │   └── user.go          # User and auth operations
-│       └── storage/             # SQLite persistence
+│       └── storage/             # PostgreSQL persistence (pgtest: per-test schemas)
 │           ├── storage.go       # Async writer for games
 │           ├── game.go          # Game persistence
 │           ├── user.go          # User persistence (synchronous)
@@ -180,13 +209,15 @@ See [test documentation](../test/README.md) for comprehensive test suites coveri
 # User authentication and database tests
 ./test/test-db.sh
 
-# Run test server with sample users
-./test/test-db-server.sh
+# Run test server with sample users (needs a disposable CHESS_TEST_DSN)
+./test/run-test-server.sh
 
 # Test real-time game updates via long-polling
 ./test/test-longpoll.sh
 
-# Unit, migration, and persistence tests
+# Unit, migration, and persistence tests; database tests are skipped unless
+# CHESS_TEST_DSN names a database the test role may create schemas in
+export CHESS_TEST_DSN='postgres://chess_test:chess_test@localhost:5432/chess_test?sslmode=disable'
 go test ./...
 
 # Concurrency checks for the state/persistence boundary
@@ -201,8 +232,11 @@ go test -race ./internal/server/storage ./internal/server/service
 - Queue capacity: 100 (internal/processor/queue.go)
 - Min search time: 100ms (internal/processor/processor.go)
 - Write queue: 1000 operations (internal/server/storage/storage.go)
-- DB connections: 8 max, 4 idle (internal/server/storage/storage.go)
+- DB connections: 10 max, 5 idle (internal/server/storage/storage.go)
+- DB operation deadline: 5 seconds; write transactions 10 seconds
+- Transient write retries: 6 attempts, 100 ms doubling backoff
 - JWT expiration: 7 days (internal/service/user.go)
+- Concurrent Argon2id derivations: 4, five-second wait (internal/service/user.go)
 - Long-poll timeout: 30 seconds (internal/server/service/waiter.go)
 - Long-poll channel buffer: 1 (internal/service/waiter.go)
 
@@ -213,20 +247,20 @@ go test -race ./internal/server/storage ./internal/server/service
 - Hash algorithm: Argon2id (memory-hard, side-channel resistant)
 
 ### Storage Configuration
-- WAL mode and NORMAL synchronous mode enabled on every connection
-- Foreign key constraints and a five-second busy timeout enabled on every connection
+- PostgreSQL via pgx; schema chosen by `search_path`; migrations run at startup
 - Async write pattern for games; shutdown drains every accepted write
-- Replay reads wait for prior queued writes and use one read transaction
+- Transient failures before COMMIT are retried; others degrade storage
+- Replay reads wait for prior queued writes and use one REPEATABLE READ transaction
 - Synchronous writes for user operations (data consistency)
 - Registration capacity/eviction, user creation, and initial session are atomic
-- A full queue or write failure degrades to memory-only and is visible in logs and `/health`
-- Case-insensitive collation for usernames and emails
+- A full queue or unrecovered write failure degrades to memory-only and is visible in logs and `/health`
+- Usernames and emails stored lowercase with unique constraints
 
 ### Rate Limiting Configuration
 - General endpoints: 10 req/s (20 in dev mode)
 - User registration: 5 req/min
 - User login: 10 req/min
-- Rate limit key: IP address from X-Forwarded-For or connection
+- Rate limit key: `-proxy-header` (default `X-Real-IP`) from `-trusted-proxies`, otherwise the TCP peer
 
 ### PID Management
 - Singleton enforcement requires same PID file path
@@ -247,10 +281,11 @@ go test -race ./internal/server/storage ./internal/server/service
 
 ### Authentication Security
 - Passwords hashed with Argon2id before storage
-- JWT tokens signed with HS256
-- Constant-time password comparison
-- Case-insensitive matching prevents user enumeration
+- JWT tokens signed with HS256 and scoped by issuer/audience
+- Constant-time password comparison; unknown accounts verify a dummy hash
+- Case-insensitive matching prevents duplicate accounts
 - Rate limiting on auth endpoints prevents brute force
+- Argon2id concurrency is bounded to cap memory under load
 
 ### Input Validation
 - All user inputs validated and sanitized
@@ -261,18 +296,19 @@ go test -race ./internal/server/storage ./internal/server/service
 ### Session Management
 - JWT tokens expire after 7 days
 - No token refresh mechanism (re-login required)
-- Tokens include minimal claims (user ID, username, email)
-- Secret rotates on server restart (except dev mode)
+- Tokens carry only the user ID and session ID
+- Key is stable with `-jwt-secret-file`; otherwise it rotates on restart (fixed in dev mode)
 
 ## Limitations
 
 - JWT tokens don't support refresh (must re-login after expiry)
-- User deletion doesn't cascade to games (games remain with player IDs)
+- User deletion doesn't cascade to games (games keep player and claim IDs)
+- API registrations are temporary (24 hours) unless promoted with `db user promote`
 - No password recovery mechanism
 - No email verification for registration
 - Fixed worker pool size for engine calculations
 - No push-based game updates (30-second long-polling is used)
 - Live games are not rehydrated after restart; persisted games are currently replay-only
 - Database history has no automatic retention policy
-- Curated-game metadata and replay controls are deferred to [Replay Implementation Tasks](./todo.md)
+- Replay UI, PGN export, and curated games are planned in [Replay Plan](./todo.md)
 - REST API only

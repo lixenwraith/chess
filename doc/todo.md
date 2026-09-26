@@ -1,266 +1,154 @@
-# Replay Implementation Tasks
+# Game Replay Plan
 
-This plan covers the remaining work needed for first-class replay in the web
-and CLI clients, durable player-game browsing, and a curated archive of famous
-games. The persistence/API foundation completed by the database audit is listed
-first so later work does not duplicate or bypass it.
+Target experience: a user registers, signs in, plays, and later opens **My
+games** to pick any finished or unfinished game. Replay runs automatically or
+one ply at a time for either side, moves backward and forward freely, and
+exports the FEN or PGN of the position at the current ply, in the spirit of the
+chess.com analysis viewer.
 
-## Foundation Available Now
+This plan starts from the PostgreSQL release and splits the remaining work
+into phases that each ship and test on their own.
 
-- [x] Store terminal `result` and `end_time_utc` on each game.
-- [x] Persist `white_claimed_by` and `black_claimed_by`, including claims made
-  on the first valid move after game creation.
-- [x] Commit each move, first-move claim, and move-caused terminal result in one
-  SQLite transaction.
-- [x] Rewind moves and clear a stale terminal result/end time in one transaction.
-- [x] Return ordered UCI moves with `fenAfterMove` through
-  `GET /api/v1/games/{gameId}/history`.
-- [x] Return bounded pages through authenticated
-  `GET /api/v1/users/me/games?limit=&offset=`.
-- [x] Provide matching Go client DTOs and methods (`GetGameHistory`,
-  `GetMyGames`) without prematurely adding CLI presentation.
-- [x] Evict terminal games from memory after a configurable TTL while retaining
-  durable rows and moves.
-- [x] Add an async-write barrier and a single SQLite read snapshot for immediate,
-  internally consistent replay reads.
-- [x] Configure browser API origin through `/config`, with `/chess` fallback for
-  the static deployment at `lixen.com/projects/chess/`.
-- [x] Add debug-level persistence, cleanup, engine queue, and lifecycle logging.
+## Foundation in Place
 
-## Decisions Required Before Replay UI Work
+- [x] PostgreSQL 18 schema with durable games, ordered moves, results, end
+  times, and slot claims; transactional migrations (`schema_version`).
+- [x] Each accepted move, first-move claim, and move-caused result commits in
+  one transaction; undo removes moves and clears the result atomically.
+- [x] `GET /api/v1/games/{id}/history`: initial FEN plus UCI and resulting FEN
+  for every ply, read in one REPEATABLE READ snapshot after pending writes.
+- [x] `GET /api/v1/users/me/games`: claimed games, newest first, with move
+  count and final FEN (thumbnail) from a primary-key probe per game.
+- [x] Claims survive player reconfiguration and terminal-game eviction; the
+  listing indexes are ordered for keyset pagination.
+- [x] Stable JWT key (`-jwt-secret-file`), so a returning user's session
+  survives server restarts.
+- [x] Go client DTOs (`GetGameHistory`, `GetMyGames`) including `finalFen`.
 
-| Decision | Current behavior | Decision needed |
-|---|---|---|
-| History visibility | Public to anyone with a game UUID, like live game reads | Keep public, make games private by default, or add per-game visibility |
-| Live mutation authorization | Configure, undo, computer-trigger, and unload remain UUID-based; claimed slots protect human moves only | Define owner/opponent/spectator permissions before replay and archive UI expose more game discovery |
-| Database retention | Indefinite; only terminal in-memory state is evicted | Retention by account type, archive status, age, or explicit deletion |
-| Delete semantics | `DELETE /games/{id}` unloads memory but retains history | Name it “close/unload,” or add a separate authorized durable delete |
-| Durability guarantee | Gameplay continues after a write failure; health becomes degraded | Keep best-effort, acknowledge writes, retry with an outbox, or fail gameplay closed |
-| Result model | `white_wins`, `black_wins`, `draw`, `stalemate` | Keep compatibility or split outcome (`1-0`, `0-1`, `1/2-1/2`) from termination reason |
-| Archived-game owner | Not created | Protected system/demo user, separate archive owner table, or ownerless source records |
-| Replay notation | UCI plus authoritative FEN after each move | Add SAN and canonical PGN at import/write time or derive them on read |
+## Decisions Needed Before Phase R2
 
-Record these choices in an ADR before changing the v1 response contract. Until
-privacy is decided, do not add searchable public player-game indexes or expose
-usernames in public history.
+| # | Decision | Current behavior | Recommendation |
+|---|---|---|---|
+| D1 | Account lifetime | API registrations are temporary and deleted after 24 h; permanent accounts come only from the CLI (`db user add`, `db user promote`) | Make API accounts permanent with an inactivity expiry (for example 90 days since last login) and raise the caps through flags. Otherwise users cannot come back to replay. |
+| D2 | History visibility | Public to anyone holding the game UUID | Keep capability-URL semantics (122-bit random IDs, never listed publicly) so a replay link can be shared; keep the list authenticated. Add per-game privacy only if needed. |
+| D3 | Where SAN/PGN is produced | Not produced; storage has UCI and FEN per ply | Server-side Go, derived on read from the initial FEN and UCI line. No schema change, one implementation for web and CLI, and no third-party script under the CSP. |
+| D4 | Player names in PGN | Only user IDs; temporary users are deleted | Snapshot display names on each claim (schema v2 columns `white_name`, `black_name`), so PGN tags survive renames and deletions. |
+| D5 | Draw rules | Only checkmate and stalemate end a game | Detect insufficient material, threefold repetition, and the 50/75-move rules in the same Go core (R1); add resign/draw-offer later. PGN `Result` is `*` for unterminated games. |
+| D6 | Undo after a result | Allowed; rewrites durable history | Disallow undo once a game with a claimed human slot is terminal, so saved replays are immutable. |
+| D7 | List pagination | Offset (max 1,000,000) | Keyset cursor on `(start_time_utc, game_id)`; keep offset for compatibility during v1. |
 
-## Phase 1 — Complete the Durable Game Model
+## Phase R1 — Notation Core (server, no API change)
 
-### Results and termination
+A small, dependency-free chess core in Go (`internal/server/chess`), used by
+replay only; Stockfish remains the move validator for live play.
 
-- [ ] Represent outcome separately from termination reason. Candidate fields:
-  `outcome`, `termination`, and optional `result_detail`.
-- [ ] Detect and persist all supported draw paths, not only stalemate:
-  insufficient material, repetition, fifty/seventy-five-move rule, and agreed
-  draw if that interaction is added.
-- [ ] Define behavior for resignation, timeout, abandonment, engine failure,
-  and administrative termination.
-- [ ] Add constraints covering valid combinations: an end time requires a
-  terminal outcome; an ongoing game has neither.
-- [ ] Decide whether undoing a finished rated/player game is allowed. If yes,
-  preserve an audit event rather than silently rewriting official history.
+- [ ] Board model with FEN parse/serialize (extend `internal/server/board`).
+- [ ] Legal move generation: pseudo-legal moves plus king-safety filtering,
+  castling rights and paths, en passant, promotion.
+- [ ] SAN encode (disambiguation by file, rank, or both; `+`/`#`; `O-O`,
+  `O-O-O`; `=Q`) and SAN decode for later PGN import.
+- [ ] PGN writer: Seven Tag Roster, `SetUp`/`FEN` tags for custom starts,
+  `Termination`, 80-column movetext, `Result` from the stored outcome.
+- [ ] Draw-rule helpers (D5) and an integrity check that replays the stored UCI
+  line and compares each generated FEN with the stored `fenAfterMove`.
 
-### Stable participant metadata
+Test gate:
 
-- [ ] Snapshot display names at game start/end so replay remains readable after
-  a user rename or temporary-account deletion.
-- [ ] Separate historical participant identity from mutable controller config.
-  Changing a human slot to a computer must never remove the user's game link.
-- [ ] Decide whether anonymous players receive a durable pseudonym, remain
-  unnamed, or are excluded from archive browsing.
-- [ ] Add optional clocks/time-control metadata before timeout results are
-  supported.
+- [ ] Perft node counts for the standard CPW positions (start, Kiwipete, and
+  positions 3–6) to depth 4, which exercises castling, en passant, promotion,
+  and pins.
+- [ ] Property tests over random legal games: SAN decode(encode(m)) == m; the
+  generated FEN sequence is identical to one produced by Stockfish's `d`
+  command for the same line.
+- [ ] Fuzz targets for FEN parsing, SAN decoding, and PGN writing (no panics,
+  bounded output).
+- [ ] Integrity check run over every stored game in a production-shaped copy.
 
-### Notation and integrity
+## Phase R2 — Replay API
 
-- [ ] Add SAN per ply and canonical PGN, or add a deterministic backend
-  converter from the stored initial FEN/UCI line.
-- [ ] Validate that `move_number`, `player_color`, FEN side-to-move, and the
-  previous position form one legal continuous line.
-- [ ] Add a stored content hash for import idempotency and corruption checks.
-- [ ] Add a repair/audit CLI command that reports broken game rows without
-  mutating them; make repair an explicit separate operation.
-- [ ] Define a schema-migration policy beyond v2, including forward-version
-  rejection, backup instructions, and rollback limitations.
+- [ ] Implement D1, D4 (schema v2 migration), D6, and D7.
+- [ ] Additive history fields: `san` per move, `outcome`/`termination`, and
+  `pgnResult`; keep existing fields unchanged.
+- [ ] `GET /api/v1/games/{id}/pgn?ply=N`: `application/x-chess-pgn`,
+  `Content-Disposition: attachment; filename="chess-<date>-<id8>.pgn"`,
+  moves 1..N (default all). The FEN at any ply is already in the history.
+- [ ] `ETag` and `Cache-Control: private, max-age` for terminal games;
+  `If-None-Match` returns 304.
+- [ ] Filters on the list endpoint: result, color, ongoing/finished.
+- [ ] Tests: handler tests against PostgreSQL (pgtest), golden PGN files for
+  mate, stalemate, promotion, castling, en passant, custom FEN, and an ongoing
+  game; shell-suite coverage for authorization (another user's list, expired
+  session) and cursor stability under concurrent inserts.
 
-## Phase 2 — Replay and Library APIs
+## Phase R3 — Web Replay UI
 
-### Player games
+Plain JavaScript in the embedded client, no framework.
 
-- [ ] Add filters to the authenticated list: `status`, `result`, color, opponent
-  type, and date range.
-- [ ] Replace offset pagination with a stable `(start_time_utc, game_id)` cursor
-  before the table grows large; retain v1 offset parameters during migration.
-- [ ] Return a compact display label/opponent summary so clients do not recreate
-  association logic.
-- [ ] Define whether an authenticated user may list a game merely created for
-  their random player ID versus one explicitly claimed by them.
-- [ ] Add authorization tests for expired/deleted sessions and attempts to list
-  another user's games.
+- [ ] **My games** button beside the account indicator (authenticated only)
+  opening a panel: mini-board from `finalFen`, result, date, opponent or
+  engine level, move count; loading, empty, error, and "load more" states.
+- [ ] Replay mode entered from the panel or a deep link
+  `?replay=<gameId>&ply=<n>`; `history.pushState` so browser back/forward
+  restores the list and the ply.
+- [ ] Controls: first, previous, next, last; keyboard `←` `→` `Home` `End`;
+  clickable SAN move list; autoplay with speed selector and pause; board flip;
+  current ply announced through an `aria-live` region.
+- [ ] Position rendering assigns the stored FEN for the ply; the browser never
+  computes moves.
+- [ ] Export at the current ply: copy FEN, copy PGN, and download PGN (fetched
+  from R2 as a `Blob`, saved through a temporary `<a download>`).
+- [ ] While replaying: stop live long-polling, disable move, undo, new-game,
+  and player-configuration controls; **Back to live game** restores them.
 
-### Replay payload
+Constraints from the host's security headers:
 
-- [ ] Version the history payload before adding annotations, evaluations,
-  comments, variations, clocks, or PGN tags.
-- [ ] Include a canonical final FEN and normalized outcome/termination fields.
-- [ ] Decide whether long games return one payload or paged/chunked moves.
-- [ ] Add `ETag`/`If-None-Match` for immutable finished histories.
-- [ ] Add a downloadable PGN response with correct `Content-Type` and filename.
-- [ ] Return an explicit “ongoing/incomplete” marker when history is requested
-  before a terminal result.
+- `script-src 'self' 'wasm-unsafe-eval'`: all code in `app.js`; no inline
+  scripts, `on*` attributes, `eval`, or `new Function`.
+- `style-src 'self' 'unsafe-inline'`: styles belong in `style.css`; state
+  classes instead of inline style strings.
+- `img-src 'self' data:`: pieces remain Unicode glyphs or `data:` SVG.
+- `connect-src 'self'`: all requests go to the same origin under `/chess/`
+  (the existing `/config` fallback); no CDN or cross-origin API.
+- `frame-ancestors 'self'` and `X-Frame-Options: SAMEORIGIN`: the iframe host
+  page must stay on the same origin. Downloads from `blob:` URLs and
+  `navigator.clipboard` work in a same-origin frame.
 
-### Live-game restoration
+Test gate:
 
-- [ ] Decide whether a server restart should make unfinished games playable or
-  replay-only.
-- [ ] If play must resume, load the last persisted FEN, next turn, player config,
-  claims, and move list into memory at startup.
-- [ ] Mark games interrupted in `pending` state as recoverable `stuck` or
-  `ongoing`; never re-submit an engine task blindly.
-- [ ] Define reconciliation when the service previously entered degraded mode
-  and memory contains moves absent from SQLite.
+- [ ] Playwright (Chromium) end-to-end against server and PostgreSQL: play a
+  short game, open My games, step backward and forward, autoplay to the end,
+  and compare exported FEN/PGN with the API.
+- [ ] Keyboard-only navigation and screen-reader labels; reduced-motion
+  disables autoplay animation.
+- [ ] Deep link works beneath `/projects/chess/` with the API at `/chess`.
 
-## Phase 3 — Curated Famous-Game Archive
+## Phase R4 — CLI and WASM Replay (optional)
 
-### Schema and ownership
+- [ ] `games` (list with pagination), `replay <gameId|index>`, `next`, `prev`,
+  `first`, `last`, `goto <ply>`, `auto <ms>`, `fen`, `pgn save <path>`.
+- [ ] Replay state is separate from the live session: no polling, moves, undo,
+  or configuration while replaying.
 
-- [ ] Add a game origin such as `player`, `curated`, or `imported`.
-- [ ] Add searchable archive metadata: title, event, site, event date, round,
-  white/black display names, Elo values, ECO/opening, source URL, source license,
-  attribution text, and import timestamp.
-- [ ] Add publication state, featured flag, and explicit featured rank/order.
-- [ ] Create a protected demo/system identity only if ownership remains tied to
-  users. It must not consume temporary-user capacity, expire, authenticate, or
-  be evicted/deleted through normal user tools.
-- [ ] Prefer a separate protected archive owner over credentials embedded in
-  seed scripts.
-- [ ] Add only indexes backed by actual archive queries; confirm each with
-  `EXPLAIN QUERY PLAN` and a representative data volume.
+## Phase R5 — Curated Archive (later)
 
-### Import pipeline
+- [ ] Schema: game origin (`player`, `curated`), archive metadata (event, site,
+  date, round, names, Elo, ECO, source URL, license, attribution), publication
+  state, featured order; no user ownership.
+- [ ] `chess-server db archive import <pgn|dir>` using the R1 SAN decoder:
+  validate every move, import each game in one transaction, idempotent by
+  content hash, dry-run and per-file summary.
+- [ ] Public, bounded, cacheable list endpoint; replay through the same
+  history/PGN endpoints.
+- [ ] Verify redistribution rights for every bundled collection.
 
-- [ ] Add `chess-server db archive import` for one PGN or a directory.
-- [ ] Parse PGN tags, comments, NAGs, and variations deliberately; document
-  which are preserved and which are discarded in the first version.
-- [ ] Validate every main-line move from its initial position and generate the
-  authoritative FEN sequence before opening the transaction.
-- [ ] Import a game and all moves in one transaction.
-- [ ] Make repeated imports idempotent by source key/content hash.
-- [ ] Add dry-run, structured error output, per-file summary, and all-or-nothing
-  versus continue-on-error modes.
-- [ ] Preserve source attribution and verify redistribution rights for every
-  bundled collection.
-- [ ] Seed a small, reviewed fixture set in tests; keep large archives outside
-  the executable and repository unless licensing and binary size are accepted.
+## Operations Carried Forward
 
-### Archive API
-
-- [ ] Add a public, bounded curated list endpoint with stable sorting.
-- [ ] Add exact filters required by the UI (featured, player name, event, year,
-  ECO); do not expose an unconstrained database query API.
-- [ ] Reuse the same history representation for player and curated games.
-- [ ] Cache immutable curated list/history responses and invalidate only on
-  archive administration.
-
-## Phase 4 — CLI Replay Experience
-
-- [ ] Add `games`/`games mine` to call `GetMyGames`, show pagination, result,
-  colors, opponent/controller, date, and move count.
-- [ ] Add `games featured` after the curated endpoint exists.
-- [ ] Add `replay <gameId>` and allow selection from a prior list result.
-- [ ] Render the initial FEN before ply 1; never assume the standard start.
-- [ ] Add next/previous/start/end navigation, move-number jump, and optional
-  autoplay speed.
-- [ ] Display UCI initially and SAN once the backend contract supplies it.
-- [ ] Clearly separate replay state from live session state: replay commands
-  must not poll, move, undo, configure, or delete the live game.
-- [ ] Add `pgn save <path>` after the PGN endpoint is defined.
-- [ ] Cover empty lists, ongoing histories, custom FEN, malformed/incomplete
-  history, expired auth, server restart, and deleted live-memory state.
-
-## Phase 5 — Web Replay Experience
-
-- [ ] Add “My games” for authenticated users and a separate “Classic games”
-  collection available without login.
-- [ ] Build accessible loading, empty, pagination, and error states.
-- [ ] Add a replay route/deep link, for example `?replay=<gameId>`, that works
-  beneath `/projects/chess/` and does not assume the API shares that path.
-- [ ] Initialize from `initialFen`; step by assigning the stored
-  `fenAfterMove`, not by replaying moves through a browser chess engine.
-- [ ] Add previous/next/start/end buttons, move-list selection, keyboard
-  controls, autoplay speed, pause, and current-ply announcement.
-- [ ] Disable move, computer-trigger, undo, and player-configuration actions in
-  replay mode.
-- [ ] Stop live long-polling when replay mode begins and restore it only when a
-  live game is explicitly reopened.
-- [ ] Show result, termination, players, date/event, source attribution, and
-  custom-start notice.
-- [ ] Make browser back/forward restore list filters and replay ply.
-- [ ] Test both embedded `/config` and the deployed `/chess` fallback, including
-  CORS and reverse-proxy headers.
-- [ ] Add responsive and accessibility checks for board orientation, focus,
-  screen-reader labels, reduced motion, and high contrast.
-
-## Phase 6 — Durability, Operations, and Scale
-
-- [ ] Choose and implement the durability contract from the decision table.
-  For acknowledged persistence, return success only after a writer receipt or
-  use a durable outbox with retries and ordering.
-- [ ] Expose counters/metrics for queue depth, enqueue rejection, write latency,
-  failed transaction, barrier latency, replay read latency, and terminal-memory
-  eviction.
-- [ ] Add request/game correlation fields to logs without logging JWTs,
-  passwords, or full private payloads.
-- [ ] Configure a stable production JWT signing key (prefer a secret file or
-  deployment secret) so persisted sessions can survive a server restart;
-  document rotation and invalidation procedures.
-- [ ] Add a bounded degraded-mode recovery procedure; current behavior requires
-  operator intervention/restart and cannot reconstruct missing writes.
-- [ ] Benchmark list and history queries with realistic user/archive sizes and
-  verify query plans in CI.
-- [ ] Set WAL checkpoint and database backup procedures; test online backup and
-  restore with active reads/writes.
-- [ ] Define database retention separately for anonymous, temporary-user,
-  permanent-user, and curated games.
-- [ ] Add authorized durable deletion/anonymization if required by the privacy
-  policy, with archive records protected from accidental cascades.
-
-## Required Test Matrix
-
-- [ ] Upgrade a production-shaped legacy database to every new schema version
-  and reopen it with foreign keys enabled on multiple pooled connections.
-- [ ] Read history immediately after create, move, terminal move, slot claim,
-  player reconfiguration, and undo—without sleeps.
-- [ ] Run concurrent legal moves from one position; exactly one may commit and
-  the loser must receive `GAME_CONFLICT`.
-- [ ] Submit duplicate computer triggers; only one engine task may run.
-- [ ] Fill the write queue/fault SQLite and assert degraded health, visible
-  logging, and documented client behavior.
-- [ ] Shut down with queued writes and prove all accepted writes drain.
-- [ ] Restart after a finished game and replay the exact FEN sequence/result.
-- [ ] Evict a terminal game from memory and replay it from SQLite.
-- [ ] Change a claimed human slot to computer and verify “My games” association
-  remains.
-- [ ] Verify registration duplicate/session failures roll back account creation
-  and capacity eviction.
-- [ ] Exercise public/private history rules for anonymous, owner, opponent, and
-  unrelated authenticated clients.
-- [ ] Validate imported PGNs with promotions, castling, en passant, custom FEN,
-  comments, and every supported result.
-- [ ] Run Go unit/race tests, HTTP integration scripts, JavaScript syntax/tests,
-  and browser end-to-end replay navigation in CI.
-
-## Replay Definition of Done
-
-- A finished player game survives restart, appears once in its owner's list,
-  and replays deterministically from the stored initial FEN to the stored final
-  FEN in both clients.
-- A curated game is imported idempotently with source attribution, appears in a
-  stable public collection, and uses the same replay path as a player game.
-- Undo, player reconfiguration, terminal eviction, and concurrent requests
-  cannot produce a stale result, missing claim, duplicate ply, or mixed history
-  snapshot.
-- Privacy, retention, durable deletion, and degraded-write behavior are
-  documented and enforced consistently by API, storage, web, and CLI layers.
-- Query plans and benchmarks show no redundant indexes or unbounded list scans
-  at the agreed deployment size.
+- [ ] Metrics: write-queue depth, retries, degraded transitions, flush and
+  replay latency, KDF wait time.
+- [ ] Degraded-mode recovery without a restart (replay missing writes from
+  memory or fail gameplay closed); today recovery requires a restart.
+- [ ] Live-game restoration after restart (unfinished games are replay-only).
+- [ ] Retention and user-initiated deletion or anonymization of games.
+- [ ] Thread request contexts from HTTP handlers into storage calls; today each
+  call carries its own deadline.
+- [ ] Draw and resign flows (D5) for live play, independent of replay.

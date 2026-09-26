@@ -26,6 +26,10 @@ Creates new user account and returns JWT token.
 - `email` (string, optional): Valid email address
 - `password` (string, required): Minimum 8 characters, must contain letter and number
 
+Accounts created here are temporary and expire after 24 hours (see
+`db user promote`). Returns 409 when the username or email is taken, and 503
+when registration capacity or password-hashing capacity is exhausted.
+
 **Response (201):**
 ```json
 {
@@ -101,7 +105,7 @@ Returns server and storage status.
 ```
 
 Storage states:
-- `"disabled"` - No storage path configured
+- `"disabled"` - No database configured (`-dsn` or `CHESS_DSN`)
 - `"ok"` - Database operational with auth enabled
 - `"degraded"` - A persistence write failed or the write queue filled; live games continue in memory, but durable history is no longer complete
 
@@ -211,8 +215,8 @@ client can replay the game without running a chess engine.
 `result` is omitted while a game is ongoing. Persisted terminal values are
 `white_wins`, `black_wins`, `draw`, and `stalemate`.
 
-Returns 404 when the game has no durable record and 503 when persistence is
-disabled.
+Returns 400 for a non-canonical game ID, 404 when the game has no durable
+record, and 503 when persistence is disabled or degraded.
 
 ### List My Stored Games
 `GET /users/me/games?limit=50&offset=0`
@@ -224,8 +228,11 @@ persistent storage.
 - `limit`: 1-100; defaults to 50
 - `offset`: 0-1,000,000; defaults to 0
 
-Each item contains game ID, initial FEN, result/timestamps, players, and move
-count. `nextOffset` is present only when another page exists.
+Each item contains game ID, initial FEN, final FEN (after the last stored move,
+or the initial FEN when there is none), result/timestamps, players, and move
+count. `nextOffset` is present only when another page exists. A game belongs to
+a user who created it while authenticated or claimed a slot with a first move;
+the association survives later player reconfiguration.
 
 **Response (200):**
 ```json
@@ -234,10 +241,11 @@ count. `nextOffset` is present only when another page exists.
     {
       "gameId": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
       "initialFen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+      "finalFen": "r1bqkb1r/pppp1Qpp/2n2n2/4p3/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 0 4",
       "result": "white_wins",
       "startTimeUtc": "2026-09-07T12:00:00Z",
       "endTimeUtc": "2026-09-07T12:15:00Z",
-      "moveCount": 41,
+      "moveCount": 7,
       "players": {
         "white": {"id": "user-id", "color": 1, "type": 1, "claimedBy": "user-id"},
         "black": {"id": "player-id", "color": 2, "type": 1}
@@ -314,7 +322,12 @@ Error codes:
 - Registration: 5 requests/minute/IP
 - Login: 10 requests/minute/IP
 
-Exceeding limit returns 429 status.
+Exceeding limit returns 429 status. Behind a reverse proxy the client IP is the
+proxy's `X-Real-IP` header, trusted only from addresses listed in
+`-trusted-proxies`.
+
+Password hashing is bounded to four concurrent operations. When all are busy
+for five seconds, registration and login return 503 with `RESOURCE_LIMIT`.
 
 ## JWT Token Format
 
@@ -323,6 +336,9 @@ Tokens are HS256-signed JWTs valid for 7 days. Include in Authorization header:
 Authorization: Bearer <token>
 ```
 
-Token claims include `sub` (user ID), `username`, `email`, `session_id`, and
-`exp` (expiration). Authentication requires the session to exist, be unexpired,
-and belong to the JWT subject.
+The scheme is case-insensitive and the token must use RFC 6750 syntax; a
+malformed header returns 401 even on endpoints where authentication is
+optional. Claims are `iss` (`chess-server`), `aud` (`chess-api`), `sub` (user
+ID), `iat`, `nbf`, `exp`, and `extra.session_id`. Tokens carry no profile data;
+use `/auth/me`. Authentication requires the session to exist, be unexpired, and
+belong to the JWT subject. Logging in again replaces the previous session.

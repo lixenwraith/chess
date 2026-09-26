@@ -23,11 +23,12 @@ Go backend server providing a RESTful API for chess gameplay with user authentic
 - Custom FEN position support
 - Asynchronous engine move calculation
 - Configurable engine strength and thinking time
-- SQLite persistence with async writes for games
+- PostgreSQL 18 persistence with ordered async writes for games
 - Durable game results, player claims, ordered move history, and replay API
 - Authenticated stored-game listing with bounded pagination
 - Configurable structured debug logs for persistence, cleanup, and engine work
-- User management with secure Argon2 password storage
+- User management with secure Argon2id password storage and scoped JWTs
+- Static, CGO-free binaries (cross-compiles for FreeBSD)
 - PID file management for singleton enforcement
 - Database CLI for storage and user administration
 
@@ -35,7 +36,7 @@ Go backend server providing a RESTful API for chess gameplay with user authentic
 
 - Go 1.26+
 - Stockfish chess engine (`stockfish` in PATH)
-- SQLite3 (for persistence features)
+- PostgreSQL 18 (for persistence and accounts; see [Deployment](./doc/deployment.md))
 
 ### Installation
 ```bash
@@ -43,8 +44,12 @@ Go backend server providing a RESTful API for chess gameplay with user authentic
 yay -S stockfish
 
 # FreeBSD
-pkg install stockfish
+pkg install stockfish postgresql18-server
 ```
+
+The connection string comes from `-dsn` or `CHESS_DSN`, in libpq keyword/value
+or URL form. With a local socket and peer authentication, `dbname=chess` is
+enough. Unset fields fall back to the standard `PG*` variables and `~/.pgpass`.
 
 ## Quick Start
 
@@ -54,20 +59,22 @@ git clone https://github.com/lixenwraith/chess
 cd chess
 make build
 
+export CHESS_DSN='dbname=chess'   # used by make targets and the CLI
+
+# Create or migrate the schema (the server also does this at startup)
+make db-init
+
 # Standard mode with persistence and auth
 make run-server
 
 # Or run with web UI
 make run-server-web
 
-# Initialize database with user support
-make db-init
-
 # View all build options
 make help
 
 # Add users via CLI
-./bin/chess-server db user add -path db/chess.db -username alice -password AlicePass123
+./bin/chess-server db user add -username alice -password AlicePass123
 ```
 
 ### Building Manually
@@ -78,53 +85,59 @@ cd chess
 go build ./cmd/chess-server
 
 # Standard mode with persistence and auth
-./chess-server -storage-path chess.db
+./chess-server -dsn 'dbname=chess' -jwt-secret-file ~/.chess-jwt.key
 
 # Development mode with all features
-./chess-server -dev -storage-path chess.db -pid /tmp/chess-server.pid -pid-lock -api-port 9090
+./chess-server -dev -dsn 'dbname=chess' -pid /tmp/chess-server.pid -pid-lock -api-port 9090
 
 # Detailed persistence and HTTP diagnostics
-./chess-server -dev -storage-path chess.db -log-level debug -log-http=true
+./chess-server -dev -dsn 'dbname=chess' -log-level debug -log-http=true
 
-# Initialize database with user support
-./chess-server db init -path chess.db
+# Initialize the schema
+./chess-server db init -dsn 'dbname=chess'
 
-# Add users via CLI
-./chess-server db user add -path chess.db -username alice -password AlicePass123
-./chess-server db user list -path chess.db
+# Add users via CLI (-dsn defaults to $CHESS_DSN)
+./chess-server db user add -dsn 'dbname=chess' -username alice -password AlicePass123
+./chess-server db user list -dsn 'dbname=chess'
 ```
 
 Server listens on `http://localhost:8080`. See [API Reference](./doc/api.md) for endpoints including authentication.
 
 ## User Management
 
-The chess server supports user accounts with secure authentication:
+The chess server supports user accounts with secure authentication. The
+commands below read the connection string from `CHESS_DSN` (or `-dsn`).
+Accounts registered through the API are temporary (24 hours); CLI-created and
+promoted accounts are permanent.
 
 ### Creating Users
 ```bash
 # Add user with password
-./chess-server db user add -path chess.db -username alice -email alice@example.com -password SecurePass123
+./chess-server db user add -username alice -email alice@example.com -password SecurePass123
 
 # Interactive password prompt
-./chess-server db user add -path chess.db -username bob -interactive
+./chess-server db user add -username bob -interactive
 
 # Import with existing hash
-./chess-server db user add -path chess.db -username charlie -hash '$argon2id$...'
+./chess-server db user add -username charlie -hash '$argon2id$...'
 ```
 
 ### Managing Users
 ```bash
 # List all users
-./chess-server db user list -path chess.db
+./chess-server db user list
 
 # Update password
-./chess-server db user set-password -path chess.db -username alice -password NewPass456
+./chess-server db user set-password -username alice -password NewPass456
 
 # Update email
-./chess-server db user set-email -path chess.db -username alice -email newemail@example.com
+./chess-server db user set-email -username alice -email newemail@example.com
+
+# Make a temporary (API-registered) account permanent
+./chess-server db user promote -username alice
 
 # Delete user
-./chess-server db user delete -path chess.db -username alice
+./chess-server db user delete -username alice
 ```
 
 ## Web UI
@@ -140,7 +153,7 @@ The chess server includes an embedded web UI for playing games through a browser
 ./chess-server -serve -web-port 3000 -web-host 0.0.0.0
 
 # Full example with authentication enabled
-./chess-server -dev -serve -web-port 9090 -api-port 8080 -storage-path chess.db
+./chess-server -dev -serve -web-port 9090 -api-port 8080 -dsn 'dbname=chess'
 
 # Override the API origin seen by browsers when it differs from the listen address
 ./chess-server -serve -web-api-url https://api.example.com
@@ -161,10 +174,11 @@ Access the UI at `http://localhost:9090` when server is running with `-serve` fl
 ## Documentation
 
 - [API Reference](./doc/api.md) - Endpoint specifications including auth
+- [Deployment](./doc/deployment.md) - FreeBSD jail, PostgreSQL 18, service account, SQLite data import
 - [Architecture](./doc/architecture.md) - System design with auth layer
 - [Development](./doc/development.md) - Build, test, and user management
 - [Client Guide](./doc/client.md) - Interactive debugging client
-- [Replay Implementation Tasks](./doc/todo.md) - Remaining CLI, web, archive, and production work
+- [Replay Plan](./doc/todo.md) - Phased game-replay implementation and open decisions
 - [Stockfish Integration](./doc/stockfish.md) - Engine communication
 
 ## License
