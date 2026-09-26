@@ -47,6 +47,7 @@ func main() {
 		logLevel    = flag.String("log-level", "info", "Log level: debug, info, warn, or error")
 		logHTTP     = flag.Bool("log-http", true, "Log HTTP requests")
 		finishedTTL = flag.Duration("finished-game-ttl", service.FinishedGameTTL, "How long completed games remain in memory (0 disables eviction)")
+		jwtFile     = flag.String("jwt-secret-file", os.Getenv("CHESS_JWT_SECRET_FILE"), "File holding a stable JWT signing key, mode 0600, at least 32 bytes (default $CHESS_JWT_SECRET_FILE)")
 
 		// Web UI server flags
 		serve     = flag.Bool("serve", false, "Enable web UI server")
@@ -105,23 +106,31 @@ func main() {
 		log.Printf("Persistent storage disabled (use -dsn or CHESS_DSN to enable)")
 	}
 
-	// JWT secret management
+	// JWT signing key: a key file keeps sessions valid across restarts; without
+	// one, dev mode uses a fixed key and production generates a per-process key.
 	var jwtSecret []byte
-	if *dev {
-		// Fixed secret in dev mode for testing consistency
+	switch {
+	case *jwtFile != "":
+		var err error
+		if jwtSecret, err = loadJWTSecret(*jwtFile); err != nil {
+			log.Fatalf("Failed to load JWT secret: %v", err)
+		}
+		log.Printf("JWT secret loaded from file (sessions survive restarts)")
+	case *dev:
 		jwtSecret = []byte("dev-secret-minimum-32-characters-long")
 		log.Printf("Using fixed JWT secret (dev mode)")
-	} else {
-		// Generate cryptographically secure secret
+	default:
 		jwtSecret = make([]byte, 32)
-		if _, err := rand.Read(jwtSecret); err != nil {
-			log.Fatalf("Failed to generate JWT secret: %v", err)
-		}
-		log.Printf("JWT secret generated (sessions valid until restart)")
+		rand.Read(jwtSecret)
+		log.Printf("JWT secret generated (sessions valid until restart; use -jwt-secret-file to persist)")
 	}
 
 	// 2. Initialize the Service with optional storage and auth
-	svc := service.New(store, jwtSecret)
+	svc, err := service.New(store, jwtSecret)
+	clear(jwtSecret) // the JWT manager keeps its own copy
+	if err != nil {
+		log.Fatalf("Failed to initialize service: %v", err)
+	}
 	svc.SetFinishedGameTTL(*finishedTTL)
 
 	// Start cleanup job for expired users/sessions

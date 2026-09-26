@@ -11,6 +11,8 @@ import (
 
 	"chess/internal/server/game"
 	"chess/internal/server/storage"
+
+	"github.com/lixenwraith/auth"
 )
 
 const (
@@ -27,23 +29,35 @@ const (
 type Service struct {
 	games         map[string]*game.Game
 	mu            sync.RWMutex
-	userMu        sync.Mutex
 	store         *storage.Store
-	jwtSecret     []byte
+	jwt           *auth.JWT
+	kdf           chan struct{} // Argon2id concurrency slots
 	waiter        *WaitRegistry
 	computerGames atomic.Int32 // Active games with computer players
 	finishedTTL   time.Duration
 }
 
-// New creates a new service instance with optional storage
-func New(store *storage.Store, jwtSecret []byte) *Service {
+// New creates a service with optional storage. jwtSecret signs session tokens
+// and must hold at least 32 bytes of key material.
+func New(store *storage.Store, jwtSecret []byte) (*Service, error) {
+	manager, err := auth.NewJWT(jwtSecret,
+		auth.WithIssuer(JWTIssuer),
+		auth.WithAudience([]string{JWTAudience}),
+		auth.WithTokenLifetime(SessionTTL),
+		// Tokens are minted and verified by this process: no clock skew.
+		auth.WithLeeway(0),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("configure JWT: %w", err)
+	}
 	return &Service{
 		games:       make(map[string]*game.Game),
 		store:       store,
-		jwtSecret:   jwtSecret,
+		jwt:         manager,
+		kdf:         make(chan struct{}, MaxConcurrentKDF),
 		waiter:      NewWaitRegistry(),
 		finishedTTL: FinishedGameTTL,
-	}
+	}, nil
 }
 
 // SetFinishedGameTTL configures how long terminal games remain in memory.

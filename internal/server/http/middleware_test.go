@@ -58,3 +58,36 @@ func TestAuthMiddlewareReportsStorageUnavailable(t *testing.T) {
 		}
 	}
 }
+
+func TestAuthMiddlewareParsesBearerHeaderStrictly(t *testing.T) {
+	validate := func(token string) (string, map[string]any, error) {
+		if token != "good.token.value" {
+			return "", nil, errors.New("invalid token")
+		}
+		return "user", map[string]any{"session_id": "session"}, nil
+	}
+	for _, middleware := range []func(TokenValidator) fiber.Handler{AuthRequired, OptionalAuth} {
+		app := fiber.New()
+		app.Get("/route", middleware(validate), func(c *fiber.Ctx) error {
+			return c.SendString(c.Locals("userID").(string))
+		})
+		for header, want := range map[string]int{
+			"Bearer good.token.value": fiber.StatusOK,
+			"bearer good.token.value": fiber.StatusOK, // RFC 6750 scheme is case-insensitive
+			"Basic dXNlcjpwYXNz":      fiber.StatusUnauthorized,
+			"Bearer good token":       fiber.StatusUnauthorized,
+			"Bearer ":                 fiber.StatusUnauthorized,
+			"good.token.value":        fiber.StatusUnauthorized,
+		} {
+			request := httptest.NewRequest("GET", "/route", nil)
+			request.Header.Set("Authorization", header)
+			response, err := app.Test(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.StatusCode != want {
+				t.Errorf("header %q: status = %d, want %d", header, response.StatusCode, want)
+			}
+		}
+	}
+}

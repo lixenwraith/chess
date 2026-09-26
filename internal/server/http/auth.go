@@ -99,14 +99,15 @@ func (h *HTTPHandler) RegisterHandler(c *fiber.Ctx) error {
 				Error: "authentication storage unavailable", Code: core.ErrStorageUnavailable,
 			})
 		}
-		if errors.Is(err, service.ErrAtCapacity) || errors.Is(err, service.ErrPermanentSlotsFull) {
+		if errors.Is(err, service.ErrAtCapacity) || errors.Is(err, service.ErrPermanentSlotsFull) ||
+			errors.Is(err, service.ErrAuthBusy) {
 			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
 				Error:   "registration temporarily unavailable",
 				Code:    core.ErrResourceLimit,
 				Details: err.Error(),
 			})
 		}
-		if strings.Contains(err.Error(), "already exists") {
+		if errors.Is(err, service.ErrUserExists) {
 			return c.Status(fiber.StatusConflict).JSON(core.ErrorResponse{
 				Error:   "user already exists",
 				Code:    core.ErrInvalidRequest,
@@ -194,6 +195,11 @@ func (h *HTTPHandler) LoginHandler(c *fiber.Ctx) error {
 				Error: "authentication storage unavailable", Code: core.ErrStorageUnavailable,
 			})
 		}
+		if errors.Is(err, service.ErrAuthBusy) {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+				Error: "authentication temporarily unavailable", Code: core.ErrResourceLimit,
+			})
+		}
 		return c.Status(fiber.StatusUnauthorized).JSON(core.ErrorResponse{
 			Error: "invalid credentials",
 			Code:  core.ErrInvalidRequest,
@@ -214,7 +220,7 @@ func (h *HTTPHandler) LoginHandler(c *fiber.Ctx) error {
 		UserID:    user.UserID,
 		Username:  user.Username,
 		Email:     user.Email,
-		ExpiresAt: time.Now().Add(7 * 24 * time.Hour),
+		ExpiresAt: time.Now().Add(service.SessionTTL),
 	})
 }
 

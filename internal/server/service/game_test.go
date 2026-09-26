@@ -160,7 +160,10 @@ func newPersistentTestService(t *testing.T) *Service {
 	if err := store.InitDB(); err != nil {
 		t.Fatal(err)
 	}
-	svc := New(store, []byte("test-secret-test-secret-test-secret"))
+	svc, err := New(store, testJWTSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
 		if err := svc.Shutdown(time.Second); err != nil {
 			t.Errorf("shutdown: %v", err)
