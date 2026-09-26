@@ -91,16 +91,15 @@ func (h *HTTPHandler) RegisterHandler(c *fiber.Ctx) error {
 		req.Email = strings.ToLower(req.Email)
 	}
 
-	// Create the user and initial session atomically (temp by default via API).
-	user, sessionID, err := h.svc.RegisterUser(req.Username, req.Email, req.Password, false)
+	// Create the user and initial session atomically.
+	user, sessionID, err := h.svc.RegisterUser(req.Username, req.Email, req.Password)
 	if err != nil {
 		if errors.Is(err, service.ErrStorageDisabled) || errors.Is(err, service.ErrStorageUnavailable) {
 			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
 				Error: "authentication storage unavailable", Code: core.ErrStorageUnavailable,
 			})
 		}
-		if errors.Is(err, service.ErrAtCapacity) || errors.Is(err, service.ErrPermanentSlotsFull) ||
-			errors.Is(err, service.ErrAuthBusy) {
+		if errors.Is(err, service.ErrAtCapacity) || errors.Is(err, service.ErrAuthBusy) {
 			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
 				Error:   "registration temporarily unavailable",
 				Code:    core.ErrResourceLimit,

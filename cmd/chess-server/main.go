@@ -49,6 +49,8 @@ func main() {
 		proxies     = flag.String("trusted-proxies", "", "Comma-separated reverse-proxy IPs/CIDRs whose -proxy-header is trusted for client IPs")
 		proxyHeader = flag.String("proxy-header", "X-Real-IP", "Header carrying the client IP from a trusted proxy")
 		finishedTTL = flag.Duration("finished-game-ttl", service.FinishedGameTTL, "How long completed games remain in memory (0 disables eviction)")
+		anonTTL     = flag.Duration("anonymous-game-ttl", service.AnonymousGameTTL, "How long games without a registered player survive after their last activity, in memory and in the database (0 keeps them)")
+		maxUsers    = flag.Int("max-users", service.DefaultMaxUsers, "Accounts at which public registration closes (0 = no limit; CLI-created accounts are not limited)")
 		jwtFile     = flag.String("jwt-secret-file", "", "File holding a stable JWT signing key, mode 0600, at least 32 bytes (default $CHESS_JWT_SECRET_FILE)")
 
 		// Web UI server flags
@@ -147,6 +149,8 @@ func main() {
 		log.Fatalf("Failed to initialize service: %v", err)
 	}
 	svc.SetFinishedGameTTL(*finishedTTL)
+	svc.SetAnonymousGameTTL(*anonTTL)
+	svc.SetMaxUsers(*maxUsers)
 
 	// Start cleanup job for expired users/sessions
 	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())

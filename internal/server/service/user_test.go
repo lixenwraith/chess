@@ -15,7 +15,7 @@ var testJWTSecret = []byte("test-secret-test-secret-test-secret")
 
 func TestValidateTokenRequiresScopedTokenBoundToSession(t *testing.T) {
 	svc := newPersistentTestService(t)
-	user, sessionID, err := svc.RegisterUser("alice", "", "Password1", false)
+	user, sessionID, err := svc.RegisterUser("alice", "", "Password1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,10 +77,10 @@ func TestValidateTokenRequiresScopedTokenBoundToSession(t *testing.T) {
 
 func TestAuthenticateUserFailuresAreIndistinguishable(t *testing.T) {
 	svc := newPersistentTestService(t)
-	if _, _, err := svc.RegisterUser("alice", "alice@example.com", "Password1", false); err != nil {
+	if _, _, err := svc.RegisterUser("alice", "alice@example.com", "Password1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := svc.RegisterUser("ALICE", "", "Password1", false); !errors.Is(err, ErrUserExists) {
+	if _, _, err := svc.RegisterUser("ALICE", "", "Password1"); !errors.Is(err, ErrUserExists) {
 		t.Fatalf("duplicate registration = %v, want ErrUserExists", err)
 	}
 
@@ -89,29 +89,29 @@ func TestAuthenticateUserFailuresAreIndistinguishable(t *testing.T) {
 		t.Fatalf("login by email = %+v, %q, %v", user, sessionID, err)
 	}
 
-	// Expire the account directly; login must fail like a wrong password.
-	record, err := svc.store.GetUserByUsername("alice")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.store.DeleteUser(record.UserID); err != nil {
-		t.Fatal(err)
-	}
-	expired := time.Now().UTC().Add(-time.Minute)
-	record.ExpiresAt = &expired
-	if err := svc.store.CreateUser(*record); err != nil {
-		t.Fatal(err)
-	}
-
 	for name, attempt := range map[string][2]string{
-		"unknown user":    {"nobody", "Password1"},
-		"unknown email":   {"nobody@example.com", "Password1"},
-		"wrong password":  {"alice", "Password2"},
-		"expired account": {"alice", "Password1"},
+		"unknown user":   {"nobody", "Password1"},
+		"unknown email":  {"nobody@example.com", "Password1"},
+		"wrong password": {"alice", "Password2"},
 	} {
 		if _, _, err := svc.AuthenticateUser(attempt[0], attempt[1]); !errors.Is(err, ErrInvalidCredentials) {
 			t.Errorf("%s: error = %v, want ErrInvalidCredentials", name, err)
 		}
+	}
+}
+
+func TestRegistrationCapIsConfigurable(t *testing.T) {
+	svc := newPersistentTestService(t)
+	svc.SetMaxUsers(1)
+	if _, _, err := svc.RegisterUser("alice", "", "Password1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.RegisterUser("bob", "", "Password1"); !errors.Is(err, ErrAtCapacity) {
+		t.Fatalf("registration past the cap = %v, want ErrAtCapacity", err)
+	}
+	svc.SetMaxUsers(0)
+	if _, _, err := svc.RegisterUser("bob", "", "Password1"); err != nil {
+		t.Fatalf("registration without a cap: %v", err)
 	}
 }
 

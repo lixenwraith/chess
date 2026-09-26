@@ -19,6 +19,7 @@ type Player struct {
 	Level      int        `json:"level,omitempty"`      // Only for computer
 	SearchTime int        `json:"searchTime,omitempty"` // Only for computer
 	ClaimedBy  string     `json:"claimedBy,omitempty"`  // UserID that claimed this slot
+	Name       string     `json:"name,omitempty"`       // Claimant's username when the claim was stored (history only)
 }
 
 // PlayerConfig for API requests and configuration

@@ -19,7 +19,6 @@ var (
 	ErrStorageDisabled    = errors.New("storage disabled")
 	ErrStorageUnavailable = errors.New("storage unavailable")
 	ErrAtCapacity         = errors.New("at capacity")
-	ErrPermanentSlotsFull = errors.New("permanent slots full")
 	ErrUserExists         = errors.New("username or email already exists")
 	ErrInvalidCredentials = errors.New("invalid credentials")
 	ErrAuthBusy           = errors.New("authentication capacity exhausted")
@@ -45,12 +44,10 @@ var dummyPasswordHash = sync.OnceValues(func() (string, error) {
 
 // User represents a registered user account
 type User struct {
-	UserID      string
-	Username    string
-	Email       string
-	AccountType string
-	CreatedAt   time.Time
-	ExpiresAt   *time.Time
+	UserID    string
+	Username  string
+	Email     string
+	CreatedAt time.Time
 }
 
 // acquireKDF reserves one Argon2id slot, waiting at most kdfWaitTimeout.
@@ -85,7 +82,8 @@ func (s *Service) verifyPassword(password, hash string) error {
 
 // RegisterUser creates the account and its initial session in one database
 // transaction, so a successful registration always returns a usable account.
-func (s *Service) RegisterUser(username, email, password string, permanent bool) (*User, string, error) {
+// Registered accounts are identical to CLI-created ones and never expire.
+func (s *Service) RegisterUser(username, email, password string) (*User, string, error) {
 	if s.store == nil {
 		return nil, "", ErrStorageDisabled
 	}
@@ -101,34 +99,22 @@ func (s *Service) RegisterUser(username, email, password string, permanent bool)
 	}
 
 	now := time.Now().UTC()
-	accountType := "temp"
-	var expiresAt *time.Time
-	if permanent {
-		accountType = "permanent"
-	} else {
-		expiry := now.Add(TempUserTTL)
-		expiresAt = &expiry
-	}
 
 	// A random UUIDv4 needs no existence probe; the primary key rejects the
 	// negligible collision case.
 	userID := uuid.NewString()
 	user := &User{
-		UserID:      userID,
-		Username:    strings.ToLower(username),
-		Email:       strings.ToLower(email),
-		AccountType: accountType,
-		CreatedAt:   now,
-		ExpiresAt:   expiresAt,
+		UserID:    userID,
+		Username:  strings.ToLower(username),
+		Email:     strings.ToLower(email),
+		CreatedAt: now,
 	}
 	record := storage.UserRecord{
 		UserID:       userID,
 		Username:     user.Username,
 		Email:        user.Email,
 		PasswordHash: passwordHash,
-		AccountType:  accountType,
 		CreatedAt:    now,
-		ExpiresAt:    expiresAt,
 	}
 	sessionID := uuid.NewString()
 	session := &storage.SessionRecord{
@@ -137,30 +123,25 @@ func (s *Service) RegisterUser(username, email, password string, permanent bool)
 		CreatedAt: now,
 		ExpiresAt: now.Add(SessionTTL),
 	}
-	limits := storage.UserLimits{
-		MaxUsers:       MaxUsers,
-		PermanentSlots: PermanentSlots,
-	}
+	limits := storage.UserLimits{MaxUsers: int(s.maxUsers.Load())}
 	if err = s.store.CreateUserWithinLimits(record, session, limits); err != nil {
 		switch {
 		case errors.Is(err, storage.ErrUserAlreadyExists):
 			return nil, "", ErrUserExists
-		case errors.Is(err, storage.ErrPermanentCapacity):
-			return nil, "", fmt.Errorf("%w (%d maximum)", ErrPermanentSlotsFull, PermanentSlots)
 		case errors.Is(err, storage.ErrUserCapacity):
-			return nil, "", fmt.Errorf("%w: no temporary account can be replaced", ErrAtCapacity)
+			return nil, "", fmt.Errorf("%w: registration is limited to %d accounts", ErrAtCapacity, limits.MaxUsers)
 		default:
 			return nil, "", fmt.Errorf("%w: create user: %v", ErrStorageUnavailable, err)
 		}
 	}
-	slog.Debug("user created", "user_id", userID, "account_type", accountType)
+	slog.Debug("user created", "user_id", userID)
 
 	return user, sessionID, nil
 }
 
 // AuthenticateUser verifies credentials and creates a new session. Unknown
-// identifiers, wrong passwords, and expired accounts all return
-// ErrInvalidCredentials after the same Argon2id work.
+// identifiers and wrong passwords both return ErrInvalidCredentials after the
+// same Argon2id work.
 func (s *Service) AuthenticateUser(identifier, password string) (*User, string, error) {
 	if s.store == nil {
 		return nil, "", ErrStorageDisabled
@@ -191,10 +172,6 @@ func (s *Service) AuthenticateUser(identifier, password string) (*User, string, 
 	}
 
 	now := time.Now().UTC()
-	if userRecord.AccountType == "temp" && userRecord.ExpiresAt != nil && now.After(*userRecord.ExpiresAt) {
-		return nil, "", ErrInvalidCredentials
-	}
-
 	// Replaces any existing session and records the login time.
 	sessionID := uuid.NewString()
 	if err := s.store.CreateSession(storage.SessionRecord{
@@ -208,12 +185,10 @@ func (s *Service) AuthenticateUser(identifier, password string) (*User, string, 
 	slog.Debug("user authenticated", "user_id", userRecord.UserID)
 
 	return &User{
-		UserID:      userRecord.UserID,
-		Username:    userRecord.Username,
-		Email:       userRecord.Email,
-		AccountType: userRecord.AccountType,
-		CreatedAt:   userRecord.CreatedAt,
-		ExpiresAt:   userRecord.ExpiresAt,
+		UserID:    userRecord.UserID,
+		Username:  userRecord.Username,
+		Email:     userRecord.Email,
+		CreatedAt: userRecord.CreatedAt,
 	}, sessionID, nil
 }
 
@@ -243,12 +218,10 @@ func (s *Service) GetUserByID(userID string) (*User, error) {
 	}
 
 	return &User{
-		UserID:      userRecord.UserID,
-		Username:    userRecord.Username,
-		Email:       userRecord.Email,
-		AccountType: userRecord.AccountType,
-		CreatedAt:   userRecord.CreatedAt,
-		ExpiresAt:   userRecord.ExpiresAt,
+		UserID:    userRecord.UserID,
+		Username:  userRecord.Username,
+		Email:     userRecord.Email,
+		CreatedAt: userRecord.CreatedAt,
 	}, nil
 }
 

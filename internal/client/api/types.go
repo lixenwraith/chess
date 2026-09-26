@@ -57,6 +57,7 @@ type PlayerInfo struct {
 	Level      int    `json:"level,omitempty"`
 	SearchTime int    `json:"searchTime,omitempty"`
 	ClaimedBy  string `json:"claimedBy,omitempty"`
+	Name       string `json:"name,omitempty"`
 }
 
 type MoveInfo struct {

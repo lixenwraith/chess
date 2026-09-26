@@ -35,7 +35,7 @@ func Run(args []string) error {
 		return runQuery(args[1:])
 	case "user":
 		if len(args) < 2 {
-			return fmt.Errorf("user subcommand required: add, delete, promote, set-password, set-hash, set-email, set-username, list")
+			return fmt.Errorf("user subcommand required: add, delete, set-password, set-hash, set-email, set-username, list")
 		}
 		return runUser(args[1], args[2:])
 	default:
@@ -196,8 +196,6 @@ func runUser(subcommand string, args []string) error {
 		return runUserAdd(args)
 	case "delete":
 		return runUserDelete(args)
-	case "promote":
-		return runUserPromote(args)
 	case "set-password":
 		return runUserSetPassword(args)
 	case "set-hash":
@@ -242,7 +240,6 @@ func runUserAdd(args []string) error {
 	password := fs.String("password", "", "Password (optional, will prompt if not provided)")
 	hash := fs.String("hash", "", "Pre-computed password hash (optional)")
 	interactive := fs.Bool("interactive", false, "Interactive password prompt")
-	temp := fs.Bool("temp", false, "Create as temporary user (24h TTL, default: permanent)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -287,24 +284,13 @@ func runUserAdd(args []string) error {
 	}
 	defer store.Close()
 
-	// Determine account type (CLI default = permanent)
-	accountType := "permanent"
-	var expiresAt *time.Time
-	if *temp {
-		accountType = "temp"
-		expiry := time.Now().UTC().Add(24 * time.Hour)
-		expiresAt = &expiry
-	}
-
 	userID := uuid.NewString()
 	record := storage.UserRecord{
 		UserID:       userID,
 		Username:     strings.ToLower(*username),
 		Email:        strings.ToLower(*email),
 		PasswordHash: passwordHash,
-		AccountType:  accountType,
 		CreatedAt:    time.Now().UTC(),
-		ExpiresAt:    expiresAt,
 	}
 
 	if err := store.CreateUser(record); err != nil {
@@ -371,33 +357,6 @@ func runUserDelete(args []string) error {
 	}
 
 	fmt.Printf("User deleted: %s\n", targetID)
-	return nil
-}
-
-func runUserPromote(args []string) error {
-	fs, dsn := newFlagSet("user promote")
-	username := fs.String("username", "", "Username to make permanent")
-	userID := fs.String("id", "", "User ID to make permanent")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
-	store, err := openStore(*dsn, true)
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-
-	targetID, err := lookupUser(store, *username, *userID)
-	if err != nil {
-		return err
-	}
-	// Administrative promotion is not bound by the public permanent-slot limit.
-	if err := store.PromoteToPermanent(targetID); err != nil {
-		return fmt.Errorf("failed to promote user: %w", err)
-	}
-
-	fmt.Printf("User is now permanent: %s\n", targetID)
 	return nil
 }
 
@@ -575,8 +534,8 @@ func runUserList(args []string) error {
 
 	// Print results in tabular format
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "User ID\tUsername\tType\tEmail\tCreated\tExpires\tLast Login")
-	fmt.Fprintln(w, strings.Repeat("-", 120))
+	fmt.Fprintln(w, "User ID\tUsername\tEmail\tCreated\tLast Login")
+	fmt.Fprintln(w, strings.Repeat("-", 100))
 
 	for _, u := range users {
 		lastLogin := "never"
@@ -587,17 +546,11 @@ func runUserList(args []string) error {
 		if email == "" {
 			email = "(none)"
 		}
-		expires := "never"
-		if u.ExpiresAt != nil {
-			expires = u.ExpiresAt.Format("2006-01-02 15:04")
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
 			abbreviateID(u.UserID),
 			u.Username,
-			u.AccountType,
 			email,
 			u.CreatedAt.Format("2006-01-02 15:04"),
-			expires,
 			lastLogin,
 		)
 	}

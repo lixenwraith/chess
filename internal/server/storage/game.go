@@ -12,9 +12,15 @@ import (
 
 const gameSelectColumns = `
 	g.game_id, g.initial_fen,
-	g.white_player_id, g.white_type, g.white_level, g.white_search_time, g.white_claimed_by,
-	g.black_player_id, g.black_type, g.black_level, g.black_search_time, g.black_claimed_by,
+	g.white_player_id, g.white_type, g.white_level, g.white_search_time, g.white_claimed_by, g.white_name,
+	g.black_player_id, g.black_type, g.black_level, g.black_search_time, g.black_claimed_by, g.black_name,
 	g.result, g.start_time_utc, g.end_time_utc`
+
+// claimantName snapshots a claimant's username inside the writing
+// transaction; NULL when the slot is unclaimed or the account is gone.
+func claimantName(param string) string {
+	return "(SELECT u.username FROM users u WHERE u.user_id = " + param + ")"
+}
 
 // MaxUserGamesPage bounds QueryGamesForUser; callers request one extra row to
 // detect a following page.
@@ -22,6 +28,7 @@ const MaxUserGamesPage = 101
 
 // RecordNewGame asynchronously records a new game. Terminal custom-FEN games
 // include their result in this insert rather than relying on a second write.
+// Claimed slots also record the claimant's current username.
 func (s *Store) RecordNewGame(record GameRecord) error {
 	if record.GameID == "" || record.InitialFEN == "" || record.WhitePlayerID == "" || record.BlackPlayerID == "" {
 		return errors.New("game ID, initial FEN, and player IDs are required")
@@ -31,12 +38,13 @@ func (s *Store) RecordNewGame(record GameRecord) error {
 	}
 
 	return s.enqueue("record_game", record.GameID, func(ctx context.Context, tx *sql.Tx) error {
-		const query = `INSERT INTO games (
+		query := `INSERT INTO games (
 			game_id, initial_fen,
-			white_player_id, white_type, white_level, white_search_time, white_claimed_by,
-			black_player_id, black_type, black_level, black_search_time, black_claimed_by,
+			white_player_id, white_type, white_level, white_search_time, white_claimed_by, white_name,
+			black_player_id, black_type, black_level, black_search_time, black_claimed_by, black_name,
 			start_time_utc, result, end_time_utc
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, ` + claimantName("$7") + `,
+			$8, $9, $10, $11, $12, ` + claimantName("$12") + `, $13, $14, $15)`
 
 		_, err := tx.ExecContext(ctx, query,
 			record.GameID, record.InitialFEN,
@@ -90,17 +98,19 @@ func (s *Store) RecordMove(record MovePersistence) error {
 		}
 		// One UPDATE applies the optional claim and optional result. A claim may
 		// only fill an empty slot or repeat the same claimant.
-		claimColumn := "white_claimed_by"
+		claimColumn, nameColumn := "white_claimed_by", "white_name"
 		if record.ClaimColor == "b" {
-			claimColumn = "black_claimed_by"
+			claimColumn, nameColumn = "black_claimed_by", "black_name"
 		}
 		var set []string
 		args := []any{record.Move.GameID}
 		where := "game_id = $1"
 		if record.ClaimedBy != "" {
 			args = append(args, record.ClaimedBy)
-			set = append(set, fmt.Sprintf("%s = $%d", claimColumn, len(args)))
-			where += fmt.Sprintf(" AND (%s IS NULL OR %s = $%d)", claimColumn, claimColumn, len(args))
+			param := fmt.Sprintf("$%d", len(args))
+			set = append(set, fmt.Sprintf("%s = %s, %s = COALESCE(%s, %s)",
+				claimColumn, param, nameColumn, nameColumn, claimantName(param)))
+			where += fmt.Sprintf(" AND (%s IS NULL OR %s = %s)", claimColumn, claimColumn, param)
 		}
 		if record.Result != "" {
 			args = append(args, record.Result, record.EndTimeUTC)
@@ -149,7 +159,8 @@ type PlayerRecord struct {
 }
 
 // RecordPlayers keeps persisted player configuration aligned with in-memory
-// configuration changes.
+// configuration changes. Claims are carried over unchanged by the service, so
+// their name snapshots are left as they are.
 func (s *Store) RecordPlayers(gameID string, white, black PlayerRecord) error {
 	if gameID == "" || white.PlayerID == "" || black.PlayerID == "" {
 		return errors.New("game ID and player IDs are required")
@@ -191,6 +202,38 @@ func (s *Store) RewindGame(gameID string, afterMoveNumber int) error {
 			return err
 		}
 		return requireOneGame(res, gameID)
+	})
+}
+
+// DeleteAnonymousGames queues removal of games that no registered user
+// claimed and whose last activity (start, last move, or end) precedes cutoff.
+// Games still loaded in memory are listed in live and always kept, so a queued
+// or future write can never target a deleted row. Moves cascade.
+func (s *Store) DeleteAnonymousGames(cutoff time.Time, live []string) error {
+	if cutoff.IsZero() {
+		return errors.New("anonymous game cutoff is required")
+	}
+	if live == nil {
+		live = []string{}
+	}
+	return s.enqueue("delete_anonymous_games", "", func(ctx context.Context, tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, `DELETE FROM games g
+			WHERE g.white_claimed_by IS NULL AND g.black_claimed_by IS NULL
+				AND g.start_time_utc < $1
+				AND (g.end_time_utc IS NULL OR g.end_time_utc < $1)
+				AND NOT EXISTS (
+					SELECT 1 FROM moves m
+					WHERE m.game_id = g.game_id AND m.move_time_utc >= $1
+				)
+				AND NOT (g.game_id = ANY($2::uuid[]))`,
+			cutoff.UTC(), live)
+		if err != nil {
+			return err
+		}
+		if deleted, err := result.RowsAffected(); err == nil && deleted > 0 {
+			slog.Info("storage anonymous games deleted", "count", deleted, "inactive_before", cutoff.UTC())
+		}
+		return nil
 	})
 }
 
@@ -359,19 +402,23 @@ type rowScanner interface {
 
 // scanGame scans gameSelectColumns followed by any extra destinations.
 func scanGame(scanner rowScanner, record *GameRecord, extra ...any) error {
-	var whiteClaimed, blackClaimed, result sql.NullString
+	var whiteClaimed, whiteName, blackClaimed, blackName, result sql.NullString
 	var endTime sql.NullTime
 	dest := []any{
 		&record.GameID, &record.InitialFEN,
-		&record.WhitePlayerID, &record.WhiteType, &record.WhiteLevel, &record.WhiteSearchTime, &whiteClaimed,
-		&record.BlackPlayerID, &record.BlackType, &record.BlackLevel, &record.BlackSearchTime, &blackClaimed,
+		&record.WhitePlayerID, &record.WhiteType, &record.WhiteLevel, &record.WhiteSearchTime,
+		&whiteClaimed, &whiteName,
+		&record.BlackPlayerID, &record.BlackType, &record.BlackLevel, &record.BlackSearchTime,
+		&blackClaimed, &blackName,
 		&result, &record.StartTimeUTC, &endTime,
 	}
 	if err := scanner.Scan(append(dest, extra...)...); err != nil {
 		return err
 	}
 	record.WhiteClaimedBy = whiteClaimed.String
+	record.WhiteName = whiteName.String
 	record.BlackClaimedBy = blackClaimed.String
+	record.BlackName = blackName.String
 	record.Result = result.String
 	record.StartTimeUTC = record.StartTimeUTC.UTC()
 	record.EndTimeUTC = utcPointer(endTime)

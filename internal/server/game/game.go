@@ -26,11 +26,12 @@ type MoveResult struct {
 }
 
 type Game struct {
-	snapshots  []Snapshot
-	players    map[core.Color]*core.Player
-	state      core.State
-	lastResult *MoveResult
-	endTimeUTC *time.Time
+	snapshots    []Snapshot
+	players      map[core.Color]*core.Player
+	state        core.State
+	lastResult   *MoveResult
+	endTimeUTC   *time.Time
+	lastActivity time.Time // last create, move, undo, reconfiguration, or state change
 }
 
 // View is an immutable copy of the state needed by processors and transports.
@@ -214,6 +215,7 @@ func (g *Game) State() core.State {
 }
 
 func (g *Game) SetStateAt(s core.State, at time.Time) {
+	g.Touch(at)
 	if s.IsTerminal() {
 		if !g.state.IsTerminal() || g.endTimeUTC == nil {
 			ended := at.UTC()
@@ -223,6 +225,28 @@ func (g *Game) SetStateAt(s core.State, at time.Time) {
 		g.endTimeUTC = nil
 	}
 	g.state = s
+}
+
+// Touch records activity at the given time; earlier times are ignored.
+func (g *Game) Touch(at time.Time) {
+	if at.After(g.lastActivity) {
+		g.lastActivity = at
+	}
+}
+
+// LastActivity returns the latest time passed to Touch.
+func (g *Game) LastActivity() time.Time {
+	return g.lastActivity
+}
+
+// IsClaimed reports whether a registered user claimed either slot.
+func (g *Game) IsClaimed() bool {
+	for _, player := range g.players {
+		if player != nil && player.ClaimedBy != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *Game) EndTimeUTC() *time.Time {

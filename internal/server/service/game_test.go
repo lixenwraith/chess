@@ -142,12 +142,61 @@ func TestCleanupEvictsOnlyMemoryCopyOfTerminalGame(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	svc.cleanupFinishedGames(time.Now().UTC().Add(time.Second))
+	svc.cleanupGames(time.Now().UTC().Add(time.Second))
 	if _, err := svc.GetGameView(gameID); !errors.Is(err, ErrGameNotFound) {
 		t.Fatalf("terminal game remains in memory: %v", err)
 	}
 	if history, err := svc.GetGameHistory(gameID); err != nil || history.Result != "stalemate" {
 		t.Fatalf("durable history was removed: history=%+v err=%v", history, err)
+	}
+}
+
+func TestCleanupRemovesIdleAnonymousGamesButKeepsClaimedOnes(t *testing.T) {
+	svc := newPersistentTestService(t)
+	svc.SetFinishedGameTTL(0)
+	user, _, err := svc.RegisterUser("alice", "", "Password1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	anonymous, claimed := uuid.NewString(), uuid.NewString()
+	for gameID, claimant := range map[string]string{anonymous: "", claimed: user.UserID} {
+		white := core.NewPlayer(core.PlayerConfig{Type: core.PlayerHuman}, core.ColorWhite)
+		if claimant != "" {
+			white.ID, white.ClaimedBy = claimant, claimant
+		}
+		black := core.NewPlayer(core.PlayerConfig{Type: core.PlayerHuman}, core.ColorBlack)
+		if err := svc.CreateGame(gameID, white, black, "initial", core.ColorWhite, core.StateOngoing); err != nil {
+			t.Fatal(err)
+		}
+	}
+	history, err := svc.GetGameHistory(claimed)
+	if err != nil || history.Players.White.Name != "alice" {
+		t.Fatalf("claimed history name = %+v, %v", history, err)
+	}
+
+	// Within the retention window both games stay loaded and stored.
+	svc.cleanupGames(time.Now().UTC().Add(time.Hour))
+	for _, gameID := range []string{anonymous, claimed} {
+		if _, err := svc.GetGameView(gameID); err != nil {
+			t.Fatalf("game %s evicted early: %v", gameID, err)
+		}
+	}
+
+	// Past it, the anonymous game leaves memory and the database; the
+	// registered user's game is untouched.
+	svc.cleanupGames(time.Now().UTC().Add(AnonymousGameTTL + time.Hour))
+	if _, err := svc.GetGameView(anonymous); !errors.Is(err, ErrGameNotFound) {
+		t.Fatalf("idle anonymous game still loaded: %v", err)
+	}
+	if _, err := svc.GetGameHistory(anonymous); !errors.Is(err, ErrGameNotFound) {
+		t.Fatalf("idle anonymous game still stored: %v", err)
+	}
+	if _, err := svc.GetGameView(claimed); err != nil {
+		t.Fatalf("claimed game evicted: %v", err)
+	}
+	if _, err := svc.GetGameHistory(claimed); err != nil {
+		t.Fatalf("claimed game deleted: %v", err)
 	}
 }
 

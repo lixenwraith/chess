@@ -127,6 +127,7 @@ func (s *Service) UpdatePlayers(gameID string, whitePlayer, blackPlayer *core.Pl
 	}
 
 	g.UpdatePlayers(whitePlayer, blackPlayer)
+	g.Touch(time.Now().UTC())
 	if oldHasComputer != newHasComputer {
 		if newHasComputer {
 			s.computerGames.Add(1)
@@ -320,6 +321,7 @@ func (s *Service) UndoMoves(gameID string, count int) error {
 	if err := g.UndoMoves(count); err != nil {
 		return err
 	}
+	g.Touch(time.Now().UTC())
 
 	// Notify waiting clients about the undo
 	s.waiter.NotifyGame(gameID, len(g.Moves()), g.State())

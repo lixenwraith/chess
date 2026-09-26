@@ -2,15 +2,14 @@ package storage
 
 import "time"
 
-// UserRecord represents a user account in the database
+// UserRecord represents a user account in the database. Accounts created by
+// public registration and by the CLI are identical and do not expire.
 type UserRecord struct {
 	UserID       string
 	Username     string
 	Email        string // empty when the account has no email (stored as NULL)
 	PasswordHash string
-	AccountType  string // "permanent" or "temp"
 	CreatedAt    time.Time
-	ExpiresAt    *time.Time // nil for permanent
 	LastLoginAt  *time.Time
 }
 
@@ -31,11 +30,13 @@ type GameRecord struct {
 	WhiteLevel      int
 	WhiteSearchTime int
 	WhiteClaimedBy  string
+	WhiteName       string // claimant's username when the claim was recorded
 	BlackPlayerID   string
 	BlackType       int
 	BlackLevel      int
 	BlackSearchTime int
 	BlackClaimedBy  string
+	BlackName       string
 	Result          string
 	StartTimeUTC    time.Time
 	EndTimeUTC      *time.Time
@@ -83,7 +84,10 @@ var migrations = []string{
 	// are stored lowercase, so plain unique constraints give case-insensitive
 	// uniqueness without citext or a nondeterministic collation. Game-to-user
 	// association is by claim: every authenticated human slot records its
-	// claimant, and claims survive player reconfiguration.
+	// claimant, and claims survive player reconfiguration. The claimant's
+	// username is copied into the game when the claim is written, so replays
+	// and PGN keep the name after a rename or account deletion. Games with no
+	// claim belong to anonymous players and are purged after inactivity.
 	`
 CREATE TABLE schema_version (
 	singleton  boolean PRIMARY KEY DEFAULT true CHECK (singleton),
@@ -96,18 +100,14 @@ CREATE TABLE users (
 	username      text NOT NULL,
 	email         text,
 	password_hash text NOT NULL,
-	account_type  text NOT NULL DEFAULT 'temp',
 	created_at    timestamptz NOT NULL DEFAULT now(),
-	expires_at    timestamptz,
 	last_login_at timestamptz,
 	CONSTRAINT users_username_key UNIQUE (username),
 	CONSTRAINT users_email_key UNIQUE (email),
 	CONSTRAINT users_username_check
 		CHECK (username = lower(username) AND char_length(username) BETWEEN 1 AND 64),
 	CONSTRAINT users_email_check
-		CHECK (email = lower(email) AND char_length(email) BETWEEN 3 AND 254),
-	CONSTRAINT users_account_type_check CHECK (account_type IN ('permanent', 'temp')),
-	CONSTRAINT users_permanent_expiry_check CHECK (account_type = 'temp' OR expires_at IS NULL)
+		CHECK (email = lower(email) AND char_length(email) BETWEEN 3 AND 254)
 );
 
 CREATE TABLE sessions (
@@ -126,11 +126,13 @@ CREATE TABLE games (
 	white_level       smallint NOT NULL DEFAULT 0 CHECK (white_level BETWEEN 0 AND 20),
 	white_search_time integer NOT NULL DEFAULT 0 CHECK (white_search_time >= 0),
 	white_claimed_by  uuid,
+	white_name        text CHECK (char_length(white_name) BETWEEN 1 AND 64),
 	black_player_id   uuid NOT NULL,
 	black_type        smallint NOT NULL CHECK (black_type IN (1, 2)),
 	black_level       smallint NOT NULL DEFAULT 0 CHECK (black_level BETWEEN 0 AND 20),
 	black_search_time integer NOT NULL DEFAULT 0 CHECK (black_search_time >= 0),
 	black_claimed_by  uuid,
+	black_name        text CHECK (char_length(black_name) BETWEEN 1 AND 64),
 	start_time_utc    timestamptz NOT NULL DEFAULT now(),
 	result            text CHECK (result IN ('white_wins', 'black_wins', 'draw', 'stalemate')),
 	end_time_utc      timestamptz,
@@ -149,9 +151,11 @@ CREATE TABLE moves (
 	PRIMARY KEY (game_id, move_number)
 );
 
-CREATE INDEX users_temp_created_at_idx ON users (created_at) WHERE account_type = 'temp';
-CREATE INDEX users_temp_expires_at_idx ON users (expires_at) WHERE account_type = 'temp';
 CREATE INDEX sessions_expires_at_idx ON sessions (expires_at);
+-- Candidates for the anonymous-game purge: a game that started after the
+-- cutoff cannot have been idle since it.
+CREATE INDEX games_anonymous_start_idx ON games (start_time_utc)
+	WHERE white_claimed_by IS NULL AND black_claimed_by IS NULL;
 CREATE INDEX games_white_claimed_idx ON games (white_claimed_by, start_time_utc DESC, game_id DESC)
 	WHERE white_claimed_by IS NOT NULL;
 CREATE INDEX games_black_claimed_idx ON games (black_claimed_by, start_time_utc DESC, game_id DESC)

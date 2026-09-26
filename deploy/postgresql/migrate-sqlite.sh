@@ -11,9 +11,15 @@
 #
 # Stop the old server first so the SQLite WAL is checkpointed. The import runs
 # in one transaction and refuses a target that already holds users or games.
-# Expired sessions are dropped; every other row is carried over. Legacy games
-# recorded before claim columns existed get claims backfilled from player IDs
-# that match an existing user.
+#
+# - Every account is imported as a regular account; the old temporary/permanent
+#   distinction and account expiry no longer exist.
+# - Expired sessions are dropped.
+# - Legacy games recorded before claim columns existed get claims backfilled
+#   from player IDs that match an imported user, and every claim records the
+#   claimant's username.
+# - Games without a claim are imported too; the server deletes them once they
+#   have been idle for -anonymous-game-ttl (24 hours by default).
 set -eu
 
 die() {
@@ -98,12 +104,9 @@ CREATE TEMP TABLE import_moves (
 \copy import_games FROM 'games.csv' WITH (FORMAT csv, NULL '\N')
 \copy import_moves FROM 'moves.csv' WITH (FORMAT csv, NULL '\N')
 
-INSERT INTO users (user_id, username, email, password_hash, account_type,
-	created_at, expires_at, last_login_at)
-SELECT user_id::uuid, lower(username), NULLIF(lower(email), ''), password_hash, account_type,
-	created_at::timestamptz,
-	CASE WHEN account_type = 'temp' THEN NULLIF(expires_at, '')::timestamptz END,
-	NULLIF(last_login_at, '')::timestamptz
+INSERT INTO users (user_id, username, email, password_hash, created_at, last_login_at)
+SELECT user_id::uuid, lower(username), NULLIF(lower(email), ''), password_hash,
+	created_at::timestamptz, NULLIF(last_login_at, '')::timestamptz
 FROM import_users;
 
 INSERT INTO sessions (session_id, user_id, created_at, expires_at)
@@ -113,7 +116,8 @@ WHERE s.expires_at::timestamptz > now()
 	AND s.user_id IN (SELECT user_id FROM import_users);
 
 -- A claim may be empty in legacy rows; before claim columns existed, an
--- authenticated creator was recorded only as the slot's player ID.
+-- authenticated creator was recorded only as the slot's player ID. Names are
+-- filled from the imported users below.
 INSERT INTO games (game_id, initial_fen,
 	white_player_id, white_type, white_level, white_search_time, white_claimed_by,
 	black_player_id, black_type, black_level, black_search_time, black_claimed_by,
@@ -131,6 +135,10 @@ SELECT g.game_id::uuid, g.initial_fen,
 		THEN COALESCE(NULLIF(g.end_time_utc, '')::timestamptz, g.start_time_utc::timestamptz)
 	END
 FROM import_games g;
+
+UPDATE games g SET
+	white_name = (SELECT u.username FROM users u WHERE u.user_id = g.white_claimed_by),
+	black_name = (SELECT u.username FROM users u WHERE u.user_id = g.black_claimed_by);
 
 INSERT INTO moves (game_id, move_number, move_uci, fen_after_move, player_color, move_time_utc)
 SELECT m.game_id::uuid, m.move_number, m.move_uci, m.fen_after_move, m.player_color,
@@ -151,10 +159,11 @@ BEGIN
 	END IF;
 END $$;
 
-SELECT format('imported: %s users (%s dropped), %s sessions (%s expired or orphaned), %s games, %s moves (%s orphaned)',
+SELECT format('imported: %s users (%s dropped), %s sessions (%s expired or orphaned), %s games (%s anonymous), %s moves (%s orphaned)',
 	(SELECT count(*) FROM users), (SELECT count(*) FROM import_users) - (SELECT count(*) FROM users),
 	(SELECT count(*) FROM sessions), (SELECT count(*) FROM import_sessions) - (SELECT count(*) FROM sessions),
 	(SELECT count(*) FROM games),
+	(SELECT count(*) FROM games WHERE white_claimed_by IS NULL AND black_claimed_by IS NULL),
 	(SELECT count(*) FROM moves), (SELECT count(*) FROM import_moves) - (SELECT count(*) FROM moves)) AS summary
 \gset
 \echo :summary

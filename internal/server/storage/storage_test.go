@@ -79,8 +79,8 @@ func TestSchemaConstraintsRejectInconsistentRows(t *testing.T) {
 			black_player_id, black_type) VALUES ($1, 'fen', $1, 3, $1, 1)`,
 		"uppercase username": `INSERT INTO users (user_id, username, password_hash)
 			VALUES ($1, 'Alice', 'hash')`,
-		"permanent with expiry": `INSERT INTO users (user_id, username, password_hash, account_type, expires_at)
-			VALUES ($1, 'alice', 'hash', 'permanent', now())`,
+		"empty player name": `INSERT INTO games (game_id, initial_fen, white_player_id, white_type,
+			black_player_id, black_type, white_name) VALUES ($1, 'fen', $1, 1, $1, 1, '')`,
 	} {
 		if _, err := store.db.Exec(query, gameID); err == nil {
 			t.Errorf("%s: insert succeeded", name)
@@ -250,17 +250,12 @@ func TestQueryPlansUsePurposeBuiltIndexes(t *testing.T) {
 			want: []string{"moves_pkey"},
 		},
 		{
-			name: "temporary expiry cleanup",
-			query: `SELECT user_id FROM users
-				WHERE account_type = 'temp' AND expires_at < $1`,
+			name: "anonymous purge candidates",
+			query: `SELECT game_id FROM games g
+				WHERE g.white_claimed_by IS NULL AND g.black_claimed_by IS NULL
+				AND g.start_time_utc < $1`,
 			args: []any{time.Now()},
-			want: []string{"users_temp_expires_at_idx"},
-		},
-		{
-			name: "oldest temporary account",
-			query: `SELECT user_id FROM users WHERE account_type = 'temp'
-				ORDER BY created_at, user_id LIMIT 1`,
-			want: []string{"users_temp_created_at_idx"},
+			want: []string{"games_anonymous_start_idx"},
 		},
 		{
 			name:  "session expiry cleanup",
@@ -291,8 +286,8 @@ func TestAcceptedWriteCommitsAfterQueueAdmissionFailureMarksHealthDegraded(t *te
 		operation: "accepted_before_saturation",
 		run: func(ctx context.Context, tx *sql.Tx) error {
 			_, err := tx.ExecContext(ctx, `INSERT INTO users
-				(user_id, username, password_hash, account_type, created_at)
-				VALUES ($1, 'alice', 'hash', 'permanent', now())`, userID)
+				(user_id, username, password_hash, created_at)
+				VALUES ($1, 'alice', 'hash', now())`, userID)
 			return err
 		},
 		barrier: done,
@@ -402,8 +397,7 @@ func TestForeignKeyCascadeAppliesToSessions(t *testing.T) {
 	now := time.Now().UTC()
 	userID, sessionID := uuid.NewString(), uuid.NewString()
 	if err := store.CreateUser(UserRecord{
-		UserID: userID, Username: "user1", PasswordHash: "hash",
-		AccountType: "permanent", CreatedAt: now,
+		UserID: userID, Username: "user1", PasswordHash: "hash", CreatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -433,11 +427,11 @@ func TestForeignKeyCascadeAppliesToSessions(t *testing.T) {
 func TestLimitedUserCreationIsAtomicWithInitialSession(t *testing.T) {
 	store := openStore(t, pgtest.DSN(t))
 	now := time.Now().UTC()
-	limits := UserLimits{MaxUsers: 1, PermanentSlots: 1}
+	limits := UserLimits{MaxUsers: 2}
 
 	first := UserRecord{
-		UserID: uuid.NewString(), Username: "alice", Email: "Alice@Example.com", PasswordHash: "hash",
-		AccountType: "temp", CreatedAt: now, ExpiresAt: timePointer(now.Add(time.Hour)),
+		UserID: uuid.NewString(), Username: "alice", Email: "Alice@Example.com",
+		PasswordHash: "hash", CreatedAt: now,
 	}
 	firstSession := SessionRecord{
 		SessionID: uuid.NewString(), UserID: first.UserID,
@@ -446,80 +440,82 @@ func TestLimitedUserCreationIsAtomicWithInitialSession(t *testing.T) {
 	if err := store.CreateUserWithinLimits(first, &firstSession, limits); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.GetSession(firstSession.SessionID); err != nil {
+		t.Fatalf("initial session not committed with user: %v", err)
+	}
 
+	// A session failure rolls back the account.
+	conflicting := UserRecord{UserID: uuid.NewString(), Username: "carol", PasswordHash: "hash", CreatedAt: now}
+	conflictingSession := SessionRecord{
+		SessionID: firstSession.SessionID, UserID: conflicting.UserID,
+		CreatedAt: now, ExpiresAt: now.Add(time.Hour),
+	}
+	if err := store.CreateUserWithinLimits(conflicting, &conflictingSession, limits); err == nil {
+		t.Fatal("expected duplicate session failure")
+	}
+	if _, err := store.GetUserByID(conflicting.UserID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("session failure did not roll back user: %v", err)
+	}
+
+	second := UserRecord{UserID: uuid.NewString(), Username: "bob", PasswordHash: "hash", CreatedAt: now}
+	if err := store.CreateUserWithinLimits(second, nil, limits); err != nil {
+		t.Fatal(err)
+	}
+
+	// At capacity, a duplicate is still reported as a duplicate, a new name
+	// is refused, and nobody is removed to make room.
 	for _, duplicate := range []UserRecord{
 		{Username: "ALICE", Email: "other@example.com"},
-		{Username: "carol", Email: "alice@EXAMPLE.com"},
+		{Username: "dave", Email: "alice@EXAMPLE.com"},
 	} {
-		duplicate.UserID = uuid.NewString()
-		duplicate.PasswordHash, duplicate.AccountType, duplicate.CreatedAt = "hash", "temp", now
+		duplicate.UserID, duplicate.PasswordHash, duplicate.CreatedAt = uuid.NewString(), "hash", now
 		if err := store.CreateUserWithinLimits(duplicate, nil, limits); !errors.Is(err, ErrUserAlreadyExists) {
 			t.Fatalf("duplicate %+v error = %v, want ErrUserAlreadyExists", duplicate, err)
 		}
 	}
-	if _, err := store.GetUserByID(first.UserID); err != nil {
-		t.Fatalf("duplicate registration evicted existing user: %v", err)
+	third := UserRecord{UserID: uuid.NewString(), Username: "erin", PasswordHash: "hash", CreatedAt: now}
+	if err := store.CreateUserWithinLimits(third, nil, limits); !errors.Is(err, ErrUserCapacity) {
+		t.Fatalf("registration at capacity = %v, want ErrUserCapacity", err)
+	}
+	for _, existing := range []string{first.UserID, second.UserID} {
+		if _, err := store.GetUserByID(existing); err != nil {
+			t.Fatalf("existing user %s removed at capacity: %v", existing, err)
+		}
 	}
 
-	second := UserRecord{
-		UserID: uuid.NewString(), Username: "bob", PasswordHash: "hash",
-		AccountType: "temp", CreatedAt: now.Add(time.Minute),
-		ExpiresAt: timePointer(now.Add(2 * time.Hour)),
+	// Administrative creation and a zero limit are not capped.
+	if err := store.CreateUser(third); err != nil {
+		t.Fatalf("CLI creation beyond the public limit: %v", err)
 	}
-	secondSession := SessionRecord{
-		SessionID: uuid.NewString(), UserID: second.UserID,
-		CreatedAt: now.Add(time.Minute), ExpiresAt: now.Add(2 * time.Hour),
-	}
-	if err := store.CreateUserWithinLimits(second, &secondSession, limits); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.GetUserByID(first.UserID); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("oldest temporary user was not replaced: %v", err)
-	}
-	if _, err := store.GetSession(firstSession.SessionID); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("evicted user's session survived cascade: %v", err)
-	}
-	if _, err := store.GetSession(secondSession.SessionID); err != nil {
-		t.Fatalf("initial session not committed with user: %v", err)
-	}
-
-	third := UserRecord{
-		UserID: uuid.NewString(), Username: "charlie", PasswordHash: "hash",
-		AccountType: "temp", CreatedAt: now.Add(2 * time.Minute),
-	}
-	conflictingSession := SessionRecord{
-		SessionID: secondSession.SessionID, UserID: third.UserID,
-		CreatedAt: now, ExpiresAt: now.Add(time.Hour),
-	}
-	wideLimits := UserLimits{MaxUsers: 10, PermanentSlots: 2}
-	if err := store.CreateUserWithinLimits(third, &conflictingSession, wideLimits); err == nil {
-		t.Fatal("expected duplicate session failure")
-	}
-	if _, err := store.GetUserByID(third.UserID); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("session failure did not roll back user: %v", err)
+	unlimited := UserRecord{UserID: uuid.NewString(), Username: "frank", PasswordHash: "hash", CreatedAt: now}
+	if err := store.CreateUserWithinLimits(unlimited, nil, UserLimits{}); err != nil {
+		t.Fatalf("zero limit: %v", err)
 	}
 }
 
 func TestConcurrentRegistrationsRespectCapacity(t *testing.T) {
 	store := openStore(t, pgtest.DSN(t))
-	limits := UserLimits{MaxUsers: 3, PermanentSlots: 1}
+	limits := UserLimits{MaxUsers: 3}
 	var wg sync.WaitGroup
 	errs := make(chan error, 12)
 	for i := range 12 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			now := time.Now().UTC()
 			errs <- store.CreateUserWithinLimits(UserRecord{
-				UserID: uuid.NewString(), Username: fmt.Sprintf("user%d", i), PasswordHash: "hash",
-				AccountType: "temp", CreatedAt: now, ExpiresAt: timePointer(now.Add(time.Hour)),
+				UserID: uuid.NewString(), Username: fmt.Sprintf("user%d", i),
+				PasswordHash: "hash", CreatedAt: time.Now().UTC(),
 			}, nil, limits)
 		}()
 	}
 	wg.Wait()
 	close(errs)
+	created := 0
 	for err := range errs {
-		if err != nil {
+		switch {
+		case err == nil:
+			created++
+		case !errors.Is(err, ErrUserCapacity):
 			t.Errorf("registration failed: %v", err)
 		}
 	}
@@ -527,8 +523,8 @@ func TestConcurrentRegistrationsRespectCapacity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(users) != limits.MaxUsers {
-		t.Fatalf("user count = %d, want %d", len(users), limits.MaxUsers)
+	if created != limits.MaxUsers || len(users) != limits.MaxUsers {
+		t.Fatalf("created %d, stored %d; want %d", created, len(users), limits.MaxUsers)
 	}
 }
 
@@ -537,12 +533,9 @@ func TestUserLookupsAndUpdates(t *testing.T) {
 	now := time.Now().UTC()
 	alice := UserRecord{
 		UserID: uuid.NewString(), Username: "Alice", Email: "Alice@Example.com",
-		PasswordHash: "hash", AccountType: "temp", CreatedAt: now, ExpiresAt: timePointer(now.Add(time.Hour)),
+		PasswordHash: "hash", CreatedAt: now,
 	}
-	bob := UserRecord{
-		UserID: uuid.NewString(), Username: "bob", PasswordHash: "hash",
-		AccountType: "permanent", CreatedAt: now,
-	}
+	bob := UserRecord{UserID: uuid.NewString(), Username: "bob", PasswordHash: "hash", CreatedAt: now}
 	for _, user := range []UserRecord{alice, bob} {
 		if err := store.CreateUser(user); err != nil {
 			t.Fatal(err)
@@ -581,48 +574,171 @@ func TestUserLookupsAndUpdates(t *testing.T) {
 	if err := store.UpdateUserPassword(uuid.NewString(), "hash"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("update of missing user = %v, want sql.ErrNoRows", err)
 	}
-
-	if err := store.PromoteToPermanent(alice.UserID); err != nil {
-		t.Fatal(err)
-	}
-	promoted, err := store.GetUserByID(alice.UserID)
-	if err != nil || promoted.AccountType != "permanent" || promoted.ExpiresAt != nil {
-		t.Fatalf("promoted user = %+v, %v", promoted, err)
-	}
 }
 
-func TestExpiredAccountsAndSessionsAreDeleted(t *testing.T) {
+func TestExpiredSessionsAreDeleted(t *testing.T) {
 	store := openStore(t, pgtest.DSN(t))
 	now := time.Now().UTC()
-	expired, current := uuid.NewString(), uuid.NewString()
-	for _, user := range []UserRecord{
-		{UserID: expired, Username: "expired", PasswordHash: "hash", AccountType: "temp",
-			CreatedAt: now.Add(-2 * time.Hour), ExpiresAt: timePointer(now.Add(-time.Hour))},
-		{UserID: current, Username: "current", PasswordHash: "hash", AccountType: "temp",
-			CreatedAt: now, ExpiresAt: timePointer(now.Add(time.Hour))},
-	} {
-		if err := store.CreateUser(user); err != nil {
-			t.Fatal(err)
-		}
+	userID := uuid.NewString()
+	if err := store.CreateUser(UserRecord{
+		UserID: userID, Username: "user", PasswordHash: "hash", CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
 	}
 	oldSession := uuid.NewString()
 	if err := store.CreateSession(SessionRecord{
-		SessionID: oldSession, UserID: current,
+		SessionID: oldSession, UserID: userID,
 		CreatedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(-time.Hour),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if valid, err := store.IsSessionValidForUser(oldSession, current); err != nil || valid {
+	if valid, err := store.IsSessionValidForUser(oldSession, userID); err != nil || valid {
 		t.Fatalf("expired session valid = %v, %v", valid, err)
-	}
-	if deleted, err := store.DeleteExpiredTempUsers(); err != nil || deleted != 1 {
-		t.Fatalf("expired users deleted = %d, %v; want 1", deleted, err)
 	}
 	if deleted, err := store.DeleteExpiredSessions(); err != nil || deleted != 1 {
 		t.Fatalf("expired sessions deleted = %d, %v; want 1", deleted, err)
 	}
-	if valid, err := store.IsSessionValidForUser("not-a-uuid", current); err != nil || valid {
+	if _, err := store.GetUserByID(userID); err != nil {
+		t.Fatalf("session cleanup removed the account: %v", err)
+	}
+	if valid, err := store.IsSessionValidForUser("not-a-uuid", userID); err != nil || valid {
 		t.Fatalf("malformed session valid = %v, %v", valid, err)
+	}
+}
+
+func TestAnonymousGamesArePurgedAfterInactivity(t *testing.T) {
+	store := openStore(t, pgtest.DSN(t))
+	now := time.Now().UTC()
+	cutoff := now.Add(-24 * time.Hour)
+	old := now.Add(-48 * time.Hour)
+	userID := uuid.NewString()
+
+	newGame := func(started time.Time, claimedBy string, result string, ended *time.Time) string {
+		t.Helper()
+		record := GameRecord{
+			GameID: uuid.NewString(), InitialFEN: "initial",
+			WhitePlayerID: uuid.NewString(), WhiteType: 1, WhiteClaimedBy: claimedBy,
+			BlackPlayerID: uuid.NewString(), BlackType: 2, BlackLevel: 5, BlackSearchTime: 100,
+			StartTimeUTC: started, Result: result, EndTimeUTC: ended,
+		}
+		if err := store.RecordNewGame(record); err != nil {
+			t.Fatal(err)
+		}
+		return record.GameID
+	}
+	move := func(gameID string, number int, at time.Time) {
+		t.Helper()
+		color := "w"
+		if number%2 == 0 {
+			color = "b"
+		}
+		if err := store.RecordMove(MovePersistence{Move: MoveRecord{
+			GameID: gameID, MoveNumber: number, MoveUCI: "e2e4",
+			FENAfterMove: "after", PlayerColor: color, MoveTimeUTC: at,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	idle := newGame(old, "", "", nil)
+	move(idle, 1, old.Add(time.Minute))
+	recentMove := newGame(old, "", "", nil)
+	move(recentMove, 1, now.Add(-time.Hour))
+	recentEnd := newGame(old, "", "stalemate", timePointer(now.Add(-time.Hour)))
+	recentStart := newGame(now.Add(-time.Hour), "", "", nil)
+	live := newGame(old, "", "", nil)
+	claimed := newGame(old, userID, "", nil)
+	idleFinished := newGame(old, "", "white_wins", timePointer(old.Add(time.Hour)))
+
+	if err := store.DeleteAnonymousGames(cutoff, []string{live}); err != nil {
+		t.Fatal(err)
+	}
+	for gameID, wantKept := range map[string]bool{
+		idle: false, idleFinished: false,
+		recentMove: true, recentEnd: true, recentStart: true, live: true, claimed: true,
+	} {
+		_, moves, err := store.GetGameHistory(gameID)
+		switch {
+		case wantKept && err != nil:
+			t.Errorf("game %s deleted: %v", gameID, err)
+		case !wantKept && !IsGameNotFound(err):
+			t.Errorf("game %s kept (err=%v, moves=%d)", gameID, err, len(moves))
+		}
+	}
+	var orphanMoves int
+	if err := store.db.QueryRow(`SELECT count(*) FROM moves WHERE game_id = $1`, idle).Scan(&orphanMoves); err != nil || orphanMoves != 0 {
+		t.Fatalf("moves of deleted game = %d, %v", orphanMoves, err)
+	}
+	if err := store.DeleteAnonymousGames(cutoff, nil); err != nil {
+		t.Fatalf("nil live set: %v", err)
+	}
+	if _, _, err := store.GetGameHistory(live); !IsGameNotFound(err) {
+		t.Fatalf("idle game kept after leaving memory: %v", err)
+	}
+}
+
+func TestClaimsSnapshotPlayerNames(t *testing.T) {
+	store := openStore(t, pgtest.DSN(t))
+	now := time.Now().UTC()
+	alice, bob := uuid.NewString(), uuid.NewString()
+	for id, name := range map[string]string{alice: "alice", bob: "bob"} {
+		if err := store.CreateUser(UserRecord{UserID: id, Username: name, PasswordHash: "hash", CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	gameID := uuid.NewString()
+	if err := store.RecordNewGame(GameRecord{
+		GameID: gameID, InitialFEN: "initial",
+		WhitePlayerID: alice, WhiteType: 1, WhiteClaimedBy: alice,
+		BlackPlayerID: uuid.NewString(), BlackType: 1,
+		StartTimeUTC: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for number, claim := range map[int]string{1: "", 2: bob} {
+		color := map[int]string{1: "w", 2: "b"}[number]
+		persistence := MovePersistence{Move: MoveRecord{
+			GameID: gameID, MoveNumber: number, MoveUCI: "e2e4",
+			FENAfterMove: "after", PlayerColor: color, MoveTimeUTC: now,
+		}}
+		if claim != "" {
+			persistence.ClaimColor, persistence.ClaimedBy = color, claim
+		}
+		if err := store.RecordMove(persistence); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record, _, err := store.GetGameHistory(gameID)
+	if err != nil || record.WhiteName != "alice" || record.BlackName != "bob" {
+		t.Fatalf("names = %q/%q, %v", record.WhiteName, record.BlackName, err)
+	}
+
+	// The snapshot survives a rename and account deletion.
+	if err := store.UpdateUserUsername(bob, "robert"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteUser(alice); err != nil {
+		t.Fatal(err)
+	}
+	record, _, err = store.GetGameHistory(gameID)
+	if err != nil || record.WhiteName != "alice" || record.BlackName != "bob" || record.WhiteClaimedBy != alice {
+		t.Fatalf("names after rename/delete = %q/%q claim=%q, %v",
+			record.WhiteName, record.BlackName, record.WhiteClaimedBy, err)
+	}
+
+	// A claimant without an account (removed before the write) has no name.
+	orphan := uuid.NewString()
+	if err := store.RecordNewGame(GameRecord{
+		GameID: orphan, InitialFEN: "initial",
+		WhitePlayerID: uuid.NewString(), WhiteType: 1, WhiteClaimedBy: uuid.NewString(),
+		BlackPlayerID: uuid.NewString(), BlackType: 2,
+		StartTimeUTC: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if record, _, err := store.GetGameHistory(orphan); err != nil || record.WhiteName != "" {
+		t.Fatalf("orphan claim name = %q, %v", record.WhiteName, err)
 	}
 }
 
