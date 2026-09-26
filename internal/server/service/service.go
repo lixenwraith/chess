@@ -1,7 +1,6 @@
 package service
 
 import (
-	"chess/internal/server/core"
 	"context"
 	"errors"
 	"fmt"
@@ -84,58 +83,9 @@ func (s *Service) CanCreateComputerGame() bool {
 	return s.computerGames.Load() < MaxComputerGames
 }
 
-// IncrementComputerGames increments the computer game counter
-func (s *Service) IncrementComputerGames() {
-	s.computerGames.Add(1)
-}
-
-// DecrementComputerGames decrements the computer game counter
-func (s *Service) DecrementComputerGames() {
-	s.computerGames.Add(-1)
-}
-
 // GetComputerGameCount returns current computer game count
 func (s *Service) GetComputerGameCount() int32 {
 	return s.computerGames.Load()
-}
-
-// ClaimGameSlot claims a player slot for a user
-func (s *Service) ClaimGameSlot(gameID string, color core.Color, userID string) error {
-	if userID == "" {
-		return errors.New("claimant user ID is required")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	g, ok := s.games[gameID]
-	if !ok {
-		return fmt.Errorf("game not found: %s", gameID)
-	}
-
-	if err := g.ClaimSlot(color, userID); err != nil {
-		return err
-	}
-	if s.store != nil {
-		if err := s.store.RecordSlotClaim(gameID, color.String(), userID); err != nil {
-			slog.Error("failed to queue slot claim persistence",
-				"game_id", gameID, "color", color.String(), "error", err)
-		}
-	}
-	slog.Debug("game slot claimed", "game_id", gameID, "color", color.String(), "user_id", userID)
-	return nil
-}
-
-// GetSlotOwner returns the user who claimed a slot
-func (s *Service) GetSlotOwner(gameID string, color core.Color) (string, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	g, ok := s.games[gameID]
-	if !ok {
-		return "", fmt.Errorf("game not found: %s", gameID)
-	}
-
-	return g.GetSlotOwner(color), nil
 }
 
 // Shutdown gracefully shuts down the service

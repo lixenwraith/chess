@@ -69,10 +69,12 @@ type HistoryMove struct {
 }
 
 // GameSummary is intentionally sufficient for a client-side game picker; the
-// full move list remains on the per-game history endpoint.
+// full move list remains on the per-game history endpoint. FinalFEN is the
+// position after the last stored move (the initial FEN when there is none).
 type GameSummary struct {
 	GameID       string          `json:"gameId"`
 	InitialFEN   string          `json:"initialFen"`
+	FinalFEN     string          `json:"finalFen"`
 	Result       string          `json:"result,omitempty"`
 	StartTimeUTC time.Time       `json:"startTimeUtc"`
 	EndTimeUTC   *time.Time      `json:"endTimeUtc,omitempty"`

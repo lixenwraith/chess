@@ -14,67 +14,17 @@ var (
 	ErrPermanentCapacity = errors.New("permanent user capacity reached")
 )
 
+// userCreateLockKey serializes account creation across processes (server and
+// CLI) so capacity checks and temporary-account eviction are deterministic.
+const userCreateLockKey int64 = 0x6368657375 // "chesu"
+
+const userSelectColumns = `user_id, username, email, password_hash, account_type,
+	created_at, expires_at, last_login_at`
+
 // UserLimits defines registration constraints
 type UserLimits struct {
 	MaxUsers       int
 	PermanentSlots int
-}
-
-// DefaultUserLimits returns default POC limits
-func DefaultUserLimits() UserLimits {
-	return UserLimits{
-		MaxUsers:       100,
-		PermanentSlots: 10,
-	}
-}
-
-// GetUserCounts returns current user counts by type
-func (s *Store) GetUserCounts() (total, permanent, temp int, err error) {
-	query := `SELECT 
-	    COUNT(*) as total,
-	    COUNT(CASE WHEN account_type = 'permanent' THEN 1 END) as permanent,
-	    COUNT(CASE WHEN account_type = 'temp' THEN 1 END) as temp
-	FROM users`
-
-	err = s.db.QueryRow(query).Scan(&total, &permanent, &temp)
-	return
-}
-
-// GetOldestTempUser returns the oldest temporary user for replacement
-func (s *Store) GetOldestTempUser() (*UserRecord, error) {
-	var user UserRecord
-	var email sql.NullString
-	query := `SELECT user_id, username, email, password_hash, account_type, created_at, expires_at, last_login_at
-		FROM users 
-		WHERE account_type = 'temp'
-		ORDER BY created_at ASC
-		LIMIT 1`
-
-	err := s.db.QueryRow(query).Scan(
-		&user.UserID, &user.Username, &email,
-		&user.PasswordHash, &user.AccountType, &user.CreatedAt,
-		&user.ExpiresAt, &user.LastLoginAt,
-	)
-	if err != nil {
-		return nil, err
-	}
-	user.Email = email.String
-	return &user, nil
-}
-
-// DeleteExpiredTempUsers removes temporary users past their expiry
-func (s *Store) DeleteExpiredTempUsers() (int64, error) {
-	query := `DELETE FROM users
-		WHERE account_type = 'temp' AND expires_at IS NOT NULL AND expires_at < ?`
-	result, err := s.db.Exec(query, time.Now().UTC())
-	if err != nil {
-		return 0, err
-	}
-	deleted, err := result.RowsAffected()
-	if err == nil && deleted > 0 {
-		slog.Debug("storage expired temporary users deleted", "count", deleted)
-	}
-	return deleted, err
 }
 
 // CreateUser creates an administratively managed user without applying the
@@ -85,8 +35,8 @@ func (s *Store) CreateUser(record UserRecord) error {
 
 // CreateUserWithinLimits atomically applies registration limits, evicts the
 // oldest temporary account when required, creates the user, and optionally
-// creates its initial session. No account is evicted on a duplicate request,
-// and a session failure rolls back the user and eviction together.
+// creates its initial session. A duplicate username/email is rejected before
+// any eviction, and a session failure rolls back the eviction and the insert.
 func (s *Store) CreateUserWithinLimits(
 	record UserRecord,
 	session *SessionRecord,
@@ -96,16 +46,31 @@ func (s *Store) CreateUserWithinLimits(
 }
 
 func (s *Store) createUser(record UserRecord, session *SessionRecord, limits *UserLimits) error {
-	tx, err := s.db.Begin()
+	if session != nil && session.UserID != record.UserID {
+		return errors.New("initial session user does not match new user")
+	}
+	ctx, cancel := opContext()
+	defer cancel()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
-	// Check uniqueness within transaction
-	exists, err := s.userExists(tx, record.Username, record.Email)
-	if err != nil {
-		return err
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, userCreateLockKey); err != nil {
+		return fmt.Errorf("lock user creation: %w", err)
+	}
+
+	// Check uniqueness before any eviction. Relying on the insert's unique
+	// constraint is not enough: at capacity the eviction could delete the very
+	// account whose username is being registered, handing the name to a new
+	// owner. The advisory lock orders this check with concurrent creations; the
+	// constraints still catch a race with renames.
+	var exists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1 FROM users WHERE username = lower($1) OR email = lower($2)
+	)`, record.Username, nullableString(record.Email)).Scan(&exists); err != nil {
+		return fmt.Errorf("check user uniqueness: %w", err)
 	}
 	if exists {
 		return ErrUserAlreadyExists
@@ -113,52 +78,43 @@ func (s *Store) createUser(record UserRecord, session *SessionRecord, limits *Us
 
 	if limits != nil {
 		var total, permanent int
-		if err := tx.QueryRow(`SELECT COUNT(*),
-			COUNT(CASE WHEN account_type = 'permanent' THEN 1 END)
-			FROM users`).Scan(&total, &permanent); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT count(*),
+			count(*) FILTER (WHERE account_type = 'permanent') FROM users`,
+		).Scan(&total, &permanent); err != nil {
 			return fmt.Errorf("count users: %w", err)
 		}
 		if record.AccountType == "permanent" && permanent >= limits.PermanentSlots {
 			return ErrPermanentCapacity
 		}
 		if total >= limits.MaxUsers {
-			result, err := tx.Exec(`DELETE FROM users WHERE user_id = (
+			result, err := tx.ExecContext(ctx, `DELETE FROM users WHERE user_id = (
 				SELECT user_id FROM users
 				WHERE account_type = 'temp'
-				ORDER BY created_at ASC
+				ORDER BY created_at, user_id
 				LIMIT 1
 			)`)
 			if err != nil {
 				return fmt.Errorf("evict oldest temporary user: %w", err)
 			}
-			deleted, err := result.RowsAffected()
-			if err != nil {
+			if deleted, err := result.RowsAffected(); err != nil {
 				return fmt.Errorf("inspect temporary user eviction: %w", err)
-			}
-			if deleted != 1 {
+			} else if deleted != 1 {
 				return ErrUserCapacity
 			}
 		}
 	}
 
-	// Insert user
-	query := `INSERT INTO users (
+	if _, err := tx.ExecContext(ctx, `INSERT INTO users (
 		user_id, username, email, password_hash, account_type, created_at, expires_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?)`
-
-	_, err = tx.Exec(query,
-		record.UserID, record.Username, record.Email,
+	) VALUES ($1, lower($2), lower($3), $4, $5, $6, $7)`,
+		record.UserID, record.Username, nullableString(record.Email),
 		record.PasswordHash, record.AccountType, record.CreatedAt, record.ExpiresAt,
-	)
-	if err != nil {
-		return err
+	); err != nil {
+		return mapUserConflict(err)
 	}
 	if session != nil {
-		if session.UserID != record.UserID {
-			return errors.New("initial session user does not match new user")
-		}
-		if _, err := tx.Exec(
-			`INSERT INTO sessions (session_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)`,
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO sessions (session_id, user_id, created_at, expires_at) VALUES ($1, $2, $3, $4)`,
 			session.SessionID, session.UserID, session.CreatedAt, session.ExpiresAt,
 		); err != nil {
 			return fmt.Errorf("create initial session: %w", err)
@@ -176,70 +132,92 @@ func (s *Store) createUser(record UserRecord, session *SessionRecord, limits *Us
 	return nil
 }
 
-// DeleteUserByID removes a user by ID (synchronous, for replacement logic)
-func (s *Store) DeleteUserByID(userID string) error {
-	query := `DELETE FROM users WHERE user_id = ?`
-	_, err := s.db.Exec(query, userID)
-	if err == nil {
-		slog.Debug("storage user deleted", "user_id", userID)
+// mapUserConflict converts a username/email uniqueness violation, including one
+// lost to a concurrent writer, into ErrUserAlreadyExists.
+func mapUserConflict(err error) error {
+	if constraint, ok := uniqueViolation(err); ok &&
+		(constraint == "users_username_key" || constraint == "users_email_key") {
+		return ErrUserAlreadyExists
 	}
 	return err
 }
 
-// PromoteToPermament upgrades a temp user to permanent
-func (s *Store) PromoteToPermanent(userID string) error {
-	query := `UPDATE users SET account_type = 'permanent', expires_at = NULL WHERE user_id = ?`
-	_, err := s.db.Exec(query, userID)
-	return err
-}
-
-// userExists verifies username/email uniqueness within a transaction
-func (s *Store) userExists(tx *sql.Tx, username, email string) (bool, error) {
-	var count int
-	query := `SELECT COUNT(*) FROM users WHERE username = ? COLLATE NOCASE`
-	args := []any{username}
-
-	if email != "" {
-		query = `SELECT COUNT(*) FROM users
-			WHERE username = ? COLLATE NOCASE
-				OR (email = ? COLLATE NOCASE AND email IS NOT NULL AND email != '')`
-		args = append(args, email)
-	}
-
-	err := tx.QueryRow(query, args...).Scan(&count)
+// DeleteExpiredTempUsers removes temporary users past their expiry. Sessions
+// cascade; games keep their claims as historical references.
+func (s *Store) DeleteExpiredTempUsers() (int64, error) {
+	ctx, cancel := opContext()
+	defer cancel()
+	result, err := s.db.ExecContext(ctx, `DELETE FROM users
+		WHERE account_type = 'temp' AND expires_at < $1`, time.Now().UTC())
 	if err != nil {
-		return false, err
+		return 0, err
 	}
-	return count > 0, nil
+	deleted, err := result.RowsAffected()
+	if err == nil && deleted > 0 {
+		slog.Debug("storage expired temporary users deleted", "count", deleted)
+	}
+	return deleted, err
+}
+
+// DeleteUser removes a user synchronously; sessions cascade. It returns
+// sql.ErrNoRows when no such user exists.
+func (s *Store) DeleteUser(userID string) error {
+	if err := s.execUserUpdate(`DELETE FROM users WHERE user_id = $1`, userID); err != nil {
+		return err
+	}
+	slog.Debug("storage user deleted", "user_id", userID)
+	return nil
+}
+
+// PromoteToPermanent upgrades a temporary user to a permanent account.
+func (s *Store) PromoteToPermanent(userID string) error {
+	return s.execUserUpdate(
+		`UPDATE users SET account_type = 'permanent', expires_at = NULL WHERE user_id = $1`, userID)
 }
 
 // UpdateUserPassword updates user password hash
-func (s *Store) UpdateUserPassword(userID string, passwordHash string) error {
-	query := `UPDATE users SET password_hash = ? WHERE user_id = ?`
-	_, err := s.db.Exec(query, passwordHash, userID)
-	return err
+func (s *Store) UpdateUserPassword(userID, passwordHash string) error {
+	return s.execUserUpdate(`UPDATE users SET password_hash = $2 WHERE user_id = $1`,
+		userID, passwordHash)
 }
 
-// UpdateUserEmail updates user email
-func (s *Store) UpdateUserEmail(userID string, email string) error {
-	query := `UPDATE users SET email = ? WHERE user_id = ?`
-	_, err := s.db.Exec(query, email, userID)
-	return err
+// UpdateUserEmail updates the email; an empty value removes it.
+func (s *Store) UpdateUserEmail(userID, email string) error {
+	return s.execUserUpdate(`UPDATE users SET email = lower($2) WHERE user_id = $1`,
+		userID, nullableString(email))
 }
 
 // UpdateUserUsername updates username
-func (s *Store) UpdateUserUsername(userID string, username string) error {
-	query := `UPDATE users SET username = ? WHERE user_id = ?`
-	_, err := s.db.Exec(query, username, userID)
-	return err
+func (s *Store) UpdateUserUsername(userID, username string) error {
+	return s.execUserUpdate(`UPDATE users SET username = lower($2) WHERE user_id = $1`,
+		userID, username)
 }
 
-// GetAllUsers retrieves all users
-func (s *Store) GetAllUsers() ([]UserRecord, error) {
-	query := `SELECT user_id, username, email, password_hash, account_type, created_at, expires_at, last_login_at
-		FROM users ORDER BY created_at DESC`
+// execUserUpdate runs a single-row statement keyed by user_id ($1).
+func (s *Store) execUserUpdate(query, userID string, args ...any) error {
+	if !validUUID(userID) {
+		return sql.ErrNoRows
+	}
+	ctx, cancel := opContext()
+	defer cancel()
+	result, err := s.db.ExecContext(ctx, query, append([]any{userID}, args...)...)
+	if err != nil {
+		return mapUserConflict(err)
+	}
+	if rows, err := result.RowsAffected(); err != nil {
+		return err
+	} else if rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
 
-	rows, err := s.db.Query(query)
+// GetAllUsers retrieves all users, newest first
+func (s *Store) GetAllUsers() ([]UserRecord, error) {
+	ctx, cancel := opContext()
+	defer cancel()
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+userSelectColumns+` FROM users ORDER BY created_at DESC, user_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -248,91 +226,59 @@ func (s *Store) GetAllUsers() ([]UserRecord, error) {
 	var users []UserRecord
 	for rows.Next() {
 		var user UserRecord
-		var email sql.NullString
-		err := rows.Scan(
-			&user.UserID, &user.Username, &email,
-			&user.PasswordHash, &user.AccountType, &user.CreatedAt,
-			&user.ExpiresAt, &user.LastLoginAt,
-		)
-		if err != nil {
+		if err := scanUser(rows, &user); err != nil {
 			return nil, err
 		}
-		user.Email = email.String
 		users = append(users, user)
 	}
-
 	return users, rows.Err()
 }
 
-// UpdateUserLastLoginSync updates user last login time
-func (s *Store) UpdateUserLastLoginSync(userID string, loginTime time.Time) error {
-	query := `UPDATE users SET last_login_at = ? WHERE user_id = ?`
-	_, err := s.db.Exec(query, loginTime, userID)
-	if err != nil {
-		return fmt.Errorf("failed to update last login for user %s: %w", userID, err)
-	}
-	return nil
-}
-
-// GetUserByUsername retrieves user by username with case-insensitive matching
+// GetUserByUsername retrieves a user by case-insensitive username.
 func (s *Store) GetUserByUsername(username string) (*UserRecord, error) {
-	var user UserRecord
-	var email sql.NullString
-	query := `SELECT user_id, username, email, password_hash, account_type, created_at, expires_at, last_login_at
-		FROM users WHERE username = ? COLLATE NOCASE`
-
-	err := s.db.QueryRow(query, username).Scan(
-		&user.UserID, &user.Username, &email,
-		&user.PasswordHash, &user.AccountType, &user.CreatedAt,
-		&user.ExpiresAt, &user.LastLoginAt,
-	)
-	if err != nil {
-		return nil, err
-	}
-	user.Email = email.String
-	return &user, nil
+	return s.getUser(`username = lower($1)`, username)
 }
 
-// GetUserByEmail retrieves user by email with case-insensitive matching
+// GetUserByEmail retrieves a user by case-insensitive email.
 func (s *Store) GetUserByEmail(email string) (*UserRecord, error) {
-	var user UserRecord
-	var emailNull sql.NullString
-	query := `SELECT user_id, username, email, password_hash, account_type, created_at, expires_at, last_login_at
-		FROM users WHERE email = ? COLLATE NOCASE AND email IS NOT NULL AND email != ''`
-
-	err := s.db.QueryRow(query, email).Scan(
-		&user.UserID, &user.Username, &emailNull,
-		&user.PasswordHash, &user.AccountType, &user.CreatedAt,
-		&user.ExpiresAt, &user.LastLoginAt,
-	)
-	if err != nil {
-		return nil, err
+	if email == "" {
+		return nil, sql.ErrNoRows
 	}
-	user.Email = emailNull.String
-	return &user, nil
+	return s.getUser(`email = lower($1)`, email)
 }
 
 // GetUserByID retrieves user by unique user ID
 func (s *Store) GetUserByID(userID string) (*UserRecord, error) {
-	var user UserRecord
-	var email sql.NullString
-	query := `SELECT user_id, username, email, password_hash, account_type, created_at, expires_at, last_login_at
-		FROM users WHERE user_id = ?`
+	if !validUUID(userID) {
+		return nil, sql.ErrNoRows
+	}
+	return s.getUser(`user_id = $1`, userID)
+}
 
-	err := s.db.QueryRow(query, userID).Scan(
-		&user.UserID, &user.Username, &email,
-		&user.PasswordHash, &user.AccountType, &user.CreatedAt,
-		&user.ExpiresAt, &user.LastLoginAt,
-	)
-	if err != nil {
+func (s *Store) getUser(predicate string, arg any) (*UserRecord, error) {
+	ctx, cancel := opContext()
+	defer cancel()
+	var user UserRecord
+	row := s.db.QueryRowContext(ctx, `SELECT `+userSelectColumns+` FROM users WHERE `+predicate, arg)
+	if err := scanUser(row, &user); err != nil {
 		return nil, err
 	}
-	user.Email = email.String
 	return &user, nil
 }
 
-// DeleteUser removes a user synchronously. Account operations are consistency
-// sensitive and should not be reported successful before SQLite commits them.
-func (s *Store) DeleteUser(userID string) error {
-	return s.DeleteUserByID(userID)
+func scanUser(scanner rowScanner, user *UserRecord) error {
+	var email sql.NullString
+	var expiresAt, lastLoginAt sql.NullTime
+	if err := scanner.Scan(
+		&user.UserID, &user.Username, &email,
+		&user.PasswordHash, &user.AccountType, &user.CreatedAt,
+		&expiresAt, &lastLoginAt,
+	); err != nil {
+		return err
+	}
+	user.Email = email.String
+	user.CreatedAt = user.CreatedAt.UTC()
+	user.ExpiresAt = utcPointer(expiresAt)
+	user.LastLoginAt = utcPointer(lastLoginAt)
+	return nil
 }

@@ -31,13 +31,7 @@ type User struct {
 	ExpiresAt   *time.Time
 }
 
-// CreateUser creates new user with registration limits enforcement
-func (s *Service) CreateUser(username, email, password string, permanent bool) (*User, error) {
-	user, _, err := s.createUser(username, email, password, permanent, false)
-	return user, err
-}
-
-// RegisterUser creates the account and its initial session in one SQLite
+// RegisterUser creates the account and its initial session in one database
 // transaction, so a successful registration always returns a usable account.
 func (s *Service) RegisterUser(username, email, password string, permanent bool) (*User, string, error) {
 	return s.createUser(username, email, password, permanent, true)
@@ -71,11 +65,9 @@ func (s *Service) createUser(
 		return nil, "", fmt.Errorf("failed to hash password: %w", err)
 	}
 
-	// Generate unique user ID
-	userID, err := s.generateUniqueUserID()
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to generate unique ID: %w", err)
-	}
+	// A random UUIDv4 needs no existence probe; the primary key rejects the
+	// negligible collision case.
+	userID := uuid.NewString()
 
 	// Create user record
 	user := &User{
@@ -100,7 +92,7 @@ func (s *Service) createUser(
 	var sessionID string
 	var session *storage.SessionRecord
 	if withSession {
-		sessionID = uuid.New().String()
+		sessionID = uuid.NewString()
 		session = &storage.SessionRecord{
 			SessionID: sessionID,
 			UserID:    userID,
@@ -170,23 +162,20 @@ func (s *Service) AuthenticateUser(identifier, password string) (*User, string, 
 	}
 
 	// Create new session (invalidates any existing session)
-	sessionID := uuid.New().String()
+	sessionID := uuid.NewString()
+	now := time.Now().UTC()
 	sessionRecord := storage.SessionRecord{
 		SessionID: sessionID,
 		UserID:    userRecord.UserID,
-		CreatedAt: time.Now().UTC(),
-		ExpiresAt: time.Now().UTC().Add(SessionTTL),
+		CreatedAt: now,
+		ExpiresAt: now.Add(SessionTTL),
 	}
 
+	// Replaces any existing session and records the login time.
 	if err := s.store.CreateSession(sessionRecord); err != nil {
 		return nil, "", fmt.Errorf("%w: create session: %v", ErrStorageUnavailable, err)
 	}
 	slog.Debug("user authenticated", "user_id", userRecord.UserID)
-
-	// Update last login
-	if err := s.store.UpdateUserLastLoginSync(userRecord.UserID, time.Now().UTC()); err != nil {
-		slog.Warn("failed to record user login time", "user_id", userRecord.UserID, "error", err)
-	}
 
 	return &User{
 		UserID:      userRecord.UserID,
@@ -196,18 +185,6 @@ func (s *Service) AuthenticateUser(identifier, password string) (*User, string, 
 		CreatedAt:   userRecord.CreatedAt,
 		ExpiresAt:   userRecord.ExpiresAt,
 	}, sessionID, nil
-}
-
-// ValidateSession checks if a session is valid
-func (s *Service) ValidateSession(sessionID string) (bool, error) {
-	if s.store == nil {
-		return false, ErrStorageDisabled
-	}
-	valid, err := s.store.IsSessionValid(sessionID)
-	if err != nil {
-		return false, fmt.Errorf("%w: validate session: %v", ErrStorageUnavailable, err)
-	}
-	return valid, nil
 }
 
 // InvalidateSession removes a session (logout)
@@ -284,44 +261,4 @@ func (s *Service) ValidateToken(token string) (string, map[string]any, error) {
 	}
 
 	return userID, claims, nil
-}
-
-// generateUniqueUserID creates a unique user ID with collision detection
-func (s *Service) generateUniqueUserID() (string, error) {
-	const maxAttempts = 10
-
-	for i := 0; i < maxAttempts; i++ {
-		id := uuid.New().String()
-		if _, err := s.store.GetUserByID(id); errors.Is(err, sql.ErrNoRows) {
-			return id, nil
-		} else if err != nil {
-			return "", fmt.Errorf("%w: check generated user ID: %v", ErrStorageUnavailable, err)
-		}
-	}
-
-	return "", fmt.Errorf("failed to generate unique user ID")
-}
-
-// CreateUserSession creates a session for a trusted internal caller without
-// re-authenticating. Public registration uses RegisterUser so account and
-// initial session creation remain atomic.
-func (s *Service) CreateUserSession(userID string) (string, error) {
-	if s.store == nil {
-		return "", ErrStorageDisabled
-	}
-
-	sessionID := uuid.New().String()
-	sessionRecord := storage.SessionRecord{
-		SessionID: sessionID,
-		UserID:    userID,
-		CreatedAt: time.Now().UTC(),
-		ExpiresAt: time.Now().UTC().Add(SessionTTL),
-	}
-
-	if err := s.store.CreateSession(sessionRecord); err != nil {
-		return "", fmt.Errorf("%w: create session: %v", ErrStorageUnavailable, err)
-	}
-	slog.Debug("user session created", "user_id", userID)
-
-	return sessionID, nil
 }

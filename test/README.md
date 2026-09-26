@@ -6,9 +6,26 @@ This directory contains comprehensive test suites for the Chess API server, cove
 
 - `jq` - JSON processor
 - `curl` - HTTP client
-- `sqlite3` - SQLite CLI (for database tests)
+- `psql` - PostgreSQL client (for database tests)
 - `base64` - Base64 encoder (for JWT tests)
+- Stockfish in `PATH`
 - Compiled `bin/chess-server` binary (or pass another path to the scripts)
+- A **disposable** PostgreSQL database named by `CHESS_TEST_DSN`
+
+`CHESS_TEST_DSN` must be a libpq-compatible connection string, because the
+scripts pass it to both `chess-server` and `psql`. The test server drops every
+chess table in that database on start and exit, so never point it at real data.
+
+```bash
+# One-time setup as a PostgreSQL superuser
+psql -U postgres -c "CREATE ROLE chess_test LOGIN PASSWORD 'chess_test'"
+psql -U postgres -c "CREATE DATABASE chess_test OWNER chess_test"
+
+export CHESS_TEST_DSN='postgres://chess_test:chess_test@localhost:5432/chess_test?sslmode=disable'
+```
+
+The same variable enables the Go database tests (`go test ./...`), which create
+and drop an isolated schema per test and are skipped when it is unset.
 
 ## Running the test server
 From repo root
@@ -17,8 +34,8 @@ test/run-test-server.sh
 ```
 
 Pass the binary path as the first argument when it is not at `bin/chess-server`.
-The server runs with `-dev`, debug logging, HTTP request logging, and relaxed rate limiting. WAL is enabled for every persistent server mode.
-Will clean up test database and temporary files, so it's preferred for clean testing.
+The server runs with `-dev`, debug logging, HTTP request logging, and relaxed rate limiting.
+It drops the test tables on exit, so it's preferred for clean testing.
 Can be used for all the tests.
 
 Logging can be adjusted without editing the script:
@@ -63,7 +80,7 @@ curl -X POST http://localhost:8080/games \
 | API Functionality | `test-api.sh` | Game operations, moves, undo, rate limiting |
 | Database & Auth | `test-db.sh` | User registration, login, JWT tokens, persistence |
 | Long-Polling | `test-longpoll.sh` | Real-time updates, wait behavior, timeouts |
-| Test Server | `test-db-server.sh` | Pre-populated test environment |
+| Test Server | `run-test-server.sh` | Pre-populated test environment |
 
 ## 1. API Functionality Tests (`test-api.sh`)
 
@@ -97,8 +114,8 @@ Tests user management, authentication, and persistence via API integration.
 ### Running the test
 ```bash
 # Terminal 1: Start test server with database
-# Server is running with -dev and persistent WAL storage
-test/test-db-server.sh bin/chess-server
+# Server is running with -dev and PostgreSQL storage
+test/run-test-server.sh bin/chess-server
 
 # Terminal 2: Run API integration tests
 test/test-db.sh bin/chess-server
@@ -114,12 +131,12 @@ test/test-db.sh bin/chess-server
 - **Database Schema**: Table creation, constraints, indexes
 
 ### Test Flow
-1. Creates temporary `test.db` with schema
+1. Re-runs the idempotent schema initialization against `CHESS_TEST_DSN`
 2. Registers test users (alice, bob, charlie)
 3. Tests authentication endpoints
 4. Validates JWT tokens and claims
 5. Tests duplicate user prevention
-6. Cleans up test database
+6. Leaves cleanup (dropping tables) to `run-test-server.sh`
 
 ## 3. Long-Polling Tests (`test-longpoll.sh`)
 
@@ -129,7 +146,7 @@ Tests real-time game updates via HTTP long-polling.
 ```bash
 # Terminal 1: Start server with storage
 test/run-test-server.sh bin/chess-server
-# Direct (test.db cleanup required): bin/chess-server -dev -storage-path test.db
+# Direct (table cleanup required): CHESS_DSN="$CHESS_TEST_DSN" bin/chess-server -dev
 
 # Terminal 2: Run long-polling tests
 test/test-longpoll.sh

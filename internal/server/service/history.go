@@ -82,6 +82,7 @@ func (s *Service) GetUserGames(userID string, limit, offset int) (*core.GameList
 			StartTimeUTC: record.StartTimeUTC,
 			EndTimeUTC:   record.EndTimeUTC,
 			MoveCount:    record.MoveCount,
+			FinalFEN:     record.FinalFEN,
 			Players:      playersResponse(record.GameRecord),
 		})
 	}

@@ -120,6 +120,7 @@ type HistoryMove struct {
 type GameSummary struct {
 	GameID       string          `json:"gameId"`
 	InitialFEN   string          `json:"initialFen"`
+	FinalFEN     string          `json:"finalFen"`
 	Result       string          `json:"result,omitempty"`
 	StartTimeUTC time.Time       `json:"startTimeUtc"`
 	EndTimeUTC   *time.Time      `json:"endTimeUtc,omitempty"`

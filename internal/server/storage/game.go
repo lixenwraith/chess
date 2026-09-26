@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 )
 
@@ -14,6 +15,10 @@ const gameSelectColumns = `
 	g.white_player_id, g.white_type, g.white_level, g.white_search_time, g.white_claimed_by,
 	g.black_player_id, g.black_type, g.black_level, g.black_search_time, g.black_claimed_by,
 	g.result, g.start_time_utc, g.end_time_utc`
+
+// MaxUserGamesPage bounds QueryGamesForUser; callers request one extra row to
+// detect a following page.
+const MaxUserGamesPage = 101
 
 // RecordNewGame asynchronously records a new game. Terminal custom-FEN games
 // include their result in this insert rather than relying on a second write.
@@ -25,15 +30,15 @@ func (s *Store) RecordNewGame(record GameRecord) error {
 		return err
 	}
 
-	return s.enqueue("record_game", record.GameID, func(tx *sql.Tx) error {
+	return s.enqueue("record_game", record.GameID, func(ctx context.Context, tx *sql.Tx) error {
 		const query = `INSERT INTO games (
 			game_id, initial_fen,
 			white_player_id, white_type, white_level, white_search_time, white_claimed_by,
 			black_player_id, black_type, black_level, black_search_time, black_claimed_by,
 			start_time_utc, result, end_time_utc
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`
 
-		_, err := tx.Exec(query,
+		_, err := tx.ExecContext(ctx, query,
 			record.GameID, record.InitialFEN,
 			record.WhitePlayerID, record.WhiteType, record.WhiteLevel, record.WhiteSearchTime,
 			nullableString(record.WhiteClaimedBy),
@@ -65,11 +70,11 @@ func (s *Store) RecordMove(record MovePersistence) error {
 		return err
 	}
 
-	return s.enqueue("record_move", record.Move.GameID, func(tx *sql.Tx) error {
+	return s.enqueue("record_move", record.Move.GameID, func(ctx context.Context, tx *sql.Tx) error {
 		const insertMove = `INSERT INTO moves (
 			game_id, move_number, move_uci, fen_after_move, player_color, move_time_utc
-		) VALUES (?, ?, ?, ?, ?, ?)`
-		if _, err := tx.Exec(insertMove,
+		) VALUES ($1, $2, $3, $4, $5, $6)`
+		if _, err := tx.ExecContext(ctx, insertMove,
 			record.Move.GameID,
 			record.Move.MoveNumber,
 			record.Move.MoveUCI,
@@ -80,33 +85,33 @@ func (s *Store) RecordMove(record MovePersistence) error {
 			return err
 		}
 
+		if record.ClaimedBy == "" && record.Result == "" {
+			return nil
+		}
+		// One UPDATE applies the optional claim and optional result. A claim may
+		// only fill an empty slot or repeat the same claimant.
+		claimColumn := "white_claimed_by"
+		if record.ClaimColor == "b" {
+			claimColumn = "black_claimed_by"
+		}
+		var set []string
+		args := []any{record.Move.GameID}
+		where := "game_id = $1"
 		if record.ClaimedBy != "" {
-			column := "white_claimed_by"
-			if record.ClaimColor == "b" {
-				column = "black_claimed_by"
-			}
-			query := `UPDATE games SET ` + column + ` = ?
-				WHERE game_id = ? AND (` + column + ` IS NULL OR ` + column + ` = '' OR ` + column + ` = ?)`
-			result, err := tx.Exec(query, record.ClaimedBy, record.Move.GameID, record.ClaimedBy)
-			if err != nil {
-				return err
-			}
-			if err := requireOneGame(result, record.Move.GameID); err != nil {
-				return err
-			}
+			args = append(args, record.ClaimedBy)
+			set = append(set, fmt.Sprintf("%s = $%d", claimColumn, len(args)))
+			where += fmt.Sprintf(" AND (%s IS NULL OR %s = $%d)", claimColumn, claimColumn, len(args))
 		}
-
 		if record.Result != "" {
-			result, err := tx.Exec(
-				`UPDATE games SET result = ?, end_time_utc = ? WHERE game_id = ?`,
-				record.Result, record.EndTimeUTC, record.Move.GameID,
-			)
-			if err != nil {
-				return err
-			}
-			return requireOneGame(result, record.Move.GameID)
+			args = append(args, record.Result, record.EndTimeUTC)
+			set = append(set, fmt.Sprintf("result = $%d, end_time_utc = $%d", len(args)-1, len(args)))
 		}
-		return nil
+		result, err := tx.ExecContext(ctx,
+			"UPDATE games SET "+strings.Join(set, ", ")+" WHERE "+where, args...)
+		if err != nil {
+			return err
+		}
+		return requireOneGame(result, record.Move.GameID)
 	})
 }
 
@@ -122,56 +127,10 @@ func (s *Store) RecordGameResult(gameID, result string, at time.Time) error {
 	if at.IsZero() {
 		return errors.New("game result time is required")
 	}
-	return s.enqueue("record_game_result", gameID, func(tx *sql.Tx) error {
-		res, err := tx.Exec(
-			`UPDATE games SET result = ?, end_time_utc = ? WHERE game_id = ?`,
-			result, at.UTC(), gameID,
-		)
-		if err != nil {
-			return err
-		}
-		return requireOneGame(res, gameID)
-	})
-}
-
-// RecordSlotClaim persists a claim made independently from a move.
-func (s *Store) RecordSlotClaim(gameID, color, userID string) error {
-	if gameID == "" || userID == "" {
-		return errors.New("game ID and claimant are required")
-	}
-	if color != "w" && color != "b" {
-		return fmt.Errorf("invalid claim color %q", color)
-	}
-	column := "white_claimed_by"
-	if color == "b" {
-		column = "black_claimed_by"
-	}
-	return s.enqueue("record_slot_claim", gameID, func(tx *sql.Tx) error {
-		query := `UPDATE games SET ` + column + ` = ?
-			WHERE game_id = ? AND (` + column + ` IS NULL OR ` + column + ` = '' OR ` + column + ` = ?)`
-		res, err := tx.Exec(query, userID, gameID, userID)
-		if err != nil {
-			return err
-		}
-		return requireOneGame(res, gameID)
-	})
-}
-
-// RecordPlayers keeps persisted player configuration aligned with in-memory
-// configuration changes.
-func (s *Store) RecordPlayers(gameID string, white, black PlayerRecord) error {
-	if gameID == "" || white.PlayerID == "" || black.PlayerID == "" {
-		return errors.New("game ID and player IDs are required")
-	}
-	return s.enqueue("record_players", gameID, func(tx *sql.Tx) error {
-		const query = `UPDATE games SET
-			white_player_id = ?, white_type = ?, white_level = ?, white_search_time = ?, white_claimed_by = ?,
-			black_player_id = ?, black_type = ?, black_level = ?, black_search_time = ?, black_claimed_by = ?
-			WHERE game_id = ?`
-		res, err := tx.Exec(query,
-			white.PlayerID, white.Type, white.Level, white.SearchTime, nullableString(white.ClaimedBy),
-			black.PlayerID, black.Type, black.Level, black.SearchTime, nullableString(black.ClaimedBy),
-			gameID,
+	return s.enqueue("record_game_result", gameID, func(ctx context.Context, tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE games SET result = $2, end_time_utc = $3 WHERE game_id = $1`,
+			gameID, result, at.UTC(),
 		)
 		if err != nil {
 			return err
@@ -189,21 +148,43 @@ type PlayerRecord struct {
 	ClaimedBy  string
 }
 
+// RecordPlayers keeps persisted player configuration aligned with in-memory
+// configuration changes.
+func (s *Store) RecordPlayers(gameID string, white, black PlayerRecord) error {
+	if gameID == "" || white.PlayerID == "" || black.PlayerID == "" {
+		return errors.New("game ID and player IDs are required")
+	}
+	return s.enqueue("record_players", gameID, func(ctx context.Context, tx *sql.Tx) error {
+		const query = `UPDATE games SET
+			white_player_id = $2, white_type = $3, white_level = $4, white_search_time = $5, white_claimed_by = $6,
+			black_player_id = $7, black_type = $8, black_level = $9, black_search_time = $10, black_claimed_by = $11
+			WHERE game_id = $1`
+		res, err := tx.ExecContext(ctx, query, gameID,
+			white.PlayerID, white.Type, white.Level, white.SearchTime, nullableString(white.ClaimedBy),
+			black.PlayerID, black.Type, black.Level, black.SearchTime, nullableString(black.ClaimedBy),
+		)
+		if err != nil {
+			return err
+		}
+		return requireOneGame(res, gameID)
+	})
+}
+
 // RewindGame atomically removes undone moves and clears a previously terminal
 // result so replay readers never observe an ongoing line with a stale outcome.
 func (s *Store) RewindGame(gameID string, afterMoveNumber int) error {
 	if gameID == "" || afterMoveNumber < 0 {
 		return errors.New("game ID and a non-negative move number are required")
 	}
-	return s.enqueue("rewind_game", gameID, func(tx *sql.Tx) error {
-		if _, err := tx.Exec(
-			`DELETE FROM moves WHERE game_id = ? AND move_number > ?`,
+	return s.enqueue("rewind_game", gameID, func(ctx context.Context, tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM moves WHERE game_id = $1 AND move_number > $2`,
 			gameID, afterMoveNumber,
 		); err != nil {
 			return err
 		}
-		res, err := tx.Exec(
-			`UPDATE games SET result = NULL, end_time_utc = NULL WHERE game_id = ?`,
+		res, err := tx.ExecContext(ctx,
+			`UPDATE games SET result = NULL, end_time_utc = NULL WHERE game_id = $1`,
 			gameID,
 		)
 		if err != nil {
@@ -213,28 +194,34 @@ func (s *Store) RewindGame(gameID string, afterMoveNumber int) error {
 	})
 }
 
-// QueryGames retrieves games with optional filtering. A player filter matches
-// both creation-time player IDs and claims made after game creation.
+// QueryGames is the administrative game lookup. Either filter may be empty or
+// "*" for all; a player filter matches creation-time player IDs and claims.
 func (s *Store) QueryGames(gameID, playerID string) ([]GameRecord, error) {
-	if err := s.flushBeforeRead(); err != nil {
-		return nil, err
-	}
-	started := time.Now()
-	query := `SELECT ` + gameSelectColumns + ` FROM games g WHERE 1=1`
+	query := `SELECT ` + gameSelectColumns + ` FROM games g WHERE true`
 	var args []any
-
 	if gameID != "" && gameID != "*" {
-		query += " AND g.game_id = ?"
+		if !validUUID(gameID) {
+			return nil, fmt.Errorf("invalid game ID %q", gameID)
+		}
 		args = append(args, gameID)
+		query += fmt.Sprintf(" AND g.game_id = $%d", len(args))
 	}
 	if playerID != "" && playerID != "*" {
-		query += ` AND (g.white_player_id = ? OR g.black_player_id = ?
-			OR g.white_claimed_by = ? OR g.black_claimed_by = ?)`
-		args = append(args, playerID, playerID, playerID, playerID)
+		if !validUUID(playerID) {
+			return nil, fmt.Errorf("invalid player ID %q", playerID)
+		}
+		args = append(args, playerID)
+		query += fmt.Sprintf(` AND $%d IN (g.white_player_id, g.black_player_id,
+			g.white_claimed_by, g.black_claimed_by)`, len(args))
 	}
 	query += " ORDER BY g.start_time_utc DESC, g.game_id DESC"
 
-	rows, err := s.db.Query(query, args...)
+	if err := s.flushBeforeRead(); err != nil {
+		return nil, err
+	}
+	ctx, cancel := opContext()
+	defer cancel()
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query games: %w", err)
 	}
@@ -251,111 +238,95 @@ func (s *Store) QueryGames(gameID, playerID string) ([]GameRecord, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate games: %w", err)
 	}
-	slog.Debug("storage games queried", "count", len(games), "duration", time.Since(started))
 	return games, nil
 }
 
-func (s *Store) GetGameRecord(gameID string) (*GameRecord, error) {
-	if err := s.flushBeforeRead(); err != nil {
-		return nil, err
-	}
-	return getGameRecord(s.db, gameID)
-}
-
-type gameQueryer interface {
-	Query(query string, args ...any) (*sql.Rows, error)
-	QueryRow(query string, args ...any) *sql.Row
-}
-
-func getGameRecord(queryer gameQueryer, gameID string) (*GameRecord, error) {
-	var record GameRecord
-	row := queryer.QueryRow(`SELECT `+gameSelectColumns+` FROM games g WHERE g.game_id = ?`, gameID)
-	if err := scanGame(row, &record); err != nil {
-		return nil, err
-	}
-	return &record, nil
-}
-
-// GetMovesForGame returns the complete, undo-consistent replay line.
-func (s *Store) GetMovesForGame(gameID string) ([]MoveRecord, error) {
-	if err := s.flushBeforeRead(); err != nil {
-		return nil, err
-	}
-	return getMovesForGame(s.db, gameID)
-}
-
-func getMovesForGame(queryer gameQueryer, gameID string) ([]MoveRecord, error) {
-	const query = `SELECT move_id, game_id, move_number, move_uci,
-		fen_after_move, player_color, move_time_utc
-		FROM moves WHERE game_id = ? ORDER BY move_number ASC`
-	rows, err := queryer.Query(query, gameID)
-	if err != nil {
-		return nil, fmt.Errorf("query game moves: %w", err)
-	}
-	defer rows.Close()
-
-	moves := make([]MoveRecord, 0)
-	for rows.Next() {
-		var move MoveRecord
-		if err := rows.Scan(
-			&move.MoveID, &move.GameID, &move.MoveNumber, &move.MoveUCI,
-			&move.FENAfterMove, &move.PlayerColor, &move.MoveTimeUTC,
-		); err != nil {
-			return nil, fmt.Errorf("scan game move: %w", err)
-		}
-		moves = append(moves, move)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate game moves: %w", err)
-	}
-	return moves, nil
-}
-
-// GetGameHistory uses one write barrier and one read transaction for a
-// consistent game-and-moves snapshot.
+// GetGameHistory returns the game row and its ordered moves after every
+// previously accepted write has committed. Both reads share one REPEATABLE READ
+// snapshot, so a concurrent move or rewind cannot produce a mixed history.
 func (s *Store) GetGameHistory(gameID string) (*GameRecord, []MoveRecord, error) {
+	if !validUUID(gameID) {
+		return nil, nil, sql.ErrNoRows
+	}
 	if err := s.flushBeforeRead(); err != nil {
 		return nil, nil, err
 	}
 	started := time.Now()
-	tx, err := s.db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	ctx, cancel := opContext()
+	defer cancel()
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
 		return nil, nil, fmt.Errorf("begin game history read: %w", err)
 	}
 	defer tx.Rollback()
 
-	record, err := getGameRecord(tx, gameID)
-	if err != nil {
+	var record GameRecord
+	row := tx.QueryRowContext(ctx, `SELECT `+gameSelectColumns+` FROM games g WHERE g.game_id = $1`, gameID)
+	if err := scanGame(row, &record); err != nil {
 		return nil, nil, err
 	}
-	moves, err := getMovesForGame(tx, gameID)
+
+	rows, err := tx.QueryContext(ctx, `SELECT game_id, move_number, move_uci,
+		fen_after_move, player_color, move_time_utc
+		FROM moves WHERE game_id = $1 ORDER BY move_number`, gameID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("query game moves: %w", err)
+	}
+	defer rows.Close()
+	moves := make([]MoveRecord, 0)
+	for rows.Next() {
+		var move MoveRecord
+		if err := rows.Scan(
+			&move.GameID, &move.MoveNumber, &move.MoveUCI,
+			&move.FENAfterMove, &move.PlayerColor, &move.MoveTimeUTC,
+		); err != nil {
+			return nil, nil, fmt.Errorf("scan game move: %w", err)
+		}
+		move.MoveTimeUTC = move.MoveTimeUTC.UTC()
+		moves = append(moves, move)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("iterate game moves: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, nil, fmt.Errorf("finish game history read: %w", err)
 	}
 	slog.Debug("storage game history queried",
 		"game_id", gameID, "move_count", len(moves), "duration", time.Since(started))
-	return record, moves, nil
+	return &record, moves, nil
 }
 
+// QueryGamesForUser returns a page of games claimed by userID in either color,
+// newest first. The last move is read through a LATERAL probe of the moves
+// primary key, so the summary costs one index lookup per game rather than a
+// move count over the whole line.
 func (s *Store) QueryGamesForUser(userID string, limit, offset int) ([]GameSummaryRecord, error) {
-	if userID == "" || limit < 1 || limit > 101 || offset < 0 {
-		return nil, errors.New("user ID, limit from 1 to 101, and non-negative offset are required")
+	if userID == "" || limit < 1 || limit > MaxUserGamesPage || offset < 0 {
+		return nil, fmt.Errorf("user ID, limit from 1 to %d, and non-negative offset are required",
+			MaxUserGamesPage)
+	}
+	if !validUUID(userID) {
+		return []GameSummaryRecord{}, nil
 	}
 	if err := s.flushBeforeRead(); err != nil {
 		return nil, err
 	}
 	started := time.Now()
-	query := `SELECT ` + gameSelectColumns + `,
-		(SELECT COUNT(*) FROM moves m WHERE m.game_id = g.game_id) AS move_count
+	const query = `SELECT ` + gameSelectColumns + `,
+		COALESCE(last.move_number, 0), COALESCE(last.fen_after_move, g.initial_fen)
 		FROM games g
-		WHERE g.white_player_id = ? OR g.black_player_id = ?
-			OR g.white_claimed_by = ? OR g.black_claimed_by = ?
+		LEFT JOIN LATERAL (
+			SELECT m.move_number, m.fen_after_move FROM moves m
+			WHERE m.game_id = g.game_id
+			ORDER BY m.move_number DESC
+			LIMIT 1
+		) last ON true
+		WHERE g.white_claimed_by = $1 OR g.black_claimed_by = $1
 		ORDER BY g.start_time_utc DESC, g.game_id DESC
-		LIMIT ? OFFSET ?`
-	rows, err := s.db.Query(query, userID, userID, userID, userID, limit, offset)
+		LIMIT $2 OFFSET $3`
+	ctx, cancel := opContext()
+	defer cancel()
+	rows, err := s.db.QueryContext(ctx, query, userID, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("query user games: %w", err)
 	}
@@ -364,7 +335,7 @@ func (s *Store) QueryGamesForUser(userID string, limit, offset int) ([]GameSumma
 	games := make([]GameSummaryRecord, 0)
 	for rows.Next() {
 		var summary GameSummaryRecord
-		if err := scanGameSummary(rows, &summary); err != nil {
+		if err := scanGame(rows, &summary.GameRecord, &summary.MoveCount, &summary.FinalFEN); err != nil {
 			return nil, fmt.Errorf("scan user game: %w", err)
 		}
 		games = append(games, summary)
@@ -386,45 +357,24 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-func scanGame(scanner rowScanner, record *GameRecord) error {
+// scanGame scans gameSelectColumns followed by any extra destinations.
+func scanGame(scanner rowScanner, record *GameRecord, extra ...any) error {
 	var whiteClaimed, blackClaimed, result sql.NullString
 	var endTime sql.NullTime
-	if err := scanner.Scan(
+	dest := []any{
 		&record.GameID, &record.InitialFEN,
 		&record.WhitePlayerID, &record.WhiteType, &record.WhiteLevel, &record.WhiteSearchTime, &whiteClaimed,
 		&record.BlackPlayerID, &record.BlackType, &record.BlackLevel, &record.BlackSearchTime, &blackClaimed,
 		&result, &record.StartTimeUTC, &endTime,
-	); err != nil {
+	}
+	if err := scanner.Scan(append(dest, extra...)...); err != nil {
 		return err
 	}
 	record.WhiteClaimedBy = whiteClaimed.String
 	record.BlackClaimedBy = blackClaimed.String
 	record.Result = result.String
-	if endTime.Valid {
-		ended := endTime.Time
-		record.EndTimeUTC = &ended
-	}
-	return nil
-}
-
-func scanGameSummary(scanner rowScanner, summary *GameSummaryRecord) error {
-	var whiteClaimed, blackClaimed, result sql.NullString
-	var endTime sql.NullTime
-	if err := scanner.Scan(
-		&summary.GameID, &summary.InitialFEN,
-		&summary.WhitePlayerID, &summary.WhiteType, &summary.WhiteLevel, &summary.WhiteSearchTime, &whiteClaimed,
-		&summary.BlackPlayerID, &summary.BlackType, &summary.BlackLevel, &summary.BlackSearchTime, &blackClaimed,
-		&result, &summary.StartTimeUTC, &endTime, &summary.MoveCount,
-	); err != nil {
-		return err
-	}
-	summary.WhiteClaimedBy = whiteClaimed.String
-	summary.BlackClaimedBy = blackClaimed.String
-	summary.Result = result.String
-	if endTime.Valid {
-		ended := endTime.Time
-		summary.EndTimeUTC = &ended
-	}
+	record.StartTimeUTC = record.StartTimeUTC.UTC()
+	record.EndTimeUTC = utcPointer(endTime)
 	return nil
 }
 
@@ -437,13 +387,6 @@ func requireOneGame(result sql.Result, gameID string) error {
 		return fmt.Errorf("game %s was not updated", gameID)
 	}
 	return nil
-}
-
-func nullableString(value string) any {
-	if value == "" {
-		return nil
-	}
-	return value
 }
 
 func isValidResult(result string) bool {

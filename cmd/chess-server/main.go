@@ -41,7 +41,7 @@ func main() {
 		apiHost     = flag.String("api-host", "localhost", "API server host")
 		apiPort     = flag.Int("api-port", 8080, "API server port")
 		dev         = flag.Bool("dev", false, "Development mode (relaxed rate limits)")
-		storagePath = flag.String("storage-path", "", "Path to SQLite database file (disables persistence if empty)")
+		dsn         = flag.String("dsn", os.Getenv("CHESS_DSN"), "PostgreSQL connection string (default $CHESS_DSN; persistence is disabled if empty)")
 		pidPath     = flag.String("pid", "", "Optional path to write PID file")
 		pidLock     = flag.Bool("pid-lock", false, "Lock PID file to allow only one instance (requires -pid)")
 		logLevel    = flag.String("log-level", "info", "Log level: debug, info, warn, or error")
@@ -88,12 +88,13 @@ func main() {
 		log.Printf("PID file created at: %s (lock: %v)", *pidPath, *pidLock)
 	}
 
-	// 1. Initialize Storage (optional)
+	// 1. Initialize Storage (optional). The DSN is never logged: it may carry a
+	// password when peer or .pgpass authentication is not used.
 	var store *storage.Store
-	if *storagePath != "" {
-		log.Printf("Initializing persistent storage at: %s", *storagePath)
+	if *dsn != "" {
+		log.Printf("Initializing PostgreSQL storage")
 		var err error
-		store, err = storage.NewStore(*storagePath, *dev)
+		store, err = storage.NewStore(*dsn)
 		if err != nil {
 			log.Fatalf("Failed to initialize storage: %v", err)
 		}
@@ -101,7 +102,7 @@ func main() {
 			log.Fatalf("Failed to initialize schema: %v", err)
 		}
 	} else {
-		log.Printf("Persistent storage disabled (use -storage-path to enable)")
+		log.Printf("Persistent storage disabled (use -dsn or CHESS_DSN to enable)")
 	}
 
 	// JWT secret management
@@ -157,8 +158,8 @@ func main() {
 		} else {
 			log.Printf("Rate Limit: 10 requests/second per IP")
 		}
-		if *storagePath != "" {
-			log.Printf("Storage: Enabled (%s)", *storagePath)
+		if store != nil {
+			log.Printf("Storage: Enabled (PostgreSQL)")
 		} else {
 			log.Printf("Storage: Disabled (auth features unavailable)")
 		}
