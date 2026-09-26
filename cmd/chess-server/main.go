@@ -46,6 +46,8 @@ func main() {
 		pidLock     = flag.Bool("pid-lock", false, "Lock PID file to allow only one instance (requires -pid)")
 		logLevel    = flag.String("log-level", "info", "Log level: debug, info, warn, or error")
 		logHTTP     = flag.Bool("log-http", true, "Log HTTP requests")
+		proxies     = flag.String("trusted-proxies", "", "Comma-separated reverse-proxy IPs/CIDRs whose -proxy-header is trusted for client IPs")
+		proxyHeader = flag.String("proxy-header", "X-Real-IP", "Header carrying the client IP from a trusted proxy")
 		finishedTTL = flag.Duration("finished-game-ttl", service.FinishedGameTTL, "How long completed games remain in memory (0 disables eviction)")
 		jwtFile     = flag.String("jwt-secret-file", os.Getenv("CHESS_JWT_SECRET_FILE"), "File holding a stable JWT signing key, mode 0600, at least 32 bytes (default $CHESS_JWT_SECRET_FILE)")
 
@@ -73,6 +75,11 @@ func main() {
 	// slog.SetDefault bridges the standard logger through the structured
 	// handler. Avoid embedding a second timestamp inside its message.
 	log.SetFlags(0)
+
+	trustedProxies, err := parseTrustedProxies(*proxies)
+	if err != nil {
+		log.Fatalf("Invalid -trusted-proxies: %v", err)
+	}
 
 	// Validate PID flags
 	if *pidLock && *pidPath == "" {
@@ -151,7 +158,12 @@ func main() {
 	}
 
 	// 4. Initialize the Fiber App/HTTP Handler, injecting processor and service
-	app := http.NewFiberApp(proc, svc, *dev, *logHTTP)
+	app := http.NewFiberApp(proc, svc, http.Options{
+		DevMode:        *dev,
+		LogRequests:    *logHTTP,
+		TrustedProxies: trustedProxies,
+		ProxyHeader:    *proxyHeader,
+	})
 
 	// API Server configuration
 	apiAddr := fmt.Sprintf("%s:%d", *apiHost, *apiPort)
@@ -166,6 +178,11 @@ func main() {
 			log.Printf("Rate Limit: 20 requests/second per IP (DEV MODE)")
 		} else {
 			log.Printf("Rate Limit: 10 requests/second per IP")
+		}
+		if len(trustedProxies) > 0 {
+			log.Printf("Client IP: %s from trusted proxies %v", *proxyHeader, trustedProxies)
+		} else {
+			log.Printf("Client IP: TCP peer (behind a reverse proxy, set -trusted-proxies or all clients share one rate limit)")
 		}
 		if store != nil {
 			log.Printf("Storage: Enabled (PostgreSQL)")

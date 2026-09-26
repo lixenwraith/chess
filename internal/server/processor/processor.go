@@ -531,25 +531,6 @@ func (p *Processor) triggerComputerMove(gameID string, g game.View) error {
 	})
 }
 
-// determineGameEndState centralized function to determine game end state based on engine evaluation
-func (p *Processor) determineGameEndState(lastMoveBy core.Color, searchResult *engine.SearchResult) core.State {
-	// No legal moves detected
-	if searchResult.BestMove == "" || searchResult.BestMove == "(none)" {
-		if searchResult.IsMate {
-			// It's a checkmate - the side that just moved wins
-			if lastMoveBy == core.ColorWhite {
-				return core.StateWhiteWins
-			}
-			return core.StateBlackWins
-		}
-		// Stalemate - no legal moves but not in check
-		return core.StateStalemate
-	}
-
-	// Game continues
-	return core.StateOngoing
-}
-
 // classifyCurrentLocked classifies whatever position is loaded in the
 // validation engine. Caller holds p.mu, immediately after a SetPosition.
 func (p *Processor) classifyCurrentLocked() (fen string, state core.State, err error) {
@@ -583,26 +564,6 @@ func (p *Processor) classifyLocked(fen string) (string, core.State, error) {
 		return "", core.StateOngoing, err
 	}
 	return p.classifyCurrentLocked()
-}
-
-// checkGameEnd: retry once (second attempt runs on a respawned process), then
-// fail SAFE to StateStuck. Leaving a possibly-terminal position Ongoing is the
-// original bug class; Stuck is now recoverable via undo (see handleUndoMove).
-func (p *Processor) checkGameEnd(gameID, fen string) {
-	for attempt := 0; attempt < 2; attempt++ {
-		p.mu.Lock()
-		_, state, err := p.classifyLocked(fen)
-		p.mu.Unlock()
-		if err == nil {
-			if state != core.StateOngoing {
-				p.svc.UpdateGameState(gameID, state)
-			}
-			return
-		}
-		slog.Warn("game end-state check failed",
-			"game_id", gameID, "attempt", attempt+1, "error", err)
-	}
-	p.svc.UpdateGameState(gameID, core.StateStuck)
 }
 
 // buildGameResponse constructs standard game response

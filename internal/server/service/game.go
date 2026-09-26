@@ -302,20 +302,6 @@ func (s *Service) UpdateGameState(gameID string, state core.State) error {
 	return nil
 }
 
-// SetLastMoveResult stores metadata about the last move
-func (s *Service) SetLastMoveResult(gameID string, result *game.MoveResult) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	g, ok := s.games[gameID]
-	if !ok {
-		return fmt.Errorf("%w: %s", ErrGameNotFound, gameID)
-	}
-
-	g.SetLastResult(result)
-	return nil
-}
-
 // UndoMoves removes the specified number of moves from game history
 func (s *Service) UndoMoves(gameID string, count int) error {
 	s.mu.Lock()

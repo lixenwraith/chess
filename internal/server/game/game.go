@@ -133,10 +133,6 @@ func (g *Game) SetLastResult(result *MoveResult) {
 	g.lastResult = &copy
 }
 
-func (g *Game) LastResult() *MoveResult {
-	return g.lastResult
-}
-
 // CurrentSnapshot returns the latest game snapshot
 func (g *Game) CurrentSnapshot() Snapshot {
 	return g.snapshots[len(g.snapshots)-1]
@@ -217,10 +213,6 @@ func (g *Game) State() core.State {
 	return g.state
 }
 
-func (g *Game) SetState(s core.State) {
-	g.SetStateAt(s, time.Now().UTC())
-}
-
 func (g *Game) SetStateAt(s core.State, at time.Time) {
 	if s.IsTerminal() {
 		if !g.state.IsTerminal() || g.endTimeUTC == nil {
@@ -276,11 +268,6 @@ func (g *Game) GetSlotOwner(color core.Color) string {
 		return ""
 	}
 	return player.ClaimedBy
-}
-
-// IsSlotClaimedBy checks if a specific user owns the slot
-func (g *Game) IsSlotClaimedBy(color core.Color, userID string) bool {
-	return g.GetSlotOwner(color) == userID
 }
 
 // HasComputerPlayer returns true if at least one player is computer

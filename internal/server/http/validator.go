@@ -96,7 +96,13 @@ func validationMiddleware(c *fiber.Ctx) error {
 	return c.Next()
 }
 
+// isValidUUID accepts only the canonical 36-character form the server issues.
+// uuid.Parse also accepts braced, URN, and unhyphenated forms, which never
+// match an in-memory game and are rejected by the database's uuid input.
 func isValidUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
 	_, err := uuid.Parse(s)
 	return err == nil
 }

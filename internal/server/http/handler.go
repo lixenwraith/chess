@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"chess/internal/server/core"
@@ -30,21 +29,58 @@ func NewHTTPHandler(proc *processor.Processor, svc *service.Service) *HTTPHandle
 	return &HTTPHandler{proc: proc, svc: svc}
 }
 
-func NewFiberApp(proc *processor.Processor, svc *service.Service, devMode, logRequests bool) *fiber.App {
-	// Create handler
-	h := NewHTTPHandler(proc, svc)
+// Options configures the API application.
+type Options struct {
+	DevMode     bool
+	LogRequests bool
+	// TrustedProxies lists reverse-proxy IPs or CIDRs whose ProxyHeader value
+	// is the client address. Empty means the TCP peer is the client.
+	TrustedProxies []string
+	// ProxyHeader names a single-address header the proxy overwrites, such as
+	// X-Real-IP (nginx: proxy_set_header X-Real-IP $remote_addr). Avoid
+	// X-Forwarded-For: its first entry is supplied by the client.
+	ProxyHeader string
+}
 
-	// Initialize Fiber app
-	app := fiber.New(fiber.Config{
+// appConfig returns the Fiber configuration. Client-IP resolution only honors
+// ProxyHeader on connections from a trusted proxy, so rate-limit keys cannot be
+// chosen by a client that reaches the API directly.
+func appConfig(opts Options) fiber.Config {
+	config := fiber.Config{
 		ErrorHandler: customErrorHandler,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 35 * time.Second,
 		IdleTimeout:  60 * time.Second,
-	})
+	}
+	if len(opts.TrustedProxies) > 0 && opts.ProxyHeader != "" {
+		config.EnableTrustedProxyCheck = true
+		config.TrustedProxies = opts.TrustedProxies
+		config.ProxyHeader = opts.ProxyHeader
+		config.EnableIPValidation = true
+	}
+	return config
+}
+
+// clientIP is the rate-limit key: the proxy-reported address from a trusted
+// proxy, otherwise the TCP peer.
+func clientIP(c *fiber.Ctx) string {
+	if ip := c.IP(); ip != "" {
+		return ip
+	}
+	return c.Context().RemoteIP().String()
+}
+
+func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) *fiber.App {
+	// Create handler
+	h := NewHTTPHandler(proc, svc)
+	devMode := opts.DevMode
+
+	// Initialize Fiber app
+	app := fiber.New(appConfig(opts))
 
 	// Global middleware (order matters)
 	app.Use(recover.New())
-	if logRequests {
+	if opts.LogRequests {
 		app.Use(logger.New(logger.Config{
 			Format:     "${time} HTTP ${status} ${method} ${path} ${latency}\n",
 			TimeFormat: time.RFC3339,
@@ -68,11 +104,9 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, devMode, logRe
 
 	// Register: 5 req/min per IP
 	auth.Post("/register", limiter.New(limiter.Config{
-		Max:        5,
-		Expiration: 1 * time.Minute,
-		KeyGenerator: func(c *fiber.Ctx) string {
-			return c.IP()
-		},
+		Max:          5,
+		Expiration:   1 * time.Minute,
+		KeyGenerator: clientIP,
 		LimitReached: func(c *fiber.Ctx) error {
 			return c.Status(fiber.StatusTooManyRequests).JSON(core.ErrorResponse{
 				Error:   "rate limit exceeded",
@@ -84,11 +118,9 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, devMode, logRe
 
 	// Login: 10 req/min per IP
 	auth.Post("/login", limiter.New(limiter.Config{
-		Max:        10,
-		Expiration: 1 * time.Minute,
-		KeyGenerator: func(c *fiber.Ctx) string {
-			return c.IP()
-		},
+		Max:          10,
+		Expiration:   1 * time.Minute,
+		KeyGenerator: clientIP,
 		LimitReached: func(c *fiber.Ctx) error {
 			return c.Status(fiber.StatusTooManyRequests).JSON(core.ErrorResponse{
 				Error:   "rate limit exceeded",
@@ -113,17 +145,9 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, devMode, logRe
 		maxReq = rateLimitRate * 2
 	}
 	api.Use(limiter.New(limiter.Config{
-		Max:        maxReq,
-		Expiration: 1 * time.Second,
-		KeyGenerator: func(c *fiber.Ctx) string {
-			if xff := c.Get("X-Forwarded-For"); xff != "" {
-				if idx := strings.Index(xff, ","); idx != -1 {
-					return strings.TrimSpace(xff[:idx])
-				}
-				return xff
-			}
-			return c.IP()
-		},
+		Max:          maxReq,
+		Expiration:   1 * time.Second,
+		KeyGenerator: clientIP,
 		LimitReached: func(c *fiber.Ctx) error {
 			return c.Status(fiber.StatusTooManyRequests).JSON(core.ErrorResponse{
 				Error:   "rate limit exceeded",
