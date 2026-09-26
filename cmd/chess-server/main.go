@@ -41,7 +41,7 @@ func main() {
 		apiHost     = flag.String("api-host", "localhost", "API server host")
 		apiPort     = flag.Int("api-port", 8080, "API server port")
 		dev         = flag.Bool("dev", false, "Development mode (relaxed rate limits)")
-		dsn         = flag.String("dsn", os.Getenv("CHESS_DSN"), "PostgreSQL connection string (default $CHESS_DSN; persistence is disabled if empty)")
+		dsn         = flag.String("dsn", "", "PostgreSQL connection string (default $CHESS_DSN; persistence is disabled if empty)")
 		pidPath     = flag.String("pid", "", "Optional path to write PID file")
 		pidLock     = flag.Bool("pid-lock", false, "Lock PID file to allow only one instance (requires -pid)")
 		logLevel    = flag.String("log-level", "info", "Log level: debug, info, warn, or error")
@@ -49,7 +49,7 @@ func main() {
 		proxies     = flag.String("trusted-proxies", "", "Comma-separated reverse-proxy IPs/CIDRs whose -proxy-header is trusted for client IPs")
 		proxyHeader = flag.String("proxy-header", "X-Real-IP", "Header carrying the client IP from a trusted proxy")
 		finishedTTL = flag.Duration("finished-game-ttl", service.FinishedGameTTL, "How long completed games remain in memory (0 disables eviction)")
-		jwtFile     = flag.String("jwt-secret-file", os.Getenv("CHESS_JWT_SECRET_FILE"), "File holding a stable JWT signing key, mode 0600, at least 32 bytes (default $CHESS_JWT_SECRET_FILE)")
+		jwtFile     = flag.String("jwt-secret-file", "", "File holding a stable JWT signing key, mode 0600, at least 32 bytes (default $CHESS_JWT_SECRET_FILE)")
 
 		// Web UI server flags
 		serve     = flag.Bool("serve", false, "Enable web UI server")
@@ -58,6 +58,14 @@ func main() {
 		webAPIURL = flag.String("web-api-url", "", "Browser-visible API base URL (defaults to the API listen address)")
 	)
 	flag.Parse()
+	// Environment fallbacks are applied after parsing so -h never prints a
+	// DSN, which may contain a password.
+	if *dsn == "" {
+		*dsn = os.Getenv("CHESS_DSN")
+	}
+	if *jwtFile == "" {
+		*jwtFile = os.Getenv("CHESS_JWT_SECRET_FILE")
+	}
 
 	var level slog.Level
 	if err := level.UnmarshalText([]byte(*logLevel)); err != nil {

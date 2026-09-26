@@ -43,16 +43,20 @@ func Run(args []string) error {
 	}
 }
 
-// newFlagSet returns a flag set with the shared -dsn flag. The DSN defaults to
-// $CHESS_DSN so a password-bearing DSN need not appear in process arguments.
+// newFlagSet returns a flag set with the shared -dsn flag. An empty -dsn falls
+// back to $CHESS_DSN (in openStore, so usage output never prints it), which
+// keeps a password-bearing DSN out of process arguments.
 func newFlagSet(name string) (*flag.FlagSet, *string) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	dsn := fs.String("dsn", os.Getenv(dsnEnv), "PostgreSQL connection string (default $"+dsnEnv+")")
+	dsn := fs.String("dsn", "", "PostgreSQL connection string (default $"+dsnEnv+")")
 	return fs, dsn
 }
 
 // openStore connects and, unless migrating, verifies the schema is current.
 func openStore(dsn string, requireSchema bool) (*storage.Store, error) {
+	if dsn == "" {
+		dsn = os.Getenv(dsnEnv)
+	}
 	if dsn == "" {
 		return nil, fmt.Errorf("database connection required: use -dsn or %s", dsnEnv)
 	}
