@@ -263,8 +263,10 @@ outlives deleted accounts, and the name snapshot keeps it readable.
   database 24 hours after their last activity (`-anonymous-game-ttl`). The
   hourly cleanup evicts idle games first, then queues the delete through the
   ordered writer while excluding every game still loaded, so no live game can
-  lose its row. See [`deploy/postgresql`](../deploy/postgresql) for
-provisioning and the one-time SQLite import.
+  lose its row.
+
+See [`deploy/postgresql`](../deploy/postgresql) for provisioning and
+[deployment.md](./deployment.md) for the jail service.
 
 ## Security Architecture
 

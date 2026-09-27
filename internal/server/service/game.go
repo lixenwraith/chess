@@ -196,7 +196,7 @@ func (s *Service) GenerateGameID() string {
 
 // ApplyMoveWithState verifies that the position validated by the processor is
 // still current, then commits the move, optional first-move claim, and result as
-// one in-memory transition and one SQLite transaction.
+// one in-memory transition and one database transaction.
 func (s *Service) ApplyMoveWithState(gameID string, commit MoveCommit) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
