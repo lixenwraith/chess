@@ -18,6 +18,8 @@ import (
 	"golang.org/x/term"
 )
 
+const dsnEnv = "CHESS_DSN"
+
 // Run is the entry point for the CLI mini-app
 func Run(args []string) error {
 	if len(args) == 0 {
@@ -41,74 +43,94 @@ func Run(args []string) error {
 	}
 }
 
-func runInit(args []string) error {
-	fs := flag.NewFlagSet("init", flag.ContinueOnError)
-	path := fs.String("path", "", "Database file path (required)")
+// newFlagSet returns a flag set with the shared -dsn flag. An empty -dsn falls
+// back to $CHESS_DSN (in openStore, so usage output never prints it), which
+// keeps a password-bearing DSN out of process arguments.
+func newFlagSet(name string) (*flag.FlagSet, *string) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	dsn := fs.String("dsn", "", "PostgreSQL connection string (default $"+dsnEnv+")")
+	return fs, dsn
+}
 
+// openStore connects and, unless migrating, verifies the schema is current.
+func openStore(dsn string, requireSchema bool) (*storage.Store, error) {
+	if dsn == "" {
+		dsn = os.Getenv(dsnEnv)
+	}
+	if dsn == "" {
+		return nil, fmt.Errorf("database connection required: use -dsn or %s", dsnEnv)
+	}
+	store, err := storage.NewStore(dsn)
+	if err != nil {
+		return nil, err
+	}
+	if requireSchema {
+		if err := store.CheckSchema(); err != nil {
+			store.Close()
+			return nil, err
+		}
+	}
+	return store, nil
+}
+
+func runInit(args []string) error {
+	fs, dsn := newFlagSet("init")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	if *path == "" {
-		return fmt.Errorf("database path required")
-	}
-
-	store, err := storage.NewStore(*path, false)
+	store, err := openStore(*dsn, false)
 	if err != nil {
-		return fmt.Errorf("failed to create store: %w", err)
+		return err
 	}
 	defer store.Close()
 
 	if err := store.InitDB(); err != nil {
 		return fmt.Errorf("failed to initialize database: %w", err)
 	}
-
-	fmt.Printf("Database initialized at: %s\n", *path)
+	version, err := store.SchemaVersion()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Database schema ready (version %d)\n", version)
 	return nil
 }
 
 func runDelete(args []string) error {
-	fs := flag.NewFlagSet("delete", flag.ContinueOnError)
-	path := fs.String("path", "", "Database file path (required)")
-
+	fs, dsn := newFlagSet("delete")
+	confirm := fs.Bool("confirm", false, "Confirm dropping all chess tables and data")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-
-	if *path == "" {
-		return fmt.Errorf("database path required")
+	if !*confirm {
+		return fmt.Errorf("refusing to drop all chess tables without -confirm")
 	}
 
-	store, err := storage.NewStore(*path, false)
+	store, err := openStore(*dsn, false)
 	if err != nil {
-		return fmt.Errorf("failed to open store: %w", err)
+		return err
 	}
+	defer store.Close()
 
-	if err := store.DeleteDB(); err != nil {
-		return fmt.Errorf("failed to delete database: %w", err)
+	// ☣ DESTRUCTIVE: drops every chess table in the connection's search_path
+	if err := store.DropSchema(); err != nil {
+		return err
 	}
-
-	fmt.Printf("Database deleted: %s\n", *path)
+	fmt.Println("Chess tables dropped")
 	return nil
 }
 
 func runQuery(args []string) error {
-	fs := flag.NewFlagSet("query", flag.ContinueOnError)
-	path := fs.String("path", "", "Database file path (required)")
+	fs, dsn := newFlagSet("query")
 	gameID := fs.String("gameId", "", "Game ID to filter (optional, * for all)")
-	playerID := fs.String("playerId", "", "Player ID to filter (optional, * for all)")
-
+	playerID := fs.String("playerId", "", "Player or user ID to filter (optional, * for all)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	if *path == "" {
-		return fmt.Errorf("database path required")
-	}
-
-	store, err := storage.NewStore(*path, false)
+	store, err := openStore(*dsn, true)
 	if err != nil {
-		return fmt.Errorf("failed to open store: %w", err)
+		return err
 	}
 	defer store.Close()
 
@@ -189,107 +211,86 @@ func runUser(subcommand string, args []string) error {
 	}
 }
 
+// readPassword prompts on the terminal without echo.
+func readPassword(prompt string) (string, error) {
+	fmt.Print(prompt)
+	pwBytes, err := term.ReadPassword(int(syscall.Stdin))
+	fmt.Println()
+	if err != nil {
+		return "", fmt.Errorf("failed to read password: %w", err)
+	}
+	return string(pwBytes), nil
+}
+
+func hashPassword(password string) (string, error) {
+	if len(password) < 8 {
+		return "", fmt.Errorf("password must be at least 8 characters")
+	}
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		return "", fmt.Errorf("failed to hash password: %w", err)
+	}
+	return hash, nil
+}
+
 func runUserAdd(args []string) error {
-	fs := flag.NewFlagSet("user add", flag.ContinueOnError)
-	path := fs.String("path", "", "Database file path (required)")
+	fs, dsn := newFlagSet("user add")
 	username := fs.String("username", "", "Username (required)")
 	email := fs.String("email", "", "Email address (optional)")
 	password := fs.String("password", "", "Password (optional, will prompt if not provided)")
 	hash := fs.String("hash", "", "Pre-computed password hash (optional)")
 	interactive := fs.Bool("interactive", false, "Interactive password prompt")
-	temp := fs.Bool("temp", false, "Create as temporary user (24h TTL, default: permanent)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-
-	if *path == "" {
-		return fmt.Errorf("database path required")
-	}
 	if *username == "" {
 		return fmt.Errorf("username required")
 	}
-
-	// Validate password/hash options
 	if *password != "" && *hash != "" {
 		return fmt.Errorf("cannot specify both -password and -hash")
 	}
 
 	var passwordHash string
-
-	if *interactive {
+	switch {
+	case *interactive:
 		if *password != "" || *hash != "" {
 			return fmt.Errorf("cannot use -interactive with -password or -hash")
 		}
-		fmt.Print("Enter password: ")
-		pwBytes, err := term.ReadPassword(syscall.Stdin)
-		fmt.Println()
+		entered, err := readPassword("Enter password: ")
 		if err != nil {
-			return fmt.Errorf("failed to read password: %w", err)
+			return err
 		}
-		if len(pwBytes) < 8 {
-			return fmt.Errorf("password must be at least 8 characters")
+		if passwordHash, err = hashPassword(entered); err != nil {
+			return err
 		}
-
-		// Hash password (Argon2)
-		passwordHash, err = auth.HashPassword(string(pwBytes))
-		if err != nil {
-			return fmt.Errorf("failed to hash password: %w", err)
+	case *hash != "":
+		if err := auth.ValidatePHCHashFormat(*hash); err != nil {
+			return fmt.Errorf("invalid hash format: %w", err)
 		}
-	} else if *hash != "" {
 		passwordHash = *hash
-	} else if *password != "" {
-		if len(*password) < 8 {
-			return fmt.Errorf("password must be at least 8 characters")
-		}
-		// Hash password (Argon2)
+	case *password != "":
 		var err error
-		passwordHash, err = auth.HashPassword(*password)
-		if err != nil {
-			return fmt.Errorf("failed to hash password: %w", err)
+		if passwordHash, err = hashPassword(*password); err != nil {
+			return err
 		}
-	} else {
+	default:
 		return fmt.Errorf("password required: use -password, -hash, or -interactive")
 	}
 
-	store, err := storage.NewStore(*path, false)
+	store, err := openStore(*dsn, true)
 	if err != nil {
-		return fmt.Errorf("failed to open store: %w", err)
+		return err
 	}
 	defer store.Close()
 
-	// Generate user ID with conflict check
-	var userID string
-	for attempts := 0; attempts < 10; attempts++ {
-		userID = uuid.New().String()
-		if _, err := store.GetUserByID(userID); errors.Is(err, sql.ErrNoRows) {
-			// User doesn't exist, ID is unique
-			break
-		} else if err != nil {
-			return fmt.Errorf("failed to check generated user ID: %w", err)
-		}
-		if attempts == 9 {
-			return fmt.Errorf("failed to generate unique user ID after 10 attempts")
-		}
-	}
-
-	// Determine account type (CLI default = permanent)
-	accountType := "permanent"
-	var expiresAt *time.Time
-	if *temp {
-		accountType = "temp"
-		expiry := time.Now().UTC().Add(24 * time.Hour)
-		expiresAt = &expiry
-	}
-
+	userID := uuid.NewString()
 	record := storage.UserRecord{
 		UserID:       userID,
 		Username:     strings.ToLower(*username),
 		Email:        strings.ToLower(*email),
 		PasswordHash: passwordHash,
-		AccountType:  accountType,
 		CreatedAt:    time.Now().UTC(),
-		ExpiresAt:    expiresAt,
 	}
 
 	if err := store.CreateUser(record); err != nil {
@@ -298,50 +299,59 @@ func runUserAdd(args []string) error {
 
 	fmt.Printf("User created successfully:\n")
 	fmt.Printf("  ID: %s\n", userID)
-	fmt.Printf("  Username: %s\n", *username)
-	if *email != "" {
-		fmt.Printf("  Email: %s\n", *email)
+	fmt.Printf("  Username: %s\n", record.Username)
+	if record.Email != "" {
+		fmt.Printf("  Email: %s\n", record.Email)
 	}
 	return nil
 }
 
+// lookupUser resolves -username or -id to a user ID.
+func lookupUser(store *storage.Store, username, userID string) (string, error) {
+	switch {
+	case username == "" && userID == "":
+		return "", fmt.Errorf("either -username or -id required")
+	case username != "" && userID != "":
+		return "", fmt.Errorf("specify either -username or -id, not both")
+	case userID != "":
+		if _, err := store.GetUserByID(userID); err != nil {
+			return "", userLookupError(userID, err)
+		}
+		return userID, nil
+	default:
+		user, err := store.GetUserByUsername(username)
+		if err != nil {
+			return "", userLookupError(username, err)
+		}
+		return user.UserID, nil
+	}
+}
+
+func userLookupError(identifier string, err error) error {
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("user not found: %s", identifier)
+	}
+	return fmt.Errorf("failed to look up user %s: %w", identifier, err)
+}
+
 func runUserDelete(args []string) error {
-	fs := flag.NewFlagSet("user delete", flag.ContinueOnError)
-	path := fs.String("path", "", "Database file path (required)")
+	fs, dsn := newFlagSet("user delete")
 	username := fs.String("username", "", "Username to delete")
 	userID := fs.String("id", "", "User ID to delete")
-
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	if *path == "" {
-		return fmt.Errorf("database path required")
-	}
-	if *username == "" && *userID == "" {
-		return fmt.Errorf("either -username or -id required")
-	}
-	if *username != "" && *userID != "" {
-		return fmt.Errorf("specify either -username or -id, not both")
-	}
-
-	store, err := storage.NewStore(*path, false)
+	store, err := openStore(*dsn, true)
 	if err != nil {
-		return fmt.Errorf("failed to open store: %w", err)
+		return err
 	}
 	defer store.Close()
 
-	var targetID string
-	if *userID != "" {
-		targetID = *userID
-	} else {
-		user, err := store.GetUserByUsername(*username)
-		if err != nil {
-			return fmt.Errorf("user not found: %s", *username)
-		}
-		targetID = user.UserID
+	targetID, err := lookupUser(store, *username, *userID)
+	if err != nil {
+		return err
 	}
-
 	if err := store.DeleteUser(targetID); err != nil {
 		return fmt.Errorf("failed to delete user: %w", err)
 	}
@@ -351,65 +361,49 @@ func runUserDelete(args []string) error {
 }
 
 func runUserSetPassword(args []string) error {
-	fs := flag.NewFlagSet("user set-password", flag.ContinueOnError)
-	path := fs.String("path", "", "Database file path (required)")
+	fs, dsn := newFlagSet("user set-password")
 	username := fs.String("username", "", "Username (required)")
 	password := fs.String("password", "", "New password")
 	interactive := fs.Bool("interactive", false, "Interactive password prompt")
-
 	if err := fs.Parse(args); err != nil {
 		return err
-	}
-
-	if *path == "" {
-		return fmt.Errorf("database path required")
 	}
 	if *username == "" {
 		return fmt.Errorf("username required")
 	}
 
 	var newPassword string
-	if *interactive {
+	switch {
+	case *interactive:
 		if *password != "" {
 			return fmt.Errorf("cannot use -interactive with -password")
 		}
-		fmt.Print("Enter new password: ")
-		pwBytes, err := term.ReadPassword(int(syscall.Stdin))
-		fmt.Println()
+		entered, err := readPassword("Enter new password: ")
 		if err != nil {
-			return fmt.Errorf("failed to read password: %w", err)
+			return err
 		}
-		newPassword = string(pwBytes)
-	} else if *password != "" {
+		newPassword = entered
+	case *password != "":
 		newPassword = *password
-	} else {
+	default:
 		return fmt.Errorf("password required: use -password or -interactive")
 	}
-
-	if len(newPassword) < 8 {
-		return fmt.Errorf("password must be at least 8 characters")
+	passwordHash, err := hashPassword(newPassword)
+	if err != nil {
+		return err
 	}
 
-	store, err := storage.NewStore(*path, false)
+	store, err := openStore(*dsn, true)
 	if err != nil {
-		return fmt.Errorf("failed to open store: %w", err)
+		return err
 	}
 	defer store.Close()
 
-	// Get user
-	user, err := store.GetUserByUsername(*username)
+	targetID, err := lookupUser(store, *username, "")
 	if err != nil {
-		return fmt.Errorf("user not found: %s", *username)
+		return err
 	}
-
-	// Hash password (Argon2)
-	passwordHash, err := auth.HashPassword(newPassword)
-	if err != nil {
-		return fmt.Errorf("failed to hash password: %w", err)
-	}
-
-	// Update password
-	if err := store.UpdateUserPassword(user.UserID, passwordHash); err != nil {
+	if err := store.UpdateUserPassword(targetID, passwordHash); err != nil {
 		return fmt.Errorf("failed to update password: %w", err)
 	}
 
@@ -418,17 +412,11 @@ func runUserSetPassword(args []string) error {
 }
 
 func runUserSetHash(args []string) error {
-	fs := flag.NewFlagSet("user set-hash", flag.ContinueOnError)
-	path := fs.String("path", "", "Database file path (required)")
+	fs, dsn := newFlagSet("user set-hash")
 	username := fs.String("username", "", "Username (required)")
 	hash := fs.String("hash", "", "Password hash (required)")
-
 	if err := fs.Parse(args); err != nil {
 		return err
-	}
-
-	if *path == "" {
-		return fmt.Errorf("database path required")
 	}
 	if *username == "" {
 		return fmt.Errorf("username required")
@@ -436,25 +424,21 @@ func runUserSetHash(args []string) error {
 	if *hash == "" {
 		return fmt.Errorf("password hash required")
 	}
-
 	if err := auth.ValidatePHCHashFormat(*hash); err != nil {
 		return fmt.Errorf("invalid hash format: %w", err)
 	}
 
-	store, err := storage.NewStore(*path, false)
+	store, err := openStore(*dsn, true)
 	if err != nil {
-		return fmt.Errorf("failed to open store: %w", err)
+		return err
 	}
 	defer store.Close()
 
-	// Get user
-	user, err := store.GetUserByUsername(*username)
+	targetID, err := lookupUser(store, *username, "")
 	if err != nil {
-		return fmt.Errorf("user not found: %s", *username)
+		return err
 	}
-
-	// Update password hash directly
-	if err := store.UpdateUserPassword(user.UserID, *hash); err != nil {
+	if err := store.UpdateUserPassword(targetID, *hash); err != nil {
 		return fmt.Errorf("failed to update password hash: %w", err)
 	}
 
@@ -463,17 +447,11 @@ func runUserSetHash(args []string) error {
 }
 
 func runUserSetEmail(args []string) error {
-	fs := flag.NewFlagSet("user set-email", flag.ContinueOnError)
-	path := fs.String("path", "", "Database file path (required)")
+	fs, dsn := newFlagSet("user set-email")
 	username := fs.String("username", "", "Username (required)")
 	email := fs.String("email", "", "New email address (required)")
-
 	if err := fs.Parse(args); err != nil {
 		return err
-	}
-
-	if *path == "" {
-		return fmt.Errorf("database path required")
 	}
 	if *username == "" {
 		return fmt.Errorf("username required")
@@ -482,20 +460,17 @@ func runUserSetEmail(args []string) error {
 		return fmt.Errorf("email required")
 	}
 
-	store, err := storage.NewStore(*path, false)
+	store, err := openStore(*dsn, true)
 	if err != nil {
-		return fmt.Errorf("failed to open store: %w", err)
+		return err
 	}
 	defer store.Close()
 
-	// Get user
-	user, err := store.GetUserByUsername(*username)
+	targetID, err := lookupUser(store, *username, "")
 	if err != nil {
-		return fmt.Errorf("user not found: %s", *username)
+		return err
 	}
-
-	// Update email
-	if err := store.UpdateUserEmail(user.UserID, strings.ToLower(*email)); err != nil {
+	if err := store.UpdateUserEmail(targetID, *email); err != nil {
 		return fmt.Errorf("failed to update email: %w", err)
 	}
 
@@ -504,61 +479,46 @@ func runUserSetEmail(args []string) error {
 }
 
 func runUserSetUsername(args []string) error {
-	fs := flag.NewFlagSet("user set-username", flag.ContinueOnError)
-	path := fs.String("path", "", "Database file path (required)")
+	fs, dsn := newFlagSet("user set-username")
 	current := fs.String("current", "", "Current username (required)")
-	new := fs.String("new", "", "New username (required)")
-
+	newName := fs.String("new", "", "New username (required)")
 	if err := fs.Parse(args); err != nil {
 		return err
-	}
-
-	if *path == "" {
-		return fmt.Errorf("database path required")
 	}
 	if *current == "" {
 		return fmt.Errorf("current username required")
 	}
-	if *new == "" {
+	if *newName == "" {
 		return fmt.Errorf("new username required")
 	}
 
-	store, err := storage.NewStore(*path, false)
+	store, err := openStore(*dsn, true)
 	if err != nil {
-		return fmt.Errorf("failed to open store: %w", err)
+		return err
 	}
 	defer store.Close()
 
-	// Get user
-	user, err := store.GetUserByUsername(*current)
+	targetID, err := lookupUser(store, *current, "")
 	if err != nil {
-		return fmt.Errorf("user not found: %s", *current)
+		return err
 	}
-
-	// Update username
-	if err := store.UpdateUserUsername(user.UserID, strings.ToLower(*new)); err != nil {
+	if err := store.UpdateUserUsername(targetID, *newName); err != nil {
 		return fmt.Errorf("failed to update username: %w", err)
 	}
 
-	fmt.Printf("Username updated: %s -> %s\n", *current, *new)
+	fmt.Printf("Username updated: %s -> %s\n", *current, strings.ToLower(*newName))
 	return nil
 }
 
 func runUserList(args []string) error {
-	fs := flag.NewFlagSet("user list", flag.ContinueOnError)
-	path := fs.String("path", "", "Database file path (required)")
-
+	fs, dsn := newFlagSet("user list")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	if *path == "" {
-		return fmt.Errorf("database path required")
-	}
-
-	store, err := storage.NewStore(*path, false)
+	store, err := openStore(*dsn, true)
 	if err != nil {
-		return fmt.Errorf("failed to open store: %w", err)
+		return err
 	}
 	defer store.Close()
 
@@ -574,8 +534,8 @@ func runUserList(args []string) error {
 
 	// Print results in tabular format
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "User ID\tUsername\tType\tEmail\tCreated\tExpires\tLast Login")
-	fmt.Fprintln(w, strings.Repeat("-", 120))
+	fmt.Fprintln(w, "User ID\tUsername\tEmail\tCreated\tLast Login")
+	fmt.Fprintln(w, strings.Repeat("-", 100))
 
 	for _, u := range users {
 		lastLogin := "never"
@@ -586,17 +546,11 @@ func runUserList(args []string) error {
 		if email == "" {
 			email = "(none)"
 		}
-		expires := "never"
-		if u.ExpiresAt != nil {
-			expires = u.ExpiresAt.Format("2006-01-02 15:04")
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
 			abbreviateID(u.UserID),
 			u.Username,
-			u.AccountType,
 			email,
 			u.CreatedAt.Format("2006-01-02 15:04"),
-			expires,
 			lastLogin,
 		)
 	}

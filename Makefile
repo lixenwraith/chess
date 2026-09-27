@@ -10,8 +10,13 @@ GO := go
 GOROOT := $(shell go env GOROOT)
 GOFLAGS := -trimpath
 LDFLAGS := -s -w
-CGO_SERVER := CGO_ENABLED=1
-CGO_CLIENT := CGO_ENABLED=0
+# Both binaries are pure Go (pgx has no C dependency), so builds are static and
+# cross-compile without a C toolchain.
+CGO := CGO_ENABLED=0
+
+# PostgreSQL connection for run/db targets. Keyword/value or URL form; the
+# default uses the local Unix socket and peer authentication.
+CHESS_DSN ?= dbname=chess
 
 # Build info
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -40,22 +45,17 @@ all: build
 .PHONY: build
 build: server client
 
-# Build server only
+# Build server only. Phony: the Go build cache decides what is stale, so a
+# changed source file is never masked by an existing binary.
 .PHONY: server
-server: $(SERVER_BINARY)
-
-# Build server — CGO required for go-sqlite3
-$(SERVER_BINARY): $(BINARY_DIR)
-	$(CGO_SERVER) $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(SERVER_BINARY) $(SERVER_SOURCE)
+server: | $(BINARY_DIR)
+	$(CGO) $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(SERVER_BINARY) $(SERVER_SOURCE)
 	@echo "Built server: $(SERVER_BINARY)"
 
 # Build client only
 .PHONY: client
-client: $(CLIENT_BINARY)
-
-# Build client — pure Go, no CGO
-$(CLIENT_BINARY): $(BINARY_DIR)
-	$(CGO_CLIENT) $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(CLIENT_BINARY) $(CLIENT_SOURCE)
+client: | $(BINARY_DIR)
+	$(CGO) $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(CLIENT_BINARY) $(CLIENT_SOURCE)
 	@echo "Built client: $(CLIENT_BINARY)"
 
 # Create bin directory
@@ -66,7 +66,7 @@ $(BINARY_DIR):
 .PHONY: wasm
 wasm: $(WASM_DIR)
 	@echo "Building WASM client..."
-	$(CGO_CLIENT) GOOS=js GOARCH=wasm $(GO) build $(GOFLAGS) \
+	$(CGO) GOOS=js GOARCH=wasm $(GO) build $(GOFLAGS) \
 		-ldflags "$(LDFLAGS)" \
 		-o $(WASM_BINARY) $(CLIENT_SOURCE)
 	@cp "$(WASM_EXEC_SRC)" $(WASM_DIR)/
@@ -112,21 +112,28 @@ $(WASM_DIR):
 # Run server with default settings
 .PHONY: run-server
 run-server: server
-	$(SERVER_BINARY) -api-port 8080 -dev -storage-path db/chess.db
+	CHESS_DSN='$(CHESS_DSN)' $(SERVER_BINARY) -api-port 8080 -dev
 
 # Run server with web UI
 .PHONY: run-server-web
 run-server-web: server
-	$(SERVER_BINARY) -api-port 8080 -dev -storage-path db/chess.db -serve -web-port 9090
+	CHESS_DSN='$(CHESS_DSN)' $(SERVER_BINARY) -api-port 8080 -dev -serve -web-port 9090
 
 # Run client
 .PHONY: run-client
 run-client: client
 	$(CLIENT_BINARY)
 
-# Run tests (start server and run test scripts)
+# Go unit and PostgreSQL integration tests. Database tests are skipped unless
+# CHESS_TEST_DSN names a disposable database (see test/README.md).
 .PHONY: test
-test: server
+test:
+	$(GO) vet ./...
+	$(GO) test -race -count=1 ./...
+
+# Start a test server for the shell suites (requires CHESS_TEST_DSN)
+.PHONY: test-server
+test-server: server
 	test/run-test-server.sh
 
 # Run individual test suites
@@ -145,25 +152,25 @@ test-longpoll:
 # Database operations
 .PHONY: db-init
 db-init: server
-	$(SERVER_BINARY) db init -path db/chess.db
+	CHESS_DSN='$(CHESS_DSN)' $(SERVER_BINARY) db init
 
 .PHONY: db-clean
-db-clean:
-	# ☣ DESTRUCTIVE: Removes database
-	rm -f db/chess.db db/chess.db-*
+db-clean: server
+	# ☣ DESTRUCTIVE: drops every chess table in the DSN's search_path
+	CHESS_DSN='$(CHESS_DSN)' $(SERVER_BINARY) db delete -confirm
 
-# Cross-compile server for FreeBSD from Linux (requires zig or freebsd cross toolchain)
-# Usage: make server-freebsd-cross CC="zig cc -target x86_64-freebsd"
-.PHONY: server-freebsd-cross
-server-freebsd-cross: $(BINARY_DIR)
-	$(CGO_SERVER) GOOS=freebsd GOARCH=amd64 CC="$(CC)" \ $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(SERVER_BINARY) $(SERVER_SOURCE)
-	@echo "Built FreeBSD server (cross): $(SERVER_BINARY)"
+# Cross-compile a static server for FreeBSD/amd64 (no C toolchain required)
+.PHONY: server-freebsd
+server-freebsd: | $(BINARY_DIR)
+	$(CGO) GOOS=freebsd GOARCH=amd64 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" \
+		-o $(SERVER_BINARY)-freebsd-amd64 $(SERVER_SOURCE)
+	@echo "Built FreeBSD server: $(SERVER_BINARY)-freebsd-amd64"
 
-# Development build (with race detector) — native only, CGO required for server
+# Development build with the race detector (the race runtime requires cgo)
 .PHONY: dev
-dev:
-	$(CGO_SERVER) $(GO) build -race -o $(SERVER_BINARY) $(SERVER_SOURCE)
-	$(CGO_CLIENT) $(GO) build -race -o $(CLIENT_BINARY) $(CLIENT_SOURCE)
+dev: | $(BINARY_DIR)
+	CGO_ENABLED=1 $(GO) build -race -o $(SERVER_BINARY) $(SERVER_SOURCE)
+	CGO_ENABLED=1 $(GO) build -race -o $(CLIENT_BINARY) $(CLIENT_SOURCE)
 	@echo "Built with race detector enabled"
 
 # Clean build artifacts
@@ -206,6 +213,7 @@ help:
 	@echo "  make client       Build client only"
 	@echo "  make wasm         Build WASM client"
 	@echo "  make wasm-full    Build WASM with dependencies"
+	@echo "  make server-freebsd Cross-compile static FreeBSD/amd64 server"
 	@echo "  make dev          Build with race detector"
 	@echo ""
 	@echo "Run targets:"
@@ -215,14 +223,15 @@ help:
 	@echo "  make wasm-serve     Serve WASM client (port 8081)"
 	@echo ""
 	@echo "Test targets:"
-	@echo "  make test         Run all tests"
+	@echo "  make test         Run vet and Go tests (set CHESS_TEST_DSN for DB tests)"
+	@echo "  make test-server  Start the shell-suite test server (needs CHESS_TEST_DSN)"
 	@echo "  make test-api     Run API tests"
 	@echo "  make test-db      Run database tests"
 	@echo "  make test-longpoll Run long-poll tests"
 	@echo ""
-	@echo "Database targets:"
-	@echo "  make db-init      Initialize database"
-	@echo "  make db-clean     Remove database (destructive)"
+	@echo "Database targets (CHESS_DSN=$(CHESS_DSN)):"
+	@echo "  make db-init      Create or migrate the schema"
+	@echo "  make db-clean     Drop all chess tables (destructive)"
 	@echo ""
 	@echo "WASM targets:"
 	@echo "  make wasm-deps    Download xterm.js dependencies"

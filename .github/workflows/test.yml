@@ -1,0 +1,43 @@
+name: test
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: chess_test
+          POSTGRES_PASSWORD: chess_test
+          POSTGRES_DB: chess_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U chess_test -d chess_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      CHESS_TEST_DSN: postgres://chess_test:chess_test@localhost:5432/chess_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.26.x'
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+      - name: Cross-compile static FreeBSD server and WASM client
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          GOOS=freebsd GOARCH=amd64 go build -trimpath -o /dev/null ./cmd/chess-server
+          GOOS=js GOARCH=wasm go build -trimpath -o /dev/null ./cmd/chess-client-cli
