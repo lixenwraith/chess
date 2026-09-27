@@ -7,7 +7,7 @@
 # Start with: test/run-test-server.sh
 
 BASE_URL="http://localhost:8080"
-API_URL="${BASE_URL}/api/v1"
+API_URL="${BASE_URL}/api"
 CHESS_SERVER_EXEC=${1:-"bin/chess-server"}
 # Same disposable database as the running test server (see run-test-server.sh).
 # Use a libpq-compatible DSN: it is passed to both chess-server and psql.

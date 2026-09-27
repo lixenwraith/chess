@@ -511,20 +511,28 @@ main {
     background: var(--host-surface);
     border: 1px solid var(--tokyo-border);
     border-radius: 12px;
-    padding: 2rem;
+    padding: 1.5rem 2rem;          /* was 2rem */
     width: 90%;
     max-width: 400px;
     color: var(--tokyo-fg);
+    /* Last resort only. The spacing below is sized so the tallest modal
+       (New Game, ~425px) clears the 30rem embed on lixen.com without this ever
+       engaging — it exists for odd zoom levels and very short windows. The
+       overlay is fixed to the IFRAME viewport, so without it the modal clips
+       instead of scrolling the page. */
+    max-height: calc(100% - 2rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
 }
 
 .modal h2 {
-    margin-bottom: 1.5rem;
+    margin-bottom: 1rem;
     color: var(--host-royal);
     text-align: center;
 }
 
 .form-group {
-    margin-bottom: 1.5rem;
+    margin-bottom: 1rem;
 }
 
 .form-group label {
@@ -592,7 +600,7 @@ input[type="range"]::-webkit-slider-thumb {
     display: flex;
     justify-content: center;
     gap: 1rem;
-    margin-top: 2rem;
+    margin-top: 1.5rem;
 }
 
 /* Auth Tabs */
@@ -761,7 +769,13 @@ input[type="range"]:disabled {
         flex-shrink: 0;
     }
 
+    /* Board edge = the smaller of the width-derived size and the height that is
+       actually left. Reserve = info-panel 200 + main gap 8 + .container padding
+       32 + .outer-container padding 16 = 256, plus 16 slack. A short frame now
+       shrinks the board instead of scrolling; overflow-y stays as last resort. */
     .game-area {
+        --board-pad:  clamp(16px, 2.04vw, 20px);
+        --board-edge: max(280px, min(clamp(360px, 45vw, 440px), calc(100vh - 272px)));
         min-width: auto;
         height: auto;
         display: flex;
@@ -770,9 +784,9 @@ input[type="range"]:disabled {
     }
 
     .board-container {
-        width: clamp(360px, 45vw, 440px);
-        height: clamp(360px, 45vw, 440px);
-        padding: clamp(16px, 2.04vw, 20px);
+        width:  var(--board-edge);
+        height: var(--board-edge);
+        padding: var(--board-pad);
         display: flex;
         align-items: center;
         justify-content: center;
@@ -781,8 +795,8 @@ input[type="range"]:disabled {
     }
 
     .board-wrapper {
-        width: clamp(328px, 41vw, 400px);
-        height: clamp(328px, 41vw, 400px);
+        width:  calc(var(--board-edge) - 2 * var(--board-pad));
+        height: calc(var(--board-edge) - 2 * var(--board-pad));
         position: relative;
         margin: 0;
     }
@@ -882,15 +896,12 @@ input[type="range"]:disabled {
     body { min-width: 0; overflow-x: hidden; }
     .outer-container { width: 100%; min-width: 0; }
     .container { width: calc(100% - 16px); min-width: 0; }
-    .board-container {
-        width: min(92vw, 440px);
-        height: min(92vw, 440px);
-        padding: 12px;
+
+    .game-area {
+        --board-pad:  12px;
+        --board-edge: max(240px, min(min(92vw, 440px), calc(100vh - 272px)));
     }
-    .board-wrapper {
-        width: calc(min(92vw, 440px) - 24px);
-        height: calc(min(92vw, 440px) - 24px);
-    }
+
     .info-panel {
         width: min(92vw, 440px);
         min-width: 0;

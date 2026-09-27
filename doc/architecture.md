@@ -111,7 +111,7 @@ schema is current, which lets a DML-only runtime role start the server.
 8. Game deletion notifies and removes all waiters
 
 ### Durable Replay Read
-1. Client requests `GET /api/v1/games/{id}/history`
+1. Client requests `GET /api/games/{id}/history`
 2. Storage queues a barrier after all previously accepted gameplay writes
 3. The writer reaches the barrier only after those transactions finish
 4. Storage reads the game row and ordered moves in one REPEATABLE READ transaction
@@ -263,8 +263,10 @@ outlives deleted accounts, and the name snapshot keeps it readable.
   database 24 hours after their last activity (`-anonymous-game-ttl`). The
   hourly cleanup evicts idle games first, then queues the delete through the
   ordered writer while excluding every game still loaded, so no live game can
-  lose its row. See [`deploy/postgresql`](../deploy/postgresql) for
-provisioning and the one-time SQLite import.
+  lose its row.
+
+See [`deploy/postgresql`](../deploy/postgresql) for provisioning and
+[deployment.md](./deployment.md) for the jail service.
 
 ## Security Architecture
 

@@ -5,7 +5,7 @@
 # Requires: curl, jq
 
 BASE_URL="http://localhost:8080"
-API_URL="${BASE_URL}/api/v1"
+API_URL="${BASE_URL}/api"
 
 # Configurable delay between API calls (in milliseconds)
 API_DELAY=${API_DELAY:-50}  # 50ms for dev mode testing
@@ -130,7 +130,7 @@ fi
 # Start tests
 print_header "Chess API Robustness Test Suite"
 echo "Server: $BASE_URL"
-echo "API Version: v1"
+echo "API: $API_URL"
 echo -e "${MAGENTA}  IMPORTANT: Server must be started with -dev flag for tests to pass!${NC}"
 echo -e "${MAGENTA}  Start the server first: test/run-test-server.sh${NC}"
 echo -e "${MAGENTA}  Or directly after build: bin/chess-server -dev${NC}"

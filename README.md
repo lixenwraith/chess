@@ -173,7 +173,7 @@ Access the UI at `http://localhost:9090` when server is running with `-serve` fl
 ## Documentation
 
 - [API Reference](./doc/api.md) - Endpoint specifications including auth
-- [Deployment](./doc/deployment.md) - FreeBSD jail, PostgreSQL 18, service account, SQLite data import
+- [Deployment](./doc/deployment.md) - FreeBSD jail, PostgreSQL 18, `chessd` service, nginx, web clients
 - [Architecture](./doc/architecture.md) - System design with auth layer
 - [Development](./doc/development.md) - Build, test, and user management
 - [Client Guide](./doc/client.md) - Interactive debugging client

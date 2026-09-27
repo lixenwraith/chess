@@ -1,0 +1,128 @@
+#!/bin/sh
+#
+# PROVIDE: chessd
+# REQUIRE: DAEMON NETWORKING postgresql
+# KEYWORD: shutdown
+#
+# chessd_enable:           Set to YES to enable chessd on startup.
+# chessd_user:             User to run as. Default: chess
+# chessd_group:            Group to run as. Default: chess
+# chessd_home:             Account home. Default: /home/chess
+# chessd_bin:              Server binary. Default: ${chessd_home}/bin/chess-server
+# chessd_logs:             Log file path. Default: /var/log/chessd.log
+# chessd_host:             Listen address. Default: 0.0.0.0
+# chessd_port:             Listen port. Default: 8080
+# chessd_dsn:              PostgreSQL connection. Default: postgres:///chess?host=/tmp
+#                          (database chess over the Unix socket, as the OS user)
+# chessd_jwt_key:          JWT signing key, created on first start (mode 0600).
+#                          Default: ${chessd_home}/jwt.key
+# chessd_trusted_proxies:  Reverse-proxy address(es) whose X-Real-IP header is
+#                          trusted as the client address. Default: none
+# chessd_flags:            Additional flags passed to the binary. Default: ""
+#
+# Add the following to /etc/rc.conf to enable:
+#   chessd_enable="YES"
+#   chessd_trusted_proxies="<address nginx connects from>"
+
+. /etc/rc.subr
+
+name="chessd"
+rcvar="chessd_enable"
+desc="Chess Server Daemon"
+
+load_rc_config "$name"
+
+: ${chessd_enable:="NO"}
+: ${chessd_user:="chess"}
+: ${chessd_group:="chess"}
+: ${chessd_home:="/home/chess"}
+: ${chessd_bin:="${chessd_home}/bin/chess-server"}
+: ${chessd_logs:="/var/log/chessd.log"}
+: ${chessd_host:="0.0.0.0"}
+: ${chessd_port:="8080"}
+: ${chessd_dsn:="postgres:///chess?host=/tmp"}
+: ${chessd_jwt_key:="${chessd_home}/jwt.key"}
+: ${chessd_trusted_proxies:=""}
+: ${chessd_flags:=""}
+
+command="${chessd_bin}"
+pidfile="/var/run/${name}.pid"
+
+start_precmd="${name}_prestart"
+start_cmd="${name}_start"
+stop_cmd="${name}_stop"
+status_cmd="${name}_status"
+
+chessd_prestart()
+{
+    if [ ! -x "${command}" ]; then
+        err 1 "${command} is missing or not executable"
+    fi
+
+    touch "${chessd_logs}"
+    chown "${chessd_user}:${chessd_group}" "${chessd_logs}"
+    chmod 640 "${chessd_logs}"
+
+    # A stable signing key keeps sessions valid across restarts. The server
+    # refuses a key readable by group or others.
+    if [ ! -f "${chessd_jwt_key}" ]; then
+        (umask 077 && /usr/bin/openssl rand -base64 48 > "${chessd_jwt_key}") ||
+            err 1 "cannot create ${chessd_jwt_key}"
+        chown "${chessd_user}:${chessd_group}" "${chessd_jwt_key}"
+        echo "Created JWT signing key ${chessd_jwt_key}."
+    fi
+}
+
+chessd_start()
+{
+    if chessd_status >/dev/null 2>&1; then
+        echo "${desc} is already running as PID $(cat ${pidfile})."
+        return 0
+    fi
+
+    set -- -api-host "${chessd_host}" -api-port "${chessd_port}" \
+        -dsn "${chessd_dsn}" -jwt-secret-file "${chessd_jwt_key}"
+    if [ -n "${chessd_trusted_proxies}" ]; then
+        set -- "$@" -trusted-proxies "${chessd_trusted_proxies}"
+    fi
+
+    echo "Starting ${desc}."
+    # -r restarts the server 5 seconds after an unexpected exit (for example
+    # when PostgreSQL is not yet accepting connections); -H reopens the log
+    # file on SIGHUP so newsyslog can rotate it.
+    /usr/sbin/daemon \
+        -P "${pidfile}" \
+        -r -R 5 \
+        -H \
+        -u "${chessd_user}" \
+        -o "${chessd_logs}" \
+        -f \
+        /usr/bin/env \
+            HOME="${chessd_home}" \
+            PATH="${chessd_home}/bin:/usr/local/bin:/usr/bin:/bin" \
+            "${command}" "$@" ${chessd_flags}
+}
+
+chessd_stop()
+{
+    if [ -f "${pidfile}" ]; then
+        echo "Stopping ${desc}."
+        kill -TERM "$(cat ${pidfile})" 2>/dev/null
+        wait_for_pids "$(cat ${pidfile})"
+        rm -f "${pidfile}"
+    else
+        echo "${desc} is not running (no pidfile)."
+    fi
+}
+
+chessd_status()
+{
+    if [ -f "${pidfile}" ] && kill -0 "$(cat ${pidfile})" 2>/dev/null; then
+        echo "${desc} is running as PID $(cat ${pidfile})."
+    else
+        echo "${desc} is not running."
+        return 1
+    fi
+}
+
+run_rc_command "$1"

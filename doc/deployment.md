@@ -1,96 +1,107 @@
 # Deployment: FreeBSD Jail with PostgreSQL 18
 
-Production layout: host nginx terminates TLS and reverse-proxies `/chess/` to
-`chess-server` in a Bastille jail. PostgreSQL 18 runs in the same jail and
-listens **only on its Unix socket**. The `chess` OS account has no shell or
-password; its database role reaches only the `chess` database through peer
-authentication, so no database password exists.
+Layout: host nginx terminates TLS and proxies `/chess/api/` and `/chess/health`
+to `chess-server` in a Bastille jail. The rc.d service is `chessd`, running as
+the unprivileged `chess` account (no shell, no password). PostgreSQL 18 runs in
+the same jail and listens **only on its Unix socket**. The `chess` role reaches
+only the `chess` database through peer authentication, so no database password
+exists.
 
 ```
-internet ──TLS──▶ host nginx ──HTTP──▶ jail: chess-server (API port)
-                                              │ Unix socket, peer auth
-                                              ▼
-                                       jail: PostgreSQL 18 (no TCP listener)
+browser ──TLS──▶ host nginx ──HTTP──▶ jail: chessd (chess-server, API port)
+                                            │ Unix socket, peer auth
+                                            ▼
+                                     jail: PostgreSQL 18 (no TCP listener)
 ```
 
 `host#` runs on the Bastille host as root; `jail#` runs inside the jail as root
-(`bastille console <jail>`).
+(`bastille console <jail>`). Addresses in this document are placeholders.
 
-## Scripted Deployment
+## Scripted Installation and Upgrade
 
-The scripts in [`deploy/`](../deploy) perform every step below and are safe to
-rerun for upgrades. Their header comments list all inputs.
+The scripts in [`deploy/`](../deploy) are idempotent; rerun them to upgrade.
+Their header comments list every input.
 
-1. **Host:** give the jail its own System V shared-memory namespace, which
-   PostgreSQL needs, and restart it:
+1. **Host, once:** give the jail its own System V shared-memory namespace,
+   which PostgreSQL needs, and restart it:
 
    ```sh
-   host# sh deploy/freebsd/host.sh chess
+   host# sh deploy/freebsd/host.sh <jail>
    ```
 
-2. **Build** the static server on any machine with Go 1.26+, then copy the
+2. **Jail, once:** install the packages:
+
+   ```sh
+   jail# pkg install postgresql18-server postgresql18-client stockfish
+   ```
+
+3. **Build** the release (FreeBSD `make` or GNU make) and copy the server
    binary and a checkout of this repository into the jail:
 
    ```sh
    make server-freebsd          # bin/chess-server-freebsd-amd64
    ```
 
-3. **Jail:** install and configure everything. `OLD_SERVICE` names the rc.d
-   service of the SQLite deployment; `SQLITE_DB` imports its data once.
+4. **Jail:** install or upgrade the service. `TRUSTED_PROXIES` is the address
+   the host nginx connects from, as seen inside the jail.
 
    ```sh
    jail# CHESS_BINARY=/tmp/chess-server-freebsd-amd64 \
-         API_HOST=10.17.89.10 TRUSTED_PROXIES=10.17.89.1 \
-         OLD_SERVICE=chess SQLITE_DB=/usr/local/chess/db/chess.db \
+         TRUSTED_PROXIES=<nginx-address> \
+         ENABLE_LOG_ROTATION=yes ENABLE_BACKUP=yes \
          sh deploy/freebsd/setup-jail.sh
    ```
 
-   It ends with a health check that requires `"storage":"ok"`.
+   The script stops `chessd`, installs everything, starts it again, and fails
+   unless `/health` reports `"storage":"ok"`.
 
-4. **Host:** add the location block from
-   [`deploy/freebsd/nginx-chess.conf`](../deploy/freebsd/nginx-chess.conf) to
-   the TLS server block, then `nginx -t && service nginx reload`.
-
-5. **Verify** with the checklist at the end of this document. Keep the old
-   SQLite file until you are satisfied; the import does not modify it.
+5. **Host:** point nginx at the jail
+   ([`deploy/freebsd/nginx-chess.conf`](../deploy/freebsd/nginx-chess.conf))
+   and publish the web client (below).
 
 `setup-jail.sh` inputs:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CHESS_BINARY` | required | New `chess-server` binary |
-| `API_HOST` | required | Listen address (the jail IP) |
-| `API_PORT` | `8080` | Listen port |
-| `TRUSTED_PROXIES` | empty (warns) | nginx address(es) as seen from the jail |
-| `CHESS_HOME` | account home, else `/usr/local/chess` | Binary and JWT key location |
-| `LOG_DIR` | `/var/log/chess` | Server log directory |
-| `SQLITE_DB` | none | v0.11 SQLite database to import into an empty schema |
-| `OLD_SERVICE` | none | Previous rc.d service to stop and disable |
+| `CHESS_BINARY` | required | `chess-server` binary to install |
+| `TRUSTED_PROXIES` | unset (warns) | Stored as `chessd_trusted_proxies` in `rc.conf` |
 | `SPLIT_PRIVILEGES` | `no` | `yes` for a DML-only runtime role (below) |
-| `EXTRA_FLAGS` | none | More server flags, e.g. `-max-users 500` |
-| `PGDATA` | `/var/db/postgres/data18` | PostgreSQL data directory |
+| `ENABLE_LOG_ROTATION` | `no` | newsyslog entry for the service log |
+| `ENABLE_BACKUP` | `no` | Nightly `pg_dump` via cron |
+
+The service layout (account, home, binary, log, listen address, DSN, key)
+comes from `rc.conf` `chessd_*` settings, with the defaults of
+[`rc.d/chessd`](../deploy/freebsd/rc.d/chessd): account `chess`, home
+`/home/chess`, binary `~/bin/chess-server`, log `/var/log/chessd.log`,
+`0.0.0.0:8080`, DSN `postgres:///chess?host=/tmp`, key `~/jwt.key`.
 
 What the script changes, in order:
 
 | Step | Result |
 |---|---|
-| Packages | `postgresql18-server`, `postgresql18-client`, `stockfish` (and `sqlite3` for an import) |
-| PostgreSQL | `initdb` with UTF-8, builtin `C.UTF-8` locale, peer local auth, host auth rejected; data checksums are on by default in 18 |
-| `pg_hba.conf` | Only `postgres` (all databases) and `chess` (database `chess`), both `local` + `peer`; original kept as `pg_hba.conf.orig` |
-| `postgresql.auto.conf` | `listen_addresses = ''` (no TCP), socket in `/tmp`, `scram-sha-256` |
-| Provisioning | [`deploy/postgresql/setup.sql`](../deploy/postgresql/setup.sql) on first run only |
-| Account | `chess` created if missing (`nologin`, no password); a warning if an existing account has a login shell |
-| Files | Binary `root:wheel 0555` (previous copy kept as `.prev`); `jwt.key` generated once, `chess:chess 0600`; log directory `chess:chess 0750` |
+| Preflight | Requires root, PostgreSQL 17+ installed, `chessd_user=chess`; refuses an `rc.conf` `chessd_flags` that still contains `-storage-path`; warns if `stockfish` is missing |
+| Cluster | `initdb` only when none exists: UTF-8, builtin `C.UTF-8` locale, peer local auth, host auth rejected |
+| `pg_hba.conf` | Only `postgres` (all databases) and `chess` (database `chess`), both `local` + `peer`; original kept as `pg_hba.conf.orig`. This replaces the trust-everything default of FreeBSD's standard `initdb` flags |
+| Listener | `ALTER SYSTEM SET listen_addresses = ''` (no TCP) and a restart, only when TCP is still enabled |
+| Provisioning | [`setup.sql`](../deploy/postgresql/setup.sql) when neither role nor database `chess` exists |
+| Service stop | `service chessd onestop` through the installed rc.d script |
+| Binary | `root:wheel 0555`; the previous file kept as `chess-server.prev` |
+| rc.d | [`rc.d/chessd`](../deploy/freebsd/rc.d/chessd) installed; a differing previous copy saved as `/var/backups/chessd.rc.<time>` (not inside `rc.d`, where rc(8) would run it) |
+| JWT key | `~/jwt.key`, `chess:chess 0600`, generated once |
 | Schema | `chess-server db init` (as `chess`, or as `chess_owner` in split mode) |
-| Import | [`migrate-sqlite.sh`](../deploy/postgresql/migrate-sqlite.sh) when `SQLITE_DB` is set and the schema is empty |
-| Service | [`rc.d/chess_server`](../deploy/freebsd/rc.d/chess_server) and `rc.conf` via `sysrc` |
-| Log rotation | `/usr/local/etc/newsyslog.conf.d/chess_server.conf`: daily or 1 MB, 7 kept |
-| Backups | `/usr/local/sbin/chess-backup` via `/usr/local/etc/cron.d/chess-backup`: `pg_dump` at 03:30 as `postgres`, 14 days kept |
+| `rc.conf` | `chessd_enable=YES`, `chessd_trusted_proxies` when given; removes the unused `chessd_storage_path` and `chessd_dir` |
+| Log rotation (opt-in) | `/usr/local/etc/newsyslog.conf.d/chessd.conf`: daily or 1 MB, 7 kept, SIGHUP to `daemon(8)` |
+| Backups (opt-in) | `/usr/local/sbin/chess-backup` via `/usr/local/etc/cron.d/chess-backup`: `pg_dump` at 03:30 as `postgres`, 14 days kept in `/var/db/postgres/backups` |
+| Start | `service chessd start`, then `/health` on the configured port |
 
-The script was exercised on Linux with FreeBSD-only commands (`pkg`, `sysrc`,
-`service`, `pw`, `fetch`) stubbed and everything else real: PostgreSQL 18.6,
-`su`, provisioning in both privilege modes, schema migration, the SQLite
-import, and the health check of the running server.
+Files of an earlier SQLite release are not touched; delete them once the new
+release is verified.
+
+The script and rc.d script were exercised on Linux with the FreeBSD-only
+commands (`rc.subr`, `daemon`, `service`, `sysrc`, `pw`, `fetch`) stubbed and
+everything else real (PostgreSQL 18.6, `su`, both server generations). The
+tested runs were an upgrade from a running v0.11 SQLite `chessd`, an idempotent
+rerun, and a fresh split-privilege install.
 
 ## Accounts and Data Retention
 
@@ -102,42 +113,93 @@ import, and the health check of the running server.
   claimed a slot with their first move. Such games are kept indefinitely and
   record the player's username at claim time.
 - Games with no registered player are **deleted 24 hours after their last
-  activity** (creation, move, undo, reconfiguration, or result), from memory and
-  from the database, by the hourly cleanup. `-anonymous-game-ttl` changes the
-  window; `0` keeps them.
+  activity**, from memory and from the database, by the hourly cleanup.
+  `-anonymous-game-ttl` changes the window; `0` keeps them.
 - Deleting a user removes their sessions; their games keep the claim and name.
+
+## Service (`rc.d/chessd`)
+
+`rc.conf` settings, with defaults:
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `chessd_enable` | `NO` | Start at boot |
+| `chessd_user`, `chessd_group` | `chess` | Service account; must stay `chess` for peer authentication |
+| `chessd_home` | `/home/chess` | Account home |
+| `chessd_bin` | `${chessd_home}/bin/chess-server` | Server binary |
+| `chessd_logs` | `/var/log/chessd.log` | Log file |
+| `chessd_host`, `chessd_port` | `0.0.0.0`, `8080` | Listen address |
+| `chessd_dsn` | `postgres:///chess?host=/tmp` | Database `chess` over the socket as the OS user |
+| `chessd_jwt_key` | `${chessd_home}/jwt.key` | JWT signing key; created (0600) on first start if missing |
+| `chessd_trusted_proxies` | empty | Proxy address(es) whose `X-Real-IP` is trusted |
+| `chessd_flags` | empty | Extra flags, e.g. `-max-users 500` |
+
+The script runs `daemon(8)` as root, which writes the supervisor pidfile
+(`/var/run/chessd.pid`), drops to `chess`, restarts the server 5 seconds after
+an unexpected exit, and reopens the log on SIGHUP. It declares `REQUIRE:
+postgresql`, so the database starts first at boot. The environment passed to
+the server is `HOME` and a `PATH` that includes `/usr/local/bin` for Stockfish.
+
+Server flags:
+
+| Flag | Environment default | Purpose |
+|---|---|---|
+| `-dsn` | `CHESS_DSN` | PostgreSQL connection string; empty disables persistence |
+| `-jwt-secret-file` | `CHESS_JWT_SECRET_FILE` | Stable JWT signing key |
+| `-trusted-proxies` | | Proxy address(es) trusted for the client-IP header |
+| `-proxy-header` | | Client-IP header set by the proxy (default `X-Real-IP`) |
+| `-max-users` | | Registration cap (default 100, `0` = none) |
+| `-anonymous-game-ttl` | | Retention of games without a registered player (default `24h`) |
+| `-finished-game-ttl` | | Memory retention of finished games (default `1h`) |
+
+Administrative CLI commands run as `chess` so peer authentication selects the
+right role; root may use `su -m` although the account has no shell:
+
+```sh
+jail# su -m chess -c '/home/chess/bin/chess-server db user list -dsn "postgres:///chess?host=/tmp"'
+```
+
+## Host nginx and Web Clients
+
+The API has no version segment: routes are `/api/...` and `/health`. With the
+layout in [`nginx-chess.conf`](../deploy/freebsd/nginx-chess.conf), browsers
+call `<origin>/chess/api/...` and nginx maps `/chess/api/` to `/api/`.
+
+- `X-Real-IP` must carry the real client address (`$remote_addr`, after
+  `real_ip` processing when PROXY protocol is in front of nginx). The server
+  honors it only on connections from `chessd_trusted_proxies`.
+- `proxy_set_header Connection "";` lets nginx reuse the upstream `keepalive`
+  connections; without it, every request opens a new connection.
+- The existing security headers are unaffected: the API is same-origin under
+  `/chess/`.
+
+Browser clients are static files published by the host, and must match the
+server's API paths:
+
+- **Web client:** copy `internal/server/webserver/chess-client-web/`
+  (`index.html`, `app.js`, `style.css`) to the site directory. Without the
+  embedded `/config` endpoint, it uses the `/chess` API prefix.
+- **WASM terminal client (if published):** `make wasm` (xterm.js is committed
+  under `lib/`), then copy `web/chess-client-wasm/`. It derives its API base
+  as `<origin>/chess`.
+
+Publish the clients in the same change as the server: a client built for
+`/api/v1` gets 404 from this release.
 
 ## Reference
 
-The sections below describe what the scripts configure, for review or manual
-installation.
+### PostgreSQL configuration
 
-### Jail prerequisites
-
-PostgreSQL allocates a small System V shared-memory segment even though its
-main buffers use `mmap`. `host.sh` runs:
+What `setup-jail.sh` applies, for review or manual installation:
 
 ```sh
-host# bastille config chess set sysvshm new
-host# bastille restart chess
-```
-
-`sysvshm=new` gives the jail an isolated namespace, unlike the older shared
-`allow.sysvipc`. Without it, `initdb` fails with `could not create shared
-memory segment`.
-
-### PostgreSQL
-
-```sh
-jail# pkg install postgresql18-server postgresql18-client stockfish
 jail# sysrc postgresql_enable=YES
 jail# sysrc postgresql_initdb_flags="--encoding=UTF8 --locale-provider=builtin --builtin-locale=C.UTF-8 --auth-local=peer --auth-host=reject"
-jail# service postgresql initdb
+jail# service postgresql initdb            # only when no cluster exists
 jail# service postgresql start
 jail# su -m postgres -c "psql -X -d postgres" <<'SQL'
 ALTER SYSTEM SET listen_addresses = '';
 ALTER SYSTEM SET unix_socket_directories = '/tmp';
-ALTER SYSTEM SET password_encryption = 'scram-sha-256';
 SQL
 jail# service postgresql restart
 ```
@@ -150,6 +212,9 @@ local   all       postgres  peer
 local   chess     chess     peer
 ```
 
+Database administration uses the `postgres` account over the socket:
+`su -m postgres -c psql`.
+
 ### Provisioning and privilege models
 
 [`setup.sql`](../deploy/postgresql/setup.sql) creates the login role `chess`
@@ -159,128 +224,52 @@ connections), the `chess` database (`template0`, builtin `C.UTF-8`), and the
 `public`, and sets role defaults for `search_path`, `statement_timeout`,
 `lock_timeout`, and `idle_in_transaction_session_timeout`.
 
-```sh
-jail# su -m postgres -c 'psql -X -d postgres -f -' < deploy/postgresql/setup.sql
-```
-
 | Mode | Schema owner | `chess` role can | Schema migrations |
 |---|---|---|---|
 | Owner (default) | `chess` | DML and DDL in schema `chess` only | Automatic at server start |
-| Split (`-v split=true`, `SPLIT_PRIVILEGES=yes`) | `chess_owner` (NOLOGIN) | `SELECT/INSERT/UPDATE/DELETE` only | `setup-jail.sh`, or manually as `postgres` (below) |
-
-```sh
-jail# su -m postgres -c "/usr/local/chess/chess-server db init \
-    -dsn \"dbname=chess user=postgres options='-c role=chess_owner -c search_path=chess'\""
-```
+| Split (`SPLIT_PRIVILEGES=yes`) | `chess_owner` (NOLOGIN) | `SELECT/INSERT/UPDATE/DELETE` only | `setup-jail.sh`, or manually as `postgres` |
 
 In split mode the server refuses to start while a migration is pending.
 
-### The `chess` account
-
-| Resource | Requirement |
-|---|---|
-| Shell/password | `/usr/sbin/nologin`, password disabled |
-| Home | Holds `chess-server` (`root:wheel 0555`) and `jwt.key` |
-| JWT key | `chess:chess 0600`, at least 32 bytes; the server refuses group- or world-readable keys |
-| Log directory | `chess:chess 0750` |
-| Database | Role `chess` over `/tmp/.s.PGSQL.5432`, database `chess` only |
-| Network | Listens on the API port (unprivileged, above 1024) |
-| Engine | `stockfish` in `PATH` (`/usr/local/bin`; set through `chess_server_env`) |
-
-Administrative CLI commands run as `chess` so peer authentication selects the
-right role; root may use `su -m` although the account has no shell:
-
-```sh
-jail# su -m chess -c '/usr/local/chess/chess-server db user list -dsn "postgres:///chess?host=/tmp"'
-```
-
 ### JWT signing key
 
-`setup-jail.sh` generates the key once with `openssl rand -base64 48`. Without
-a key file, production mode generates a new key at every start and every
-browser session ends on restart. To rotate, replace the file and restart the
-service; users then sign in again.
+The key is 48 random bytes, base64-encoded, readable only by `chess`. Without a
+key file, production mode generates a new key at every start and every session
+ends on restart. To rotate, replace the file and restart `chessd`; users sign
+in again.
 
-### Service
+### Rollback
 
-`rc.conf` as written by `setup-jail.sh`:
-
-```sh
-chess_server_enable="YES"
-chess_server_account="chess"
-chess_server_binary="/usr/local/chess/chess-server"
-chess_server_logfile="/var/log/chess/chess-server.log"
-chess_server_env="PATH=/usr/local/bin:/usr/bin:/bin"
-chess_server_flags="-api-host 10.17.89.10 -api-port 8080 -dsn postgres:///chess?host=/tmp -jwt-secret-file /usr/local/chess/jwt.key -log-level info -trusted-proxies 10.17.89.1"
-```
-
-The rc.d script starts `daemon(8)` as root, which writes the supervisor
-pidfile, drops to `chess`, restarts the server if it exits, and reopens the log
-on SIGHUP for newsyslog. It declares `REQUIRE: postgresql`. The SQLite-era
-`-storage-path` flag no longer exists; a server started with it exits with
-`flag provided but not defined`.
-
-| Flag | Environment default | Purpose |
-|---|---|---|
-| `-dsn` | `CHESS_DSN` | PostgreSQL connection string; empty disables persistence |
-| `-jwt-secret-file` | `CHESS_JWT_SECRET_FILE` | Stable JWT signing key |
-| `-trusted-proxies` | | nginx address(es) as seen from the jail |
-| `-proxy-header` | | Client-IP header set by nginx (default `X-Real-IP`) |
-| `-max-users` | | Registration cap (default 100, `0` = none) |
-| `-anonymous-game-ttl` | | Retention of games without a registered player (default `24h`) |
-| `-finished-game-ttl` | | Memory retention of finished games (default `1h`) |
-
-### Host nginx
-
-[`nginx-chess.conf`](../deploy/freebsd/nginx-chess.conf) passes the client
-address in `X-Real-IP` (which nginx overwrites), allows 30-second long-polls,
-and bounds request bodies. The server keys rate limits on `X-Real-IP` only for
-connections from `-trusted-proxies`; any other peer is keyed by its own
-address. Without `-trusted-proxies`, every proxied request shares one bucket.
-The existing security headers (HSTS, `X-Frame-Options`, CSP with
-`connect-src 'self'`) are unaffected: the API is same-origin under `/chess/`,
-and this release does not change the web client.
-
-### SQLite import
-
-[`migrate-sqlite.sh`](../deploy/postgresql/migrate-sqlite.sh) reads a
-schema-version-2 SQLite database (v0.11) and imports, in one transaction, all
-users as regular accounts with their Argon2id hashes, unexpired sessions,
-games with claims and player names, results, and moves. It refuses a schema
-that already has data. Imported games without a registered player follow the
-24-hour retention. Sessions carry over, but tokens signed with the old
-per-restart key do not, so users sign in once. Manual invocation:
+Until the old release's files are deleted, a failed upgrade can be reverted:
 
 ```sh
-jail# su -m postgres -c 'sh /path/to/migrate-sqlite.sh /tmp/legacy.db dbname=chess'
+jail# service chessd onestop
+jail# cp /var/backups/chessd.rc.<time> /usr/local/etc/rc.d/chessd
+jail# cp /home/chess/bin/chess-server.prev /home/chess/bin/chess-server
+jail# service chessd start
 ```
 
-### Upgrades, backups, and restores
+Restore the previous web client files on the host as well.
 
-- **Upgrade:** build the new binary and rerun `setup-jail.sh` with the same
-  inputs (omit `SQLITE_DB`). It keeps the previous binary as
-  `chess-server.prev`, migrates the schema, and restarts the service. To roll
-  back a release without a schema change, copy `.prev` back and restart.
-- **Migrations** are transactional and serialized by an advisory lock. A
-  server refuses to start against a schema newer than it supports.
-- **Backups:** `chess-backup` writes `pg_dump --format=custom` files to
-  `/var/db/postgres/backups` nightly and removes those older than 14 days. Copy
-  them off the jail.
-- **Restore** into a freshly provisioned database:
+### Backups and restores
+
+- `chess-backup` writes `pg_dump --format=custom` files nightly and removes
+  those older than 14 days. Copy them off the jail.
+- Restore into a freshly provisioned database:
   `su -m postgres -c 'pg_restore --no-owner --role=chess -d chess <dump>'`
   (`--role=chess_owner` in split mode).
-- **PostgreSQL restarts:** the server retries in-flight writes across a brief
+- PostgreSQL restarts: the server retries in-flight writes across a brief
   outage. A write that still fails marks storage `degraded` in `/health`; live
-  games continue in memory, but durable history stops until the server is
-  restarted.
+  games continue in memory, but durable history stops until `chessd` restarts.
 
 ### Verification checklist
 
 ```sh
-jail# su -m chess -c 'psql -X -d chess -Atc "SHOW search_path"'     # chess
-jail# su -m chess -c 'psql -X -d postgres -c "select 1"'            # rejected by pg_hba
-jail# sockstat -4 -6 -l | grep postgres                             # no TCP listener
-jail# service chess_server status
-jail# fetch -qo - http://10.17.89.10:8080/health                    # "storage":"ok"
-host# curl -s https://lixen.com/chess/health                        # through nginx
+jail# service chessd status
+jail# fetch -qo - http://127.0.0.1:8080/health                    # "storage":"ok"
+jail# sockstat -4 -6 -l | grep postgres                           # no TCP listener
+jail# sockstat -4 -c | grep ':8080'                               # peer = nginx address
+jail# su -m chess -c 'psql -X -d chess -Atc "SHOW search_path"'   # chess
+jail# su -m chess -c 'psql -X -d postgres -c "select 1"'          # rejected by pg_hba
+host# curl -s https://<site>/chess/health                         # through nginx
 ```

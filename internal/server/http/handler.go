@@ -96,8 +96,8 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 	// Health check (no rate limit)
 	app.Get("/health", h.Health)
 
-	// API v1 routes
-	api := app.Group("/api/v1")
+	// API routes
+	api := app.Group("/api")
 
 	// Auth routes with specific rate limiting
 	auth := api.Group("/auth")

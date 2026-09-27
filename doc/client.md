@@ -166,8 +166,8 @@ chess > url http://localhost:9090     # Change server URL
 #### `raw` / `:`
 Send raw API request.
 ```
-chess > raw GET /api/v1/games/<id>
-chess > raw POST /api/v1/games '{"white":{"type":1},"black":{"type":2}}'
+chess > raw GET /api/games/<id>
+chess > raw POST /api/games '{"white":{"type":1},"black":{"type":2}}'
 ```
 
 #### `clear` / `-`
