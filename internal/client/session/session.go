@@ -12,6 +12,7 @@ type Session struct {
 	AuthToken     string
 	Username      string
 	LastMoveCount int
+	GamesCursor   string // next page of the "games" listing
 	Client        *api.Client
 	Verbose       bool
 	// Game state for prompt

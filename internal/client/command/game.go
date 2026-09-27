@@ -33,7 +33,7 @@ func (r *Registry) registerGameCommands() {
 		Name:        "move",
 		ShortName:   "m",
 		Description: "Make a move",
-		Usage:       "move <uci-move>",
+		Usage:       "move <uci-move>  (e2e4; castling e1g1; promotion e7e8q, e7e8n)",
 		Handler:     moveHandler,
 	})
 
@@ -75,6 +75,22 @@ func (r *Registry) registerGameCommands() {
 		Description: "Unload a live game (history retained)",
 		Usage:       "delete [gameId]",
 		Handler:     deleteGameHandler,
+	})
+
+	r.Register(&Command{
+		Name:        "games",
+		ShortName:   "g",
+		Description: "List your stored games, newest first (login required)",
+		Usage:       "games [more]",
+		Handler:     gamesHandler,
+	})
+
+	r.Register(&Command{
+		Name:        "pgn",
+		ShortName:   "",
+		Description: "Print a stored game as PGN",
+		Usage:       "pgn [gameId] [ply]  (default: current game, all plies)",
+		Handler:     pgnHandler,
 	})
 
 	r.Register(&Command{
@@ -238,7 +254,7 @@ func joinGameHandler(s *session.Session, args []string) error {
 // hint stays local since it only applies after a successful human move.
 func moveHandler(s *session.Session, args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: move <uci-move>")
+		return fmt.Errorf("usage: move <uci-move> (promotion appends q, r, b, or n: e7e8q)")
 	}
 
 	gameID := s.CurrentGame
@@ -528,5 +544,74 @@ func pollHandler(s *session.Session, args []string) error {
 		display.Println(display.Yellow, "No updates (timeout)")
 	}
 
+	return nil
+}
+
+// gamesHandler lists the stored games of the signed-in user, 20 at a time;
+// "games more" continues from the previous page.
+func gamesHandler(s *session.Session, args []string) error {
+	if s.AuthToken == "" {
+		return fmt.Errorf("login required")
+	}
+	cursor := ""
+	if len(args) > 0 && args[0] == "more" {
+		if s.GamesCursor == "" {
+			return fmt.Errorf("no further games; run 'games' to list from the newest")
+		}
+		cursor = s.GamesCursor
+	}
+
+	resp, err := s.Client.GetMyGames(20, cursor)
+	if err != nil {
+		return err
+	}
+	s.GamesCursor = resp.NextCursor
+	if len(resp.Games) == 0 {
+		display.Println(display.Yellow, "No stored games")
+		return nil
+	}
+
+	fmt.Printf("\n%-36s  %-20s  %-20s  %-7s  %5s  %s\n", "Game ID", "White", "Black", "Result", "Plies", "Started (UTC)")
+	for _, g := range resp.Games {
+		fmt.Printf("%-36s  %-20s  %-20s  %-7s  %5d  %s\n", g.GameID,
+			playerLabel(g.Players.White), playerLabel(g.Players.Black), g.PGNResult, g.MoveCount,
+			g.StartTimeUTC.UTC().Format("2006-01-02 15:04"))
+	}
+	if resp.NextCursor != "" {
+		display.Println(display.Cyan, "\nMore games: games more")
+	}
+	return nil
+}
+
+func playerLabel(p api.PlayerInfo) string {
+	switch {
+	case p.Type == 2:
+		return fmt.Sprintf("Stockfish L%d", p.Level)
+	case p.Name != "":
+		return p.Name
+	}
+	return "anonymous"
+}
+
+// pgnHandler prints the stored game as PGN: the current game unless an ID is
+// given, and every ply unless a count is given.
+func pgnHandler(s *session.Session, args []string) error {
+	gameID, ply := s.CurrentGame, -1
+	for _, arg := range args {
+		if n, err := strconv.Atoi(arg); err == nil && n >= 0 {
+			ply = n
+		} else {
+			gameID = arg
+		}
+	}
+	if gameID == "" {
+		return fmt.Errorf("no current game, use 'join <gameId>' or 'pgn <gameId>'")
+	}
+	text, err := s.Client.GetGamePGN(gameID, ply)
+	if err != nil {
+		return err
+	}
+	fmt.Println()
+	fmt.Print(text)
 	return nil
 }

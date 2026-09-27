@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -140,7 +141,11 @@ func (c *Client) doRequest(method, path string, body any, result any) error {
 		return fmt.Errorf("request failed with status %d", resp.StatusCode)
 	}
 
-	// Parse success response
+	// Parse success response; a *string receives a non-JSON body as-is
+	if text, ok := result.(*string); ok {
+		*text = string(respBody)
+		return nil
+	}
 	if result != nil && len(respBody) > 0 {
 		if err := json.Unmarshal(respBody, result); err != nil {
 			// For debug, show raw response if parsing fails
@@ -210,9 +215,25 @@ func (c *Client) GetGameHistory(gameID string) (*GameHistoryResponse, error) {
 	return &resp, err
 }
 
-func (c *Client) GetMyGames(limit, offset int) (*GameListResponse, error) {
+// GetGamePGN returns the stored game in PGN; ply < 0 exports every move.
+func (c *Client) GetGamePGN(gameID string, ply int) (string, error) {
+	path := "/api/games/" + gameID + "/pgn"
+	if ply >= 0 {
+		path += fmt.Sprintf("?ply=%d", ply)
+	}
+	var text string
+	err := c.doRequest("GET", path, nil, &text)
+	return text, err
+}
+
+// GetMyGames lists the caller's games, newest first; cursor is "" for the
+// first page, then the previous page's NextCursor.
+func (c *Client) GetMyGames(limit int, cursor string) (*GameListResponse, error) {
 	var resp GameListResponse
-	path := fmt.Sprintf("/api/users/me/games?limit=%d&offset=%d", limit, offset)
+	path := fmt.Sprintf("/api/users/me/games?limit=%d", limit)
+	if cursor != "" {
+		path += "&cursor=" + url.QueryEscape(cursor)
+	}
 	err := c.doRequest("GET", path, nil, &resp)
 	return &resp, err
 }
