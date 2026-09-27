@@ -2,43 +2,55 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strconv"
+	"strings"
+	"time"
 
+	"chess/internal/server/chess"
 	"chess/internal/server/core"
 	"chess/internal/server/storage"
+
+	"github.com/google/uuid"
+)
+
+var (
+	// ErrInvalidListQuery reports a malformed cursor or filter.
+	ErrInvalidListQuery = errors.New("invalid list query")
+	// ErrPlyOutOfRange reports a PGN ply beyond the stored line.
+	ErrPlyOutOfRange = errors.New("ply out of range")
+	// ErrNotation reports a stored move the rules core cannot notate.
+	ErrNotation = errors.New("cannot derive notation")
 )
 
 // GetGameHistory returns a durable replay even after the live game has been
-// evicted from memory or the server has restarted.
+// evicted from memory or the server has restarted. SAN is derived on read.
 func (s *Service) GetGameHistory(gameID string) (*core.GameHistoryResponse, error) {
-	if s.store == nil {
-		return nil, ErrStorageDisabled
-	}
-	record, moves, err := s.store.GetGameHistory(gameID)
+	record, moves, err := s.loadHistory(gameID)
 	if err != nil {
-		if storage.IsGameNotFound(err) {
-			return nil, fmt.Errorf("%w: %s", ErrGameNotFound, gameID)
-		}
-		if isStorageUnavailable(err) {
-			return nil, fmt.Errorf("%w: %v", ErrStorageUnavailable, err)
-		}
-		return nil, fmt.Errorf("get game history: %w", err)
+		return nil, err
 	}
 
 	history := &core.GameHistoryResponse{
 		GameID:       record.GameID,
 		InitialFEN:   record.InitialFEN,
 		Result:       record.Result,
+		PGNResult:    chess.ResultToken(record.Result),
+		Termination:  termination(record.Result),
 		StartTimeUTC: record.StartTimeUTC,
 		EndTimeUTC:   record.EndTimeUTC,
 		Players:      playersResponse(*record),
 		Moves:        make([]core.HistoryMove, 0, len(moves)),
 	}
-	for _, move := range moves {
+	san, _ := notate(record.GameID, record.InitialFEN, moves)
+	for i, move := range moves {
 		history.Moves = append(history.Moves, core.HistoryMove{
 			MoveNumber:   move.MoveNumber,
 			MoveUCI:      move.MoveUCI,
+			SAN:          san[i],
 			FENAfterMove: move.FENAfterMove,
 			PlayerColor:  move.PlayerColor,
 			MoveTimeUTC:  move.MoveTimeUTC,
@@ -47,13 +59,190 @@ func (s *Service) GetGameHistory(gameID string) (*core.GameHistoryResponse, erro
 	return history, nil
 }
 
+// GamePGN is a PGN export and its suggested download name.
+type GamePGN struct {
+	Text     string
+	Filename string
+}
+
+// GetGamePGN exports the stored game in PGN. ply < 0 exports every move;
+// otherwise the first ply moves, with result "*" when that stops short of the
+// end of the line.
+func (s *Service) GetGamePGN(gameID string, ply int) (*GamePGN, error) {
+	record, moves, err := s.loadHistory(gameID)
+	if err != nil {
+		return nil, err
+	}
+	return BuildPGN(record, moves, ply)
+}
+
+// BuildPGN exports a stored game read by storage.GetGameHistory; see
+// GetGamePGN for ply.
+func BuildPGN(record *storage.GameRecord, moves []storage.MoveRecord, ply int) (*GamePGN, error) {
+	if ply > len(moves) {
+		return nil, fmt.Errorf("%w: game has %d plies", ErrPlyOutOfRange, len(moves))
+	}
+	san, err := notate(record.GameID, record.InitialFEN, moves)
+	if err != nil {
+		return nil, err
+	}
+
+	complete := ply < 0 || ply == len(moves)
+	if !complete {
+		san = san[:ply]
+	}
+	result := "*"
+	if complete {
+		result = chess.ResultToken(record.Result)
+	}
+	start := record.StartTimeUTC.UTC()
+	tags := []chess.Tag{
+		{Name: "Event", Value: "Casual game"},
+		{Name: "Date", Value: start.Format("2006.01.02")},
+		{Name: "White", Value: pgnPlayerName(record.WhiteType, record.WhiteLevel, record.WhiteName)},
+		{Name: "Black", Value: pgnPlayerName(record.BlackType, record.BlackLevel, record.BlackName)},
+		{Name: "GameId", Value: record.GameID},
+		{Name: "UTCDate", Value: start.Format("2006.01.02")},
+		{Name: "UTCTime", Value: start.Format("15:04:05")},
+		{Name: "WhiteType", Value: pgnPlayerType(record.WhiteType)},
+		{Name: "BlackType", Value: pgnPlayerType(record.BlackType)},
+		{Name: "PlyCount", Value: strconv.Itoa(len(san))},
+	}
+	if complete {
+		value := "unterminated"
+		if record.Result != "" {
+			value = "normal"
+		}
+		tags = append(tags, chess.Tag{Name: "Termination", Value: value})
+	}
+
+	name := fmt.Sprintf("chess-%s-%s", start.Format("20060102"), record.GameID[:8])
+	if !complete {
+		name += fmt.Sprintf("-ply%d", ply)
+	}
+	return &GamePGN{
+		Text:     chess.PGN{Tags: tags, StartFEN: record.InitialFEN, SAN: san, Result: result}.String(),
+		Filename: name + ".pgn",
+	}, nil
+}
+
+func (s *Service) loadHistory(gameID string) (*storage.GameRecord, []storage.MoveRecord, error) {
+	if s.store == nil {
+		return nil, nil, ErrStorageDisabled
+	}
+	record, moves, err := s.store.GetGameHistory(gameID)
+	if err != nil {
+		if storage.IsGameNotFound(err) {
+			return nil, nil, fmt.Errorf("%w: %s", ErrGameNotFound, gameID)
+		}
+		if isStorageUnavailable(err) {
+			return nil, nil, fmt.Errorf("%w: %v", ErrStorageUnavailable, err)
+		}
+		return nil, nil, fmt.Errorf("get game history: %w", err)
+	}
+	return record, moves, nil
+}
+
+// notate derives SAN for each stored move from the stored position before
+// it, so one unparsable ply does not affect the others. Plies it cannot
+// notate are left empty and reported in the error.
+func notate(gameID, initialFEN string, moves []storage.MoveRecord) ([]string, error) {
+	san := make([]string, len(moves))
+	before := initialFEN
+	var firstErr error
+	for i, move := range moves {
+		pos, err := chess.ParseFEN(before)
+		if err == nil {
+			var m chess.Move
+			if m, err = pos.ParseUCI(move.MoveUCI); err == nil {
+				san[i] = pos.SAN(m)
+			}
+		}
+		if err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("%w: ply %d (%s): %v", ErrNotation, move.MoveNumber, move.MoveUCI, err)
+		}
+		before = move.FENAfterMove
+	}
+	if firstErr != nil {
+		slog.Warn("stored game has moves without notation", "game_id", gameID, "error", firstErr)
+	}
+	return san, firstErr
+}
+
+// termination names how a stored result was reached. Results are produced
+// only by mate and stalemate today; "draw" has no rule behind it yet.
+func termination(result string) string {
+	switch result {
+	case "white_wins", "black_wins":
+		return "checkmate"
+	case "stalemate":
+		return "stalemate"
+	case "draw":
+		return "draw"
+	}
+	return ""
+}
+
+func pgnPlayerName(playerType, level int, name string) string {
+	switch {
+	case core.PlayerType(playerType) == core.PlayerComputer:
+		return "Stockfish level " + strconv.Itoa(level)
+	case name != "":
+		return name
+	}
+	return "Anonymous"
+}
+
+func pgnPlayerType(playerType int) string {
+	if core.PlayerType(playerType) == core.PlayerComputer {
+		return "program"
+	}
+	return "human"
+}
+
+// UserGamesOptions selects a page of the caller's games. Cursor, when set,
+// continues a previous page and excludes Offset.
+type UserGamesOptions struct {
+	Limit  int
+	Offset int
+	Cursor string
+	Color  string // "", "white", or "black"
+	Status string // "", "ongoing", or "finished"
+}
+
 // GetUserGames returns a bounded page of games associated either at creation
 // or by a later slot claim.
-func (s *Service) GetUserGames(userID string, limit, offset int) (*core.GameListResponse, error) {
+func (s *Service) GetUserGames(userID string, opts UserGamesOptions) (*core.GameListResponse, error) {
 	if s.store == nil {
 		return nil, ErrStorageDisabled
 	}
-	records, err := s.store.QueryGamesForUser(userID, limit+1, offset)
+	query := storage.UserGamesQuery{Limit: opts.Limit + 1, Offset: opts.Offset, Status: opts.Status}
+	switch opts.Color {
+	case "":
+	case "white":
+		query.Color = "w"
+	case "black":
+		query.Color = "b"
+	default:
+		return nil, fmt.Errorf("%w: color must be white or black", ErrInvalidListQuery)
+	}
+	switch opts.Status {
+	case "", "ongoing", "finished":
+	default:
+		return nil, fmt.Errorf("%w: status must be ongoing or finished", ErrInvalidListQuery)
+	}
+	if opts.Cursor != "" {
+		if opts.Offset != 0 {
+			return nil, fmt.Errorf("%w: cursor and offset are exclusive", ErrInvalidListQuery)
+		}
+		after, err := decodeCursor(opts.Cursor)
+		if err != nil {
+			return nil, err
+		}
+		query.After = after
+	}
+
+	records, err := s.store.QueryGamesForUser(userID, query)
 	if err != nil {
 		if isStorageUnavailable(err) {
 			return nil, fmt.Errorf("%w: %v", ErrStorageUnavailable, err)
@@ -61,24 +250,29 @@ func (s *Service) GetUserGames(userID string, limit, offset int) (*core.GameList
 		return nil, fmt.Errorf("get user games: %w", err)
 	}
 
-	hasNext := len(records) > limit
+	hasNext := len(records) > opts.Limit
 	if hasNext {
-		records = records[:limit]
+		records = records[:opts.Limit]
 	}
 	response := &core.GameListResponse{
 		Games:  make([]core.GameSummary, 0, len(records)),
-		Limit:  limit,
-		Offset: offset,
+		Limit:  opts.Limit,
+		Offset: opts.Offset,
 	}
 	if hasNext {
-		next := offset + limit
-		response.NextOffset = &next
+		last := records[len(records)-1]
+		response.NextCursor = encodeCursor(last.StartTimeUTC, last.GameID)
+		if opts.Cursor == "" {
+			next := opts.Offset + opts.Limit
+			response.NextOffset = &next
+		}
 	}
 	for _, record := range records {
 		response.Games = append(response.Games, core.GameSummary{
 			GameID:       record.GameID,
 			InitialFEN:   record.InitialFEN,
 			Result:       record.Result,
+			PGNResult:    chess.ResultToken(record.Result),
 			StartTimeUTC: record.StartTimeUTC,
 			EndTimeUTC:   record.EndTimeUTC,
 			MoveCount:    record.MoveCount,
@@ -87,6 +281,32 @@ func (s *Service) GetUserGames(userID string, limit, offset int) (*core.GameList
 		})
 	}
 	return response, nil
+}
+
+// Cursors are opaque to clients: base64url of "<start µs>.<game ID>". The
+// microsecond value round-trips PostgreSQL timestamptz exactly.
+func encodeCursor(start time.Time, gameID string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(strconv.FormatInt(start.UnixMicro(), 10) + "." + gameID))
+}
+
+func decodeCursor(cursor string) (*storage.GameCursor, error) {
+	invalid := fmt.Errorf("%w: malformed cursor", ErrInvalidListQuery)
+	if len(cursor) > 128 {
+		return nil, invalid
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		return nil, invalid
+	}
+	micros, id, ok := strings.Cut(string(raw), ".")
+	if !ok {
+		return nil, invalid
+	}
+	us, err := strconv.ParseInt(micros, 10, 64)
+	if err != nil || uuid.Validate(id) != nil {
+		return nil, invalid
+	}
+	return &storage.GameCursor{StartTimeUTC: time.UnixMicro(us).UTC(), GameID: id}, nil
 }
 
 func isStorageUnavailable(err error) bool {

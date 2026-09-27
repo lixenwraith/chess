@@ -157,6 +157,11 @@ Authorization: Bearer <token>
 
 Note: When authenticated, human player IDs match the user's ID. Anonymous players receive unique UUIDs.
 
+A custom `fen` must describe a position that can arise in a game: one king
+per side, no pawn on the first or last rank, and the side not to move not in
+check; otherwise the response is 400 `INVALID_FEN` with the reason. Castling
+rights whose king or rook has left its original square are dropped.
+
 ### Get Game
 `GET /games/{gameId}`
 
@@ -190,7 +195,8 @@ the game ID, matching the existing public live-game read model. Persistent
 storage must be enabled.
 
 The response contains the initial FEN and an ordered FEN after every move, so a
-client can replay the game without running a chess engine.
+client can replay the game without running a chess engine. Each move also
+carries its SAN, derived on read from the stored position before it.
 
 **Response (200):**
 ```json
@@ -198,6 +204,8 @@ client can replay the game without running a chess engine.
   "gameId": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
   "initialFen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
   "result": "white_wins",
+  "pgnResult": "1-0",
+  "termination": "checkmate",
   "startTimeUtc": "2026-09-07T12:00:00Z",
   "endTimeUtc": "2026-09-07T12:15:00Z",
   "players": {
@@ -208,6 +216,7 @@ client can replay the game without running a chess engine.
     {
       "moveNumber": 1,
       "moveUci": "e2e4",
+      "san": "e4",
       "fenAfterMove": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
       "playerColor": "w",
       "moveTimeUtc": "2026-09-07T12:00:05Z"
@@ -217,28 +226,83 @@ client can replay the game without running a chess engine.
 ```
 
 `result` is omitted while a game is ongoing. Persisted terminal values are
-`white_wins`, `black_wins`, `draw`, and `stalemate`. A claimed player's `name`
-is their username when the claim was recorded; it survives later renames and
-account deletion, and is omitted for anonymous and computer players.
+`white_wins`, `black_wins`, `draw`, and `stalemate`. `pgnResult` is the PGN
+token for the same outcome (`1-0`, `0-1`, `1/2-1/2`, or `*` while ongoing),
+and `termination` names how it was reached (`checkmate`, `stalemate`, or
+`draw`; omitted while ongoing). `moveNumber` counts plies from 1. `san` is
+omitted only for a stored move the rules core cannot notate, which the server
+logs. A claimed player's `name` is their username when the claim was
+recorded; it survives later renames and account deletion, and is omitted for
+anonymous and computer players.
+
+Undo stays available after a result (a finished game can be rewound and
+played on), so a stored game is never final. Responses carry a strong `ETag`
+and `Cache-Control: private, no-cache`: send `If-None-Match` to get 304 while
+nothing changed.
 
 Returns 400 for a non-canonical game ID, 404 when the game has no durable
 record, and 503 when persistence is disabled or degraded.
 
+### Export PGN
+`GET /games/{gameId}/pgn?ply=N`
+
+Returns the stored game in PGN export format as
+`application/x-chess-pgn; charset=utf-8` with
+`Content-Disposition: attachment; filename="chess-<yyyymmdd>-<id8>.pgn"`.
+Same visibility, `ETag`, and error responses as the history. `ply` (optional,
+0 up to the number of stored plies) exports only the first N plies; the
+result is then `*`, the `Termination` tag is left out, and the filename ends
+`-ply<N>.pgn`. A `fetch` of the URL returns the text, so clients can copy it
+as well as download it.
+
+```
+[Event "Casual game"]
+[Site "?"]
+[Date "2026.09.27"]
+[Round "-"]
+[White "alice"]
+[Black "Stockfish level 3"]
+[Result "0-1"]
+[GameId "68007fd1-8970-4d84-950d-2f6ec6375c0b"]
+[UTCDate "2026.09.27"]
+[UTCTime "08:07:00"]
+[WhiteType "human"]
+[BlackType "program"]
+[PlyCount "4"]
+[Termination "normal"]
+
+1. f3 e5 2. g4 Qh4# 0-1
+```
+
+Players are the name snapshot, `Anonymous`, or `Stockfish level N`. A game
+from a custom position adds `SetUp "1"` and `FEN` tags, and its movetext
+starts at that position's move number (`55. g8=Q` or `40... Kd8`).
+Movetext wraps at 80 columns. `Termination` is `normal` for a finished game
+and `unterminated` otherwise.
+
 ### List My Stored Games
-`GET /users/me/games?limit=50&offset=0`
+`GET /users/me/games?limit=50&cursor=<nextCursor>&status=finished&color=white`
 
 Returns games associated with the authenticated user at creation time or by a
-later first-move slot claim. Requires `Authorization: Bearer <token>` and
-persistent storage.
+later first-move slot claim, newest first. Requires
+`Authorization: Bearer <token>` and persistent storage.
 
 - `limit`: 1-100; defaults to 50
-- `offset`: 0-1,000,000; defaults to 0
+- `cursor`: the previous page's `nextCursor`; continues after that game, so
+  games created meanwhile do not shift the page. Opaque; do not construct it.
+- `status`: `ongoing` or `finished`
+- `color`: `white` or `black`, the side the user claimed
+- `offset`: 0-1,000,000; position-based paging for older clients. It cannot
+  be combined with `cursor`, and pages shift when games are added.
 
 Each item contains game ID, initial FEN, final FEN (after the last stored move,
-or the initial FEN when there is none), result/timestamps, players, and move
-count. `nextOffset` is present only when another page exists. A game belongs to
-a user who created it while authenticated or claimed a slot with a first move;
-the association survives later player reconfiguration.
+or the initial FEN when there is none), result and its `pgnResult` token,
+timestamps, players, and move count. `nextCursor` is present only when another
+page exists; `nextOffset` also, on requests without a cursor. A game belongs
+to a user who created it while authenticated or claimed a slot with a first
+move; the association survives later player reconfiguration.
+
+Returns 400 `INVALID_REQUEST` for a malformed cursor or filter.
 
 **Response (200):**
 ```json
@@ -249,6 +313,7 @@ the association survives later player reconfiguration.
       "initialFen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
       "finalFen": "r1bqkb1r/pppp1Qpp/2n2n2/4p3/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 0 4",
       "result": "white_wins",
+      "pgnResult": "1-0",
       "startTimeUtc": "2026-09-07T12:00:00Z",
       "endTimeUtc": "2026-09-07T12:15:00Z",
       "moveCount": 7,
@@ -259,7 +324,8 @@ the association survives later player reconfiguration.
     }
   ],
   "limit": 50,
-  "offset": 0
+  "offset": 0,
+  "nextCursor": "MTc5MDQ5NjQyMDU4MTg2NS42ODAwN2ZkMS04OTcwLTRkODQtOTUwZC0yZjZlYzYzNzVjMGI"
 }
 ```
 
@@ -272,6 +338,11 @@ Submits human move or triggers computer move.
 ```json
 {"move": "e2e4"}
 ```
+
+Moves are UCI: castling is the king's two-square move (`e1g1`), and a
+promotion appends the piece (`e7e8q`, `r`, `b`, or `n`). A pawn move to the
+last rank without the piece returns 400 `INVALID_MOVE` with
+`promotion piece required`.
 
 **Computer move trigger:**
 ```json

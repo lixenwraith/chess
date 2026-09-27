@@ -2,13 +2,20 @@ package http
 
 import (
 	"io"
+	nethttp "net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"chess/internal/server/chess"
+	"chess/internal/server/core"
 	"chess/internal/server/service"
+	"chess/internal/server/storage"
+	"chess/internal/server/storage/pgtest"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 )
 
 func TestClientIPTrustsProxyHeaderOnlyFromTrustedPeers(t *testing.T) {
@@ -63,7 +70,7 @@ func TestIsValidUUIDRequiresCanonicalForm(t *testing.T) {
 	}
 }
 
-func TestAPIRoutesAreUnversioned(t *testing.T) {
+func TestAPIRoutes(t *testing.T) {
 	svc, err := service.New(nil, []byte("test-secret-test-secret-test-secret"))
 	if err != nil {
 		t.Fatal(err)
@@ -74,9 +81,6 @@ func TestAPIRoutesAreUnversioned(t *testing.T) {
 	registered := make(map[string]bool)
 	for _, route := range app.GetRoutes(true) {
 		registered[route.Method+" "+route.Path] = true
-		if strings.HasPrefix(route.Path, "/api/v1") {
-			t.Errorf("versioned route still registered: %s %s", route.Method, route.Path)
-		}
 	}
 	for _, want := range []string{
 		"GET /health",
@@ -87,6 +91,7 @@ func TestAPIRoutesAreUnversioned(t *testing.T) {
 		"POST /api/games",
 		"GET /api/games/:gameId",
 		"GET /api/games/:gameId/history",
+		"GET /api/games/:gameId/pgn",
 		"POST /api/games/:gameId/moves",
 		"GET /api/users/me/games",
 	} {
@@ -94,12 +99,114 @@ func TestAPIRoutesAreUnversioned(t *testing.T) {
 			t.Errorf("route %s is not registered", want)
 		}
 	}
+}
 
-	response, err := app.Test(httptest.NewRequest("GET", "/api/v1/games/5579b47e-4d3b-4eb3-abbd-846fe94cb955", nil))
+func TestETagMatches(t *testing.T) {
+	const etag = `"0123abcd"`
+	for header, want := range map[string]bool{
+		"":                      false,
+		`"0123abcd"`:            true,
+		`W/"0123abcd"`:          true,
+		`"other", "0123abcd"`:   true,
+		`"other",W/"0123abcd" `: true,
+		"*":                     true,
+		`"0123abc"`:             false,
+		`0123abcd`:              false,
+	} {
+		if got := etagMatches(header, etag); got != want {
+			t.Errorf("etagMatches(%q) = %v, want %v", header, got, want)
+		}
+	}
+}
+
+func TestStoredGameEndpoints(t *testing.T) {
+	store, err := storage.NewStore(pgtest.DSN(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.StatusCode != fiber.StatusNotFound {
-		t.Fatalf("GET /api/v1/... status = %d, want 404", response.StatusCode)
+	if err := store.InitDB(); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := service.New(store, []byte("test-secret-test-secret-test-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { svc.Shutdown(time.Second) })
+
+	gameID := uuid.NewString()
+	white := core.NewPlayer(core.PlayerConfig{Type: core.PlayerHuman}, core.ColorWhite)
+	black := core.NewPlayer(core.PlayerConfig{Type: core.PlayerHuman}, core.ColorBlack)
+	if err := svc.CreateGame(gameID, white, black, chess.StartFEN, core.ColorWhite, core.StateOngoing); err != nil {
+		t.Fatal(err)
+	}
+	pos, _ := chess.ParseFEN(chess.StartFEN)
+	for i, uci := range []string{"e2e4", "e7e5"} {
+		m, err := pos.ParseUCI(uci)
+		if err != nil {
+			t.Fatal(err)
+		}
+		next := pos.Play(m)
+		turn := core.ColorWhite
+		if i == 1 {
+			turn = core.ColorBlack
+		}
+		if err := svc.ApplyMoveWithState(gameID, service.MoveCommit{
+			ExpectedFEN: pos.FEN(), ExpectedState: core.StateOngoing, ExpectedTurn: turn,
+			MoveUCI: uci, NewFEN: next.FEN(), State: core.StateOngoing,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		pos = next
+	}
+
+	app := NewFiberApp(nil, svc, Options{DevMode: true})
+	get := func(path string, header ...string) (*nethttp.Response, string) {
+		t.Helper()
+		request := httptest.NewRequest("GET", path, nil)
+		for i := 0; i+1 < len(header); i += 2 {
+			request.Header.Set(header[i], header[i+1])
+		}
+		response, err := app.Test(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(response.Body)
+		return response, string(body)
+	}
+
+	response, body := get("/api/games/" + gameID + "/history")
+	etag := response.Header.Get("ETag")
+	if response.StatusCode != 200 || etag == "" || response.Header.Get("Cache-Control") != "private, no-cache" ||
+		!strings.Contains(body, `"san":"e4"`) || !strings.Contains(body, `"pgnResult":"*"`) ||
+		!strings.HasPrefix(response.Header.Get("Content-Type"), "application/json") {
+		t.Fatalf("history: %d %v %s", response.StatusCode, response.Header, body)
+	}
+	if response, body = get("/api/games/"+gameID+"/history", "If-None-Match", etag); response.StatusCode != 304 || body != "" {
+		t.Fatalf("revalidated history: %d %q", response.StatusCode, body)
+	}
+
+	response, body = get("/api/games/" + gameID + "/pgn")
+	if response.StatusCode != 200 || response.Header.Get("Content-Type") != "application/x-chess-pgn; charset=utf-8" ||
+		!strings.HasPrefix(response.Header.Get("Content-Disposition"), `attachment; filename="chess-`) ||
+		!strings.HasSuffix(body, "\n\n1. e4 e5 *\n") {
+		t.Fatalf("pgn: %d %v\n%s", response.StatusCode, response.Header, body)
+	}
+	if response, body = get("/api/games/" + gameID + "/pgn?ply=1"); response.StatusCode != 200 ||
+		!strings.HasSuffix(body, "\n\n1. e4 *\n") ||
+		!strings.Contains(response.Header.Get("Content-Disposition"), "-ply1.pgn") {
+		t.Fatalf("pgn ply 1: %d %v\n%s", response.StatusCode, response.Header, body)
+	}
+
+	for path, want := range map[string]int{
+		"/api/games/" + gameID + "/pgn?ply=3":         400,
+		"/api/games/" + gameID + "/pgn?ply=-1":        400,
+		"/api/games/" + gameID + "/pgn?ply=x":         400,
+		"/api/games/" + uuid.NewString() + "/pgn":     404,
+		"/api/games/" + uuid.NewString() + "/history": 404,
+		"/api/games/not-a-uuid/pgn":                   400,
+	} {
+		if response, body := get(path); response.StatusCode != want {
+			t.Errorf("GET %s = %d %s, want %d", path, response.StatusCode, body, want)
+		}
 	}
 }

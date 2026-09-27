@@ -1,9 +1,12 @@
 package http
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"chess/internal/server/core"
@@ -166,6 +169,7 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 	// Register game routes with auth middleware
 	api.Post("/games", OptionalAuth(validateToken), h.CreateGame) // Optional auth for player ID association
 	api.Get("/games/:gameId/history", h.GetGameHistory)
+	api.Get("/games/:gameId/pgn", h.GetGamePGN)
 	api.Put("/games/:gameId/players", h.ConfigurePlayers)
 	api.Get("/games/:gameId", h.GetGame)
 	api.Delete("/games/:gameId", h.DeleteGame)
@@ -563,34 +567,105 @@ func (h *HTTPHandler) GetBoard(c *fiber.Ctx) error {
 func (h *HTTPHandler) GetGameHistory(c *fiber.Ctx) error {
 	gameID := c.Params("gameId")
 	if !isValidUUID(gameID) {
-		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
-			Error: "invalid game ID format", Code: core.ErrInvalidRequest,
-			Details: "game ID must be a valid UUID",
-		})
+		return invalidGameID(c)
 	}
 
 	history, err := h.svc.GetGameHistory(gameID)
 	if err != nil {
-		switch {
-		case errors.Is(err, service.ErrStorageDisabled), errors.Is(err, service.ErrStorageUnavailable):
-			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
-				Error: "game history storage unavailable", Code: core.ErrStorageUnavailable,
-			})
-		case errors.Is(err, service.ErrGameNotFound):
-			return c.Status(fiber.StatusNotFound).JSON(core.ErrorResponse{
-				Error: "game history not found", Code: core.ErrGameNotFound,
-			})
-		default:
-			return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
-				Error: "failed to load game history", Code: core.ErrInternalError,
-			})
+		return storedGameError(c, err)
+	}
+	body, err := c.App().Config().JSONEncoder(history)
+	if err != nil {
+		return err
+	}
+	return sendRevalidated(c, fiber.MIMEApplicationJSON, body)
+}
+
+// GetGamePGN exports a stored game as a PGN attachment; ?ply=N stops after N
+// plies. Same visibility as the history.
+func (h *HTTPHandler) GetGamePGN(c *fiber.Ctx) error {
+	gameID := c.Params("gameId")
+	if !isValidUUID(gameID) {
+		return invalidGameID(c)
+	}
+	ply, err := queryInt(c, "ply", -1, 0, 1_000_000)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
+			Error: "invalid ply", Code: core.ErrInvalidRequest, Details: err.Error(),
+		})
+	}
+
+	pgn, err := h.svc.GetGamePGN(gameID, ply)
+	if err != nil {
+		return storedGameError(c, err)
+	}
+	// The name is built from a date and the hexadecimal game ID only.
+	c.Set(fiber.HeaderContentDisposition, `attachment; filename="`+pgn.Filename+`"`)
+	return sendRevalidated(c, "application/x-chess-pgn; charset=utf-8", []byte(pgn.Text))
+}
+
+// sendRevalidated sends a stored-game representation with a strong ETag and
+// answers a matching If-None-Match with 304. Stored games still change
+// (moves, undo after a result), so caches must revalidate on every use
+// rather than keep a copy for a fixed time.
+func sendRevalidated(c *fiber.Ctx, contentType string, body []byte) error {
+	sum := sha256.Sum256(body)
+	etag := `"` + hex.EncodeToString(sum[:16]) + `"`
+	c.Set(fiber.HeaderETag, etag)
+	c.Set(fiber.HeaderCacheControl, "private, no-cache")
+	if etagMatches(c.Get(fiber.HeaderIfNoneMatch), etag) {
+		return c.SendStatus(fiber.StatusNotModified)
+	}
+	c.Set(fiber.HeaderContentType, contentType)
+	return c.Send(body)
+}
+
+// etagMatches applies the weak comparison If-None-Match requires (RFC 9110
+// section 13.1.2) to a comma-separated header value.
+func etagMatches(header, etag string) bool {
+	for _, candidate := range strings.Split(header, ",") {
+		candidate = strings.TrimPrefix(strings.TrimSpace(candidate), "W/")
+		if candidate == "*" || candidate == etag {
+			return true
 		}
 	}
-	return c.JSON(history)
+	return false
+}
+
+func invalidGameID(c *fiber.Ctx) error {
+	return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
+		Error: "invalid game ID format", Code: core.ErrInvalidRequest,
+		Details: "game ID must be a valid UUID",
+	})
+}
+
+func storedGameError(c *fiber.Ctx, err error) error {
+	switch {
+	case errors.Is(err, service.ErrStorageDisabled), errors.Is(err, service.ErrStorageUnavailable):
+		return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+			Error: "game history storage unavailable", Code: core.ErrStorageUnavailable,
+		})
+	case errors.Is(err, service.ErrGameNotFound):
+		return c.Status(fiber.StatusNotFound).JSON(core.ErrorResponse{
+			Error: "game history not found", Code: core.ErrGameNotFound,
+		})
+	case errors.Is(err, service.ErrPlyOutOfRange):
+		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
+			Error: "invalid ply", Code: core.ErrInvalidRequest, Details: err.Error(),
+		})
+	case errors.Is(err, service.ErrNotation):
+		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
+			Error: "game cannot be exported as PGN", Code: core.ErrInternalError,
+		})
+	default:
+		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
+			Error: "failed to load game history", Code: core.ErrInternalError,
+		})
+	}
 }
 
 // GetCurrentUserGames returns a bounded list suitable for CLI and web game
-// pickers. The extra row used to compute nextOffset stays internal.
+// pickers. The extra row used to detect a next page stays internal.
 func (h *HTTPHandler) GetCurrentUserGames(c *fiber.Ctx) error {
 	userID, ok := c.Locals("userID").(string)
 	if !ok || userID == "" {
@@ -612,9 +687,20 @@ func (h *HTTPHandler) GetCurrentUserGames(c *fiber.Ctx) error {
 		})
 	}
 
-	games, err := h.svc.GetUserGames(userID, limit, offset)
+	games, err := h.svc.GetUserGames(userID, service.UserGamesOptions{
+		Limit:  limit,
+		Offset: offset,
+		Cursor: c.Query("cursor"),
+		Color:  c.Query("color"),
+		Status: c.Query("status"),
+	})
 	if err != nil {
-		if errors.Is(err, service.ErrStorageDisabled) || errors.Is(err, service.ErrStorageUnavailable) {
+		switch {
+		case errors.Is(err, service.ErrInvalidListQuery):
+			return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
+				Error: "invalid list query", Code: core.ErrInvalidRequest, Details: err.Error(),
+			})
+		case errors.Is(err, service.ErrStorageDisabled), errors.Is(err, service.ErrStorageUnavailable):
 			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
 				Error: "stored games unavailable", Code: core.ErrStorageUnavailable,
 			})

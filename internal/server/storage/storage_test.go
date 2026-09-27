@@ -137,7 +137,7 @@ func TestReplayPersistenceIsAtomicAndReadAfterWriteConsistent(t *testing.T) {
 		t.Fatalf("moves = %+v", moves)
 	}
 
-	owned, err := store.QueryGamesForUser(user, 10, 0)
+	owned, err := store.QueryGamesForUser(user, UserGamesQuery{Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestReplayPersistenceIsAtomicAndReadAfterWriteConsistent(t *testing.T) {
 	if record.Result != "" || record.EndTimeUTC != nil || len(moves) != 0 {
 		t.Fatalf("rewind left stale replay data: game=%+v moves=%+v", record, moves)
 	}
-	owned, err = store.QueryGamesForUser(user, 10, 0)
+	owned, err = store.QueryGamesForUser(user, UserGamesQuery{Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,6 +188,8 @@ func TestUserGamesArePagedNewestFirstWithoutDuplicates(t *testing.T) {
 			record.WhiteClaimedBy = user
 		case 1:
 			record.BlackClaimedBy = user
+			end := record.StartTimeUTC.Add(time.Minute)
+			record.Result, record.EndTimeUTC = "white_wins", &end
 		case 2:
 			record.WhiteClaimedBy, record.BlackClaimedBy = user, user // self-play
 		case 3:
@@ -205,7 +207,7 @@ func TestUserGamesArePagedNewestFirstWithoutDuplicates(t *testing.T) {
 
 	var got []string
 	for offset := 0; ; offset += 2 {
-		page, err := store.QueryGamesForUser(user, 2, offset)
+		page, err := store.QueryGamesForUser(user, UserGamesQuery{Limit: 2, Offset: offset})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -219,8 +221,87 @@ func TestUserGamesArePagedNewestFirstWithoutDuplicates(t *testing.T) {
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("user games = %v, want %v", got, want)
 	}
-	if games, err := store.QueryGamesForUser("not-a-uuid", 10, 0); err != nil || len(games) != 0 {
+	if games, err := store.QueryGamesForUser("not-a-uuid", UserGamesQuery{Limit: 10}); err != nil || len(games) != 0 {
 		t.Fatalf("malformed user ID = %v, %v; want empty", games, err)
+	}
+
+	// Keyset pages match offset pages, and a game inserted at the head
+	// between pages does not shift the next page.
+	got = nil
+	var after *GameCursor
+	for page := 0; ; page++ {
+		games, err := store.QueryGamesForUser(user, UserGamesQuery{Limit: 2, After: after})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, game := range games {
+			got = append(got, game.GameID)
+		}
+		if len(games) < 2 {
+			break
+		}
+		last := games[len(games)-1]
+		after = &GameCursor{StartTimeUTC: last.StartTimeUTC, GameID: last.GameID}
+		if page == 0 {
+			newer := GameRecord{
+				GameID: uuid.NewString(), InitialFEN: "initial",
+				WhitePlayerID: user, WhiteType: 1, WhiteClaimedBy: user,
+				BlackPlayerID: uuid.NewString(), BlackType: 1,
+				StartTimeUTC: base.Add(time.Hour),
+			}
+			if err := store.RecordNewGame(newer); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("keyset pages = %v, want %v", got, want)
+	}
+
+	count := func(q UserGamesQuery) int {
+		t.Helper()
+		q.Limit = 50
+		games, err := store.QueryGamesForUser(user, q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(games)
+	}
+	// Five games claimed by user: indexes 0, 1, 2, 4 and the newer one.
+	for _, tc := range []struct {
+		q    UserGamesQuery
+		want int
+	}{
+		{UserGamesQuery{}, 5},
+		{UserGamesQuery{Color: "w"}, 3},
+		{UserGamesQuery{Color: "b"}, 3},
+		{UserGamesQuery{Status: "finished"}, 1},
+		{UserGamesQuery{Status: "ongoing"}, 4},
+		{UserGamesQuery{Color: "b", Status: "finished"}, 1},
+	} {
+		if got := count(tc.q); got != tc.want {
+			t.Errorf("QueryGamesForUser(%+v) = %d games, want %d", tc.q, got, tc.want)
+		}
+	}
+	for _, bad := range []UserGamesQuery{
+		{Limit: 1, Color: "x"}, {Limit: 1, Status: "x"},
+		{Limit: 1, Offset: 1, After: &GameCursor{GameID: user}},
+		{Limit: 1, After: &GameCursor{GameID: "x"}},
+	} {
+		if _, err := store.QueryGamesForUser(user, bad); err == nil {
+			t.Errorf("QueryGamesForUser(%+v) succeeded", bad)
+		}
+	}
+
+	prefix := want[0][:8]
+	if id, err := store.ResolveGameID(prefix); err != nil || id != want[0] {
+		t.Errorf("ResolveGameID(%s) = %q, %v; want %s", prefix, id, err, want[0])
+	}
+	if _, err := store.ResolveGameID("0000000"); err == nil {
+		t.Error("ResolveGameID accepted a 7-digit prefix")
+	}
+	if _, err := store.ResolveGameID("ffffffff-ffff"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("ResolveGameID(unknown) error = %v, want sql.ErrNoRows", err)
 	}
 }
 
@@ -241,6 +322,14 @@ func TestQueryPlansUsePurposeBuiltIndexes(t *testing.T) {
 				ORDER BY g.start_time_utc DESC, g.game_id DESC LIMIT 50`,
 			args: []any{userID},
 			want: []string{"games_white_claimed_idx", "games_black_claimed_idx"},
+		},
+		{
+			name: "keyset page of one color uses its claim index",
+			query: `SELECT game_id FROM games g
+				WHERE g.white_claimed_by = $1 AND (g.start_time_utc, g.game_id) < ($2, $3)
+				ORDER BY g.start_time_utc DESC, g.game_id DESC LIMIT 50`,
+			args: []any{userID, time.Now(), userID},
+			want: []string{"games_white_claimed_idx"},
 		},
 		{
 			name: "last move probe uses the moves primary key",

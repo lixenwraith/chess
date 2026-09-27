@@ -23,7 +23,7 @@ const dsnEnv = "CHESS_DSN"
 // Run is the entry point for the CLI mini-app
 func Run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("subcommand required: init, delete, query, user")
+		return fmt.Errorf("subcommand required: init, delete, query, pgn, verify, user")
 	}
 
 	switch args[0] {
@@ -33,6 +33,10 @@ func Run(args []string) error {
 		return runDelete(args[1:])
 	case "query":
 		return runQuery(args[1:])
+	case "pgn":
+		return runPGN(args[1:])
+	case "verify":
+		return runVerify(args[1:])
 	case "user":
 		if len(args) < 2 {
 			return fmt.Errorf("user subcommand required: add, delete, set-password, set-hash, set-email, set-username, list")
