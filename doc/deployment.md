@@ -105,6 +105,21 @@ rerun, and a fresh split-privilege install.
 
 ## Accounts and Data Retention
 
+A new database has no accounts. Create the first one (for example your own)
+with the CLI; without `-password` it prompts, so the password stays out of
+the shell history and the process list:
+
+```sh
+jail# su -m chess -c '/home/chess/bin/chess-server db user add -username <name> -dsn "postgres:///chess?host=/tmp"'
+```
+
+The row lands in `chess.users` with an Argon2id hash in `password_hash`; the
+password itself is stored nowhere and cannot be read back, only replaced
+(`db user set-password`). Look at the tables as `postgres` with
+`SET search_path = chess;` first, or `\dt chess.*`: they are not in
+`public`. [database.md](database.md) has the psql recipes (inspecting and
+deleting games, sessions, starting fresh).
+
 - Accounts created by registration on the site and by `chess-server db user
   add` are identical and never expire. Public registration closes at
   `-max-users` accounts (default 100; `0` removes the limit); the CLI is not
@@ -159,11 +174,19 @@ right role; root may use `su -m` although the account has no shell:
 jail# su -m chess -c '/home/chess/bin/chess-server db user list -dsn "postgres:///chess?host=/tmp"'
 ```
 
+`db` subcommands: `init`, `delete -confirm` (drops the tables), `query`
+(games, with 8-digit ID prefixes), `pgn -gameId <id|prefix> [-ply N]`,
+`verify [-gameId <id|prefix>]` (replays stored games against the rules and
+exits non-zero on a mismatch; run it after an upgrade), and `user add|delete|
+set-password|set-hash|set-email|set-username|list`.
+
 ## Host nginx and Web Clients
 
 The API has no version segment: routes are `/api/...` and `/health`. With the
 layout in [`nginx-chess.conf`](../deploy/freebsd/nginx-chess.conf), browsers
-call `<origin>/chess/api/...` and nginx maps `/chess/api/` to `/api/`.
+call `<origin>/chess/api/...` and nginx maps `/chess/api/` to `/api/`. The
+bare `/chess` and `/chess/` redirect (302) to the page that embeds the
+client, as a short link.
 
 - `X-Real-IP` must carry the real client address (`$remote_addr`, after
   `real_ip` processing when PROXY protocol is in front of nginx). The server
@@ -181,10 +204,14 @@ server's API paths:
   embedded `/config` endpoint, it uses the `/chess` API prefix.
 - **WASM terminal client (if published):** `make wasm` (xterm.js is committed
   under `lib/`), then copy `web/chess-client-wasm/`. It derives its API base
-  as `<origin>/chess`.
+  as `<origin>/chess`. Its API paths are compiled into `chess-client.wasm`,
+  so rebuild it whenever `internal/client/api` changes; publish it together
+  with the `wasm_exec.js` that `make wasm` copies from the same Go toolchain.
 
-Publish the clients in the same change as the server: a client built for
-`/api/v1` gets 404 from this release.
+`web/chess-client-web` is a symlink to the embedded web client; copy with
+`cp -RL` or `rsync -L` so the files, not the link, reach the site. Publish the
+clients in the same change as the server, and expect browsers to hold cached
+copies until a hard refresh.
 
 ## Reference
 

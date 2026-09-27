@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Go 1.26+
+- Go 1.27+
 - Stockfish in PATH
 - PostgreSQL 18 (server for persistence; `psql` for the shell test suites)
 - Git
