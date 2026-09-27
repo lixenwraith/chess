@@ -1,4 +1,8 @@
 # Makefile for chess server and client
+#
+# Portable between GNU make (4.0+, Linux) and bmake (FreeBSD's make): no
+# $(shell), order-only prerequisites, or GNU conditionals. Shell assignments
+# use `!=`, which both implementations support.
 
 # Variables
 BINARY_DIR := bin
@@ -6,8 +10,9 @@ SERVER_BINARY := $(BINARY_DIR)/chess-server
 CLIENT_BINARY := $(BINARY_DIR)/chess-client-cli
 SERVER_SOURCE := ./cmd/chess-server
 CLIENT_SOURCE := ./cmd/chess-client-cli
-GO := go
-GOROOT := $(shell go env GOROOT)
+# FreeBSD packages each Go release under its own name: go.mod's 1.27 is go127.
+GO_DEFAULT != uname -s | grep -q FreeBSD && sed -n 's/^go \([0-9]*\)\.\([0-9]*\).*/go\1\2/p' go.mod 2>/dev/null | grep . || echo go
+GO ?= $(GO_DEFAULT)
 GOFLAGS := -trimpath
 LDFLAGS := -s -w
 # Both binaries are pure Go (pgx has no C dependency), so builds are static and
@@ -18,16 +23,10 @@ CGO := CGO_ENABLED=0
 # default uses the local Unix socket and peer authentication.
 CHESS_DSN ?= dbname=chess
 
-# Build info
-GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-BUILD_TIME := $(shell date -u '+%Y-%m-%d_%H:%M:%S')
-VERSION := $(shell git describe --tags --abbrev=0 2>/dev/null || echo "dev")
-
 # WASM build variables
 WASM_DIR := web/chess-client-wasm
 WASM_BINARY := $(WASM_DIR)/chess-client.wasm
 WASM_EXEC_JS := $(WASM_DIR)/wasm_exec.js
-WASM_EXEC_SRC := $(GOROOT)/lib/wasm/wasm_exec.js
 WASM_LIB_DIR := $(WASM_DIR)/lib
 
 # xterm.js versions (5.5.0 compatible)
@@ -36,8 +35,13 @@ XTERM_FIT_VERSION := 0.10.0
 XTERM_WEBGL_VERSION := 0.18.0
 XTERM_LINKS_VERSION := 0.11.0
 XTERM_UNICODE_VERSION := 0.8.0
+# curl on Linux; FreeBSD base ships fetch(1)
+DOWNLOAD != if command -v curl >/dev/null 2>&1; then echo 'curl -sSfLO'; else echo 'fetch -q'; fi
 
-# Default target
+# Default target: `make` prints help (.MAIN for bmake, .DEFAULT_GOAL for GNU make)
+.MAIN: help
+.DEFAULT_GOAL := help
+
 .PHONY: all
 all: build
 
@@ -48,43 +52,42 @@ build: server client
 # Build server only. Phony: the Go build cache decides what is stale, so a
 # changed source file is never masked by an existing binary.
 .PHONY: server
-server: | $(BINARY_DIR)
+server:
+	@mkdir -p $(BINARY_DIR)
 	$(CGO) $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(SERVER_BINARY) $(SERVER_SOURCE)
 	@echo "Built server: $(SERVER_BINARY)"
 
 # Build client only
 .PHONY: client
-client: | $(BINARY_DIR)
+client:
+	@mkdir -p $(BINARY_DIR)
 	$(CGO) $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(CLIENT_BINARY) $(CLIENT_SOURCE)
 	@echo "Built client: $(CLIENT_BINARY)"
 
-# Create bin directory
-$(BINARY_DIR):
-	@mkdir -p $(BINARY_DIR)
-
 # Build WASM client — CGO incompatible with js/wasm target
 .PHONY: wasm
-wasm: $(WASM_DIR)
+wasm:
+	@mkdir -p $(WASM_DIR)
 	@echo "Building WASM client..."
 	$(CGO) GOOS=js GOARCH=wasm $(GO) build $(GOFLAGS) \
 		-ldflags "$(LDFLAGS)" \
 		-o $(WASM_BINARY) $(CLIENT_SOURCE)
-	@cp "$(WASM_EXEC_SRC)" $(WASM_DIR)/
+	@cp "$$($(GO) env GOROOT)/lib/wasm/wasm_exec.js" $(WASM_DIR)/
 	@echo "Built WASM client: $(WASM_BINARY)"
 	@echo "Size: $$(du -h $(WASM_BINARY) | cut -f1)"
 
 # Download xterm.js and all addons
 .PHONY: wasm-deps
-wasm-deps: $(WASM_DIR)
+wasm-deps:
 	@echo "Downloading xterm.js $(XTERM_VERSION) and addons..."
 	@mkdir -p $(WASM_LIB_DIR)
 	@cd $(WASM_LIB_DIR) && \
-		curl -sO https://cdn.jsdelivr.net/npm/@xterm/xterm@$(XTERM_VERSION)/lib/xterm.min.js && \
-		curl -sO https://cdn.jsdelivr.net/npm/@xterm/xterm@$(XTERM_VERSION)/css/xterm.min.css && \
-		curl -sO https://cdn.jsdelivr.net/npm/@xterm/addon-fit@$(XTERM_FIT_VERSION)/lib/addon-fit.min.js && \
-		curl -sO https://cdn.jsdelivr.net/npm/@xterm/addon-webgl@$(XTERM_WEBGL_VERSION)/lib/addon-webgl.min.js && \
-		curl -sO https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@$(XTERM_LINKS_VERSION)/lib/addon-web-links.min.js && \
-		curl -sO https://cdn.jsdelivr.net/npm/@xterm/addon-unicode11@$(XTERM_UNICODE_VERSION)/lib/addon-unicode11.min.js
+		$(DOWNLOAD) https://cdn.jsdelivr.net/npm/@xterm/xterm@$(XTERM_VERSION)/lib/xterm.min.js && \
+		$(DOWNLOAD) https://cdn.jsdelivr.net/npm/@xterm/xterm@$(XTERM_VERSION)/css/xterm.min.css && \
+		$(DOWNLOAD) https://cdn.jsdelivr.net/npm/@xterm/addon-fit@$(XTERM_FIT_VERSION)/lib/addon-fit.min.js && \
+		$(DOWNLOAD) https://cdn.jsdelivr.net/npm/@xterm/addon-webgl@$(XTERM_WEBGL_VERSION)/lib/addon-webgl.min.js && \
+		$(DOWNLOAD) https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@$(XTERM_LINKS_VERSION)/lib/addon-web-links.min.js && \
+		$(DOWNLOAD) https://cdn.jsdelivr.net/npm/@xterm/addon-unicode11@$(XTERM_UNICODE_VERSION)/lib/addon-unicode11.min.js
 	@echo "Downloaded to $(WASM_LIB_DIR)/"
 	@ls -la $(WASM_LIB_DIR)/
 
@@ -104,10 +107,6 @@ wasm-serve: wasm
 wasm-clean:
 	rm -f $(WASM_BINARY) $(WASM_EXEC_JS)
 	rm -rf $(WASM_DIR)/lib
-
-# Create WASM directory
-$(WASM_DIR):
-	@mkdir -p $(WASM_DIR)
 
 # Run server with default settings
 .PHONY: run-server
@@ -155,20 +154,22 @@ db-init: server
 	CHESS_DSN='$(CHESS_DSN)' $(SERVER_BINARY) db init
 
 .PHONY: db-clean
+# ☣ DESTRUCTIVE: drops every chess table in the DSN's search_path
 db-clean: server
-	# ☣ DESTRUCTIVE: drops every chess table in the DSN's search_path
 	CHESS_DSN='$(CHESS_DSN)' $(SERVER_BINARY) db delete -confirm
 
 # Cross-compile a static server for FreeBSD/amd64 (no C toolchain required)
 .PHONY: server-freebsd
-server-freebsd: | $(BINARY_DIR)
+server-freebsd:
+	@mkdir -p $(BINARY_DIR)
 	$(CGO) GOOS=freebsd GOARCH=amd64 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" \
 		-o $(SERVER_BINARY)-freebsd-amd64 $(SERVER_SOURCE)
 	@echo "Built FreeBSD server: $(SERVER_BINARY)-freebsd-amd64"
 
 # Development build with the race detector (the race runtime requires cgo)
 .PHONY: dev
-dev: | $(BINARY_DIR)
+dev:
+	@mkdir -p $(BINARY_DIR)
 	CGO_ENABLED=1 $(GO) build -race -o $(SERVER_BINARY) $(SERVER_SOURCE)
 	CGO_ENABLED=1 $(GO) build -race -o $(CLIENT_BINARY) $(CLIENT_SOURCE)
 	@echo "Built with race detector enabled"
@@ -244,5 +245,3 @@ help:
 	@echo "  make fmt          Format code"
 	@echo "  make lint         Run linter"
 
-# Default make without arguments shows help
-.DEFAULT_GOAL := help
