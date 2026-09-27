@@ -92,7 +92,7 @@ function restoreAuthSession() {
 
 async function validateSession() {
     try {
-        const response = await authFetch(`${gameState.apiUrl}/api/v1/auth/me`);
+        const response = await authFetch(`${gameState.apiUrl}/api/auth/me`);
         if (response.ok) {
             const user = await response.json();
             gameState.userId = user.userId;
@@ -228,7 +228,7 @@ async function handleLogin() {
 
     let response;
     try {
-        response = await fetch(`${gameState.apiUrl}/api/v1/auth/login`, {
+        response = await fetch(`${gameState.apiUrl}/api/auth/login`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ identifier, password })
@@ -295,7 +295,7 @@ async function handleRegister() {
 
     let response;
     try {
-        response = await fetch(`${gameState.apiUrl}/api/v1/auth/register`, {
+        response = await fetch(`${gameState.apiUrl}/api/auth/register`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
@@ -337,7 +337,7 @@ async function handleRegister() {
 async function handleLogout() {
     if (gameState.authToken) {
         try {
-            await authFetch(`${gameState.apiUrl}/api/v1/auth/logout`, { method: 'POST' });
+            await authFetch(`${gameState.apiUrl}/api/auth/logout`, { method: 'POST' });
         } catch {
             // Ignore - clear local state regardless
         }
@@ -619,7 +619,7 @@ async function startNewGame() {
 
     let response;
     try {
-        response = await authFetch(`${gameState.apiUrl}/api/v1/games`, {
+        response = await authFetch(`${gameState.apiUrl}/api/games`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(requestBody)
@@ -771,7 +771,7 @@ async function handleHumanMove(from, to) {
     const toEl = document.querySelector(`[data-square="${to}"]`);
 
     try {
-        const response = await authFetch(`${gameState.apiUrl}/api/v1/games/${gameState.gameId}/moves`, {
+        const response = await authFetch(`${gameState.apiUrl}/api/games/${gameState.gameId}/moves`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ move })
@@ -808,7 +808,7 @@ async function handleHumanMove(from, to) {
 async function triggerComputerMove() {
     lockBoard();
     try {
-        const response = await authFetch(`${gameState.apiUrl}/api/v1/games/${gameState.gameId}/moves`, {
+        const response = await authFetch(`${gameState.apiUrl}/api/games/${gameState.gameId}/moves`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ move: 'cccc' })
@@ -849,7 +849,7 @@ async function pollOnce() {
 
     try {
         const response = await authFetch(
-            `${gameState.apiUrl}/api/v1/games/${gameState.gameId}?wait=true&moveCount=${moveCount}`,
+            `${gameState.apiUrl}/api/games/${gameState.gameId}?wait=true&moveCount=${moveCount}`,
             { signal: gameState.pollController.signal }
         );
 
@@ -908,7 +908,7 @@ async function undoMoves() {
     }
 
     try {
-        const response = await authFetch(`${gameState.apiUrl}/api/v1/games/${gameState.gameId}/undo`, {
+        const response = await authFetch(`${gameState.apiUrl}/api/games/${gameState.gameId}/undo`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ count: 2 })

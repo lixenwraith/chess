@@ -1,6 +1,8 @@
 # API Reference
 
-Base URL: `http://localhost:8080/api/v1`
+Base URL: `http://localhost:8080/api`
+
+The API is unversioned; `/health` is served at the root, outside `/api`.
 
 Content-Type: `application/json` (required for POST/PUT)
 

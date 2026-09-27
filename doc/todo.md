@@ -15,9 +15,9 @@ into phases that each ship and test on their own.
   times, and slot claims; transactional migrations (`schema_version`).
 - [x] Each accepted move, first-move claim, and move-caused result commits in
   one transaction; undo removes moves and clears the result atomically.
-- [x] `GET /api/v1/games/{id}/history`: initial FEN plus UCI and resulting FEN
+- [x] `GET /api/games/{id}/history`: initial FEN plus UCI and resulting FEN
   for every ply, read in one REPEATABLE READ snapshot after pending writes.
-- [x] `GET /api/v1/users/me/games`: claimed games, newest first, with move
+- [x] `GET /api/users/me/games`: claimed games, newest first, with move
   count and final FEN (thumbnail) from a primary-key probe per game.
 - [x] Claims survive player reconfiguration and terminal-game eviction; the
   listing indexes are ordered for keyset pagination.
@@ -74,7 +74,7 @@ Test gate:
 - [ ] Implement D7 (keyset cursor) once decided.
 - [ ] Additive history fields: `san` per move, `outcome`/`termination`, and
   `pgnResult`; keep existing fields unchanged.
-- [ ] `GET /api/v1/games/{id}/pgn?ply=N`: `application/x-chess-pgn`,
+- [ ] `GET /api/games/{id}/pgn?ply=N`: `application/x-chess-pgn`,
   `Content-Disposition: attachment; filename="chess-<date>-<id8>.pgn"`,
   moves 1..N (default all). The FEN at any ply is already in the history.
 - [ ] `ETag` and `Cache-Control: private, max-age` for terminal games;

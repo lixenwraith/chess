@@ -3,7 +3,7 @@
 set -e
 
 # Configuration
-API_URL="${API_URL:-http://localhost:8080/api/v1}"  # Updated to include /api/v1
+API_URL="${API_URL:-http://localhost:8080/api}"
 VERBOSE="${VERBOSE:-false}"
 
 # Colors for output

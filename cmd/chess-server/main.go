@@ -184,7 +184,6 @@ func main() {
 	go func() {
 		log.Printf("Chess API Server starting...")
 		log.Printf("API Listening on: http://%s", apiAddr)
-		log.Printf("API Version: v1")
 		log.Printf("Authentication: Enabled (JWT)")
 		if *dev {
 			log.Printf("Rate Limit: 20 requests/second per IP (DEV MODE)")
@@ -201,8 +200,8 @@ func main() {
 		} else {
 			log.Printf("Storage: Disabled (auth features unavailable)")
 		}
-		log.Printf("API Endpoints: http://%s/api/v1/games", apiAddr)
-		log.Printf("Auth Endpoints: http://%s/api/v1/auth/[register|login|me]", apiAddr)
+		log.Printf("API Endpoints: http://%s/api/games", apiAddr)
+		log.Printf("Auth Endpoints: http://%s/api/auth/[register|login|me]", apiAddr)
 		log.Printf("Health: http://%s/health", apiAddr)
 
 		if err := app.Listen(apiAddr); err != nil {

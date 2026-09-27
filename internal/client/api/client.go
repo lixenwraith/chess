@@ -163,56 +163,56 @@ func (c *Client) Health() (*HealthResponse, error) {
 
 func (c *Client) CreateGame(req *CreateGameRequest) (*GameResponse, error) {
 	var resp GameResponse
-	err := c.doRequest("POST", "/api/v1/games", req, &resp)
+	err := c.doRequest("POST", "/api/games", req, &resp)
 	return &resp, err
 }
 
 func (c *Client) GetGame(gameID string) (*GameResponse, error) {
 	var resp GameResponse
-	err := c.doRequest("GET", "/api/v1/games/"+gameID, nil, &resp)
+	err := c.doRequest("GET", "/api/games/"+gameID, nil, &resp)
 	return &resp, err
 }
 
 func (c *Client) GetGameWithPoll(gameID string, moveCount int) (*GameResponse, error) {
 	var resp GameResponse
-	path := fmt.Sprintf("/api/v1/games/%s?wait=true&moveCount=%d", gameID, moveCount)
+	path := fmt.Sprintf("/api/games/%s?wait=true&moveCount=%d", gameID, moveCount)
 	err := c.doRequest("GET", path, nil, &resp)
 	return &resp, err
 }
 
 func (c *Client) DeleteGame(gameID string) error {
-	return c.doRequest("DELETE", "/api/v1/games/"+gameID, nil, nil)
+	return c.doRequest("DELETE", "/api/games/"+gameID, nil, nil)
 }
 
 func (c *Client) MakeMove(gameID string, move string) (*GameResponse, error) {
 	req := &MoveRequest{Move: move}
 	var resp GameResponse
-	err := c.doRequest("POST", "/api/v1/games/"+gameID+"/moves", req, &resp)
+	err := c.doRequest("POST", "/api/games/"+gameID+"/moves", req, &resp)
 	return &resp, err
 }
 
 func (c *Client) UndoMoves(gameID string, count int) (*GameResponse, error) {
 	req := &UndoRequest{Count: count}
 	var resp GameResponse
-	err := c.doRequest("POST", "/api/v1/games/"+gameID+"/undo", req, &resp)
+	err := c.doRequest("POST", "/api/games/"+gameID+"/undo", req, &resp)
 	return &resp, err
 }
 
 func (c *Client) GetBoard(gameID string) (*BoardResponse, error) {
 	var resp BoardResponse
-	err := c.doRequest("GET", "/api/v1/games/"+gameID+"/board", nil, &resp)
+	err := c.doRequest("GET", "/api/games/"+gameID+"/board", nil, &resp)
 	return &resp, err
 }
 
 func (c *Client) GetGameHistory(gameID string) (*GameHistoryResponse, error) {
 	var resp GameHistoryResponse
-	err := c.doRequest("GET", "/api/v1/games/"+gameID+"/history", nil, &resp)
+	err := c.doRequest("GET", "/api/games/"+gameID+"/history", nil, &resp)
 	return &resp, err
 }
 
 func (c *Client) GetMyGames(limit, offset int) (*GameListResponse, error) {
 	var resp GameListResponse
-	path := fmt.Sprintf("/api/v1/users/me/games?limit=%d&offset=%d", limit, offset)
+	path := fmt.Sprintf("/api/users/me/games?limit=%d&offset=%d", limit, offset)
 	err := c.doRequest("GET", path, nil, &resp)
 	return &resp, err
 }
@@ -224,7 +224,7 @@ func (c *Client) Register(username, password, email string) (*AuthResponse, erro
 		Email:    email,
 	}
 	var resp AuthResponse
-	err := c.doRequest("POST", "/api/v1/auth/register", req, &resp)
+	err := c.doRequest("POST", "/api/auth/register", req, &resp)
 	return &resp, err
 }
 
@@ -234,17 +234,17 @@ func (c *Client) Login(identifier, password string) (*AuthResponse, error) {
 		Password:   password,
 	}
 	var resp AuthResponse
-	err := c.doRequest("POST", "/api/v1/auth/login", req, &resp)
+	err := c.doRequest("POST", "/api/auth/login", req, &resp)
 	return &resp, err
 }
 
 func (c *Client) Logout() error {
-	return c.doRequest("POST", "/api/v1/auth/logout", nil, nil)
+	return c.doRequest("POST", "/api/auth/logout", nil, nil)
 }
 
 func (c *Client) GetCurrentUser() (*UserResponse, error) {
 	var resp UserResponse
-	err := c.doRequest("GET", "/api/v1/auth/me", nil, &resp)
+	err := c.doRequest("GET", "/api/auth/me", nil, &resp)
 	return &resp, err
 }
 

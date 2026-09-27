@@ -61,13 +61,13 @@ LOG_LEVEL=info LOG_HTTP=false test/run-test-server.sh bin/chess-server
 ### Manual Testing Examples
 ```bash
 # Login as alice
-curl -X POST http://localhost:8080/auth/login \
+curl -X POST http://localhost:8080/api/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"username":"alice","password":"AlicePass123"}'
+  -d '{"identifier":"alice","password":"AlicePass123"}'
 
 # Create authenticated game
 TOKEN="<jwt-from-login>"
-curl -X POST http://localhost:8080/games \
+curl -X POST http://localhost:8080/api/games \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"white":{"type":1},"black":{"type":2,"level":10}}'

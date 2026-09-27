@@ -111,7 +111,7 @@ schema is current, which lets a DML-only runtime role start the server.
 8. Game deletion notifies and removes all waiters
 
 ### Durable Replay Read
-1. Client requests `GET /api/v1/games/{id}/history`
+1. Client requests `GET /api/games/{id}/history`
 2. Storage queues a barrier after all previously accepted gameplay writes
 3. The writer reaches the barrier only after those transactions finish
 4. Storage reads the game row and ordered moves in one REPEATABLE READ transaction

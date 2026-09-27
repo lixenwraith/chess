@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 BASE_URL="${BASE_URL:-http://localhost:8080}"
-API_URL="${BASE_URL}/api/v1"
+API_URL="${BASE_URL}/api"
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 PASS=0; FAIL=0
 

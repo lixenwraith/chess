@@ -3,7 +3,10 @@ package http
 import (
 	"io"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"chess/internal/server/service"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -57,5 +60,46 @@ func TestIsValidUUIDRequiresCanonicalForm(t *testing.T) {
 		if got := isValidUUID(value); got != want {
 			t.Errorf("isValidUUID(%q) = %v, want %v", value, got, want)
 		}
+	}
+}
+
+func TestAPIRoutesAreUnversioned(t *testing.T) {
+	svc, err := service.New(nil, []byte("test-secret-test-secret-test-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Route registration only; no handler runs, so no processor is needed.
+	app := NewFiberApp(nil, svc, Options{DevMode: true})
+
+	registered := make(map[string]bool)
+	for _, route := range app.GetRoutes(true) {
+		registered[route.Method+" "+route.Path] = true
+		if strings.HasPrefix(route.Path, "/api/v1") {
+			t.Errorf("versioned route still registered: %s %s", route.Method, route.Path)
+		}
+	}
+	for _, want := range []string{
+		"GET /health",
+		"POST /api/auth/register",
+		"POST /api/auth/login",
+		"GET /api/auth/me",
+		"POST /api/auth/logout",
+		"POST /api/games",
+		"GET /api/games/:gameId",
+		"GET /api/games/:gameId/history",
+		"POST /api/games/:gameId/moves",
+		"GET /api/users/me/games",
+	} {
+		if !registered[want] {
+			t.Errorf("route %s is not registered", want)
+		}
+	}
+
+	response, err := app.Test(httptest.NewRequest("GET", "/api/v1/games/5579b47e-4d3b-4eb3-abbd-846fe94cb955", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != fiber.StatusNotFound {
+		t.Fatalf("GET /api/v1/... status = %d, want 404", response.StatusCode)
 	}
 }
