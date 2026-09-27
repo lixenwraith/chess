@@ -11,6 +11,7 @@ import (
 	"unicode"
 
 	"chess/internal/server/board"
+	"chess/internal/server/chess"
 	"chess/internal/server/core"
 	"chess/internal/server/engine"
 	"chess/internal/server/game"
@@ -149,7 +150,14 @@ func (p *Processor) handleCreateGame(cmd Command) ProcessorResponse {
 		if !p.isFENSafe(args.FEN) {
 			return p.errorResponse("invalid FEN format or characters", core.ErrInvalidFEN)
 		}
-		initialFEN = args.FEN
+		// The rules core rejects positions the engine must never see (missing
+		// kings, the side not to move in check) and drops castling rights
+		// without their rook, so both agree on the legal moves.
+		pos, err := chess.ParseFEN(args.FEN)
+		if err != nil {
+			return p.errorResponse(err.Error(), core.ErrInvalidFEN)
+		}
+		initialFEN = pos.FEN()
 	}
 
 	p.mu.Lock()
@@ -351,6 +359,13 @@ func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 
 	currentFEN := g.FEN
 
+	// A pawn move to the last rank needs its promotion piece; say so instead
+	// of the engine's generic rejection.
+	rules := rulesCheck(currentFEN, move)
+	if errors.Is(rules.err, chess.ErrPromotionRequired) {
+		return p.errorResponse("promotion piece required: append q, r, b, or n (e.g. "+move+"q)", core.ErrInvalidMove)
+	}
+
 	// Validate move and classify the resulting position in one engine session
 	p.mu.Lock()
 	err = p.validationEng.SetPosition(currentFEN, []string{move})
@@ -364,6 +379,7 @@ func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 		// Game untouched at pre-move position; retry runs on a respawned engine
 		return p.errorResponse("engine unavailable", core.ErrInternalError)
 	}
+	rules.compare(cmd.GameID, move, newFEN != currentFEN, newFEN)
 	if newFEN == currentFEN {
 		return p.errorResponse("illegal move", core.ErrInvalidMove)
 	}
@@ -514,6 +530,7 @@ func (p *Processor) triggerComputerMove(gameID string, g game.View) error {
 			p.svc.UpdateGameState(gameID, core.StateStuck)
 			return
 		}
+		rulesCheck(fen, result.Move).compare(gameID, result.Move, true, newFEN)
 
 		if err := p.svc.ApplyMoveWithState(gameID, service.MoveCommit{
 			ExpectedFEN: fen, ExpectedState: core.StatePending, ExpectedTurn: color,
@@ -611,4 +628,43 @@ func (p *Processor) Close() error {
 	engineErr := p.validationEng.Close()
 	p.mu.Unlock()
 	return errors.Join(queueErr, engineErr)
+}
+
+// rulesResult is the rules core's verdict on a move, computed alongside the
+// engine's. Stockfish stays authoritative; a disagreement is logged so the
+// core can be trusted, or fixed, before it validates anything.
+type rulesResult struct {
+	fen string // normalized FEN after the move; empty when illegal
+	err error
+}
+
+func rulesCheck(fen, uci string) rulesResult {
+	pos, err := chess.ParseFEN(fen)
+	if err != nil {
+		return rulesResult{err: err}
+	}
+	m, err := pos.ParseUCI(uci)
+	if err != nil {
+		return rulesResult{err: err}
+	}
+	return rulesResult{fen: pos.Play(m).FEN()}
+}
+
+func (r rulesResult) compare(gameID, uci string, engineLegal bool, engineFEN string) {
+	if errors.Is(r.err, chess.ErrInvalidFEN) {
+		slog.Warn("rules core cannot parse game position", "game_id", gameID, "error", r.err)
+		return
+	}
+	if engineLegal != (r.err == nil) {
+		slog.Warn("rules core and engine disagree on legality",
+			"game_id", gameID, "move", uci, "engine_legal", engineLegal, "rules_error", r.err)
+		return
+	}
+	if !engineLegal {
+		return
+	}
+	if normalized, err := chess.NormalizeFEN(engineFEN); err != nil || normalized != r.fen {
+		slog.Warn("rules core and engine disagree on resulting position",
+			"game_id", gameID, "move", uci, "engine_fen", engineFEN, "rules_fen", r.fen)
+	}
 }
