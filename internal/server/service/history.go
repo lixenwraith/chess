@@ -82,6 +82,7 @@ func (s *Service) GetUserGames(userID string, limit, offset int) (*core.GameList
 			StartTimeUTC: record.StartTimeUTC,
 			EndTimeUTC:   record.EndTimeUTC,
 			MoveCount:    record.MoveCount,
+			FinalFEN:     record.FinalFEN,
 			Players:      playersResponse(record.GameRecord),
 		})
 	}
@@ -100,10 +101,12 @@ func playersResponse(record storage.GameRecord) core.PlayersResponse {
 		White: &core.Player{
 			ID: record.WhitePlayerID, Color: core.ColorWhite, Type: core.PlayerType(record.WhiteType),
 			Level: record.WhiteLevel, SearchTime: record.WhiteSearchTime, ClaimedBy: record.WhiteClaimedBy,
+			Name: record.WhiteName,
 		},
 		Black: &core.Player{
 			ID: record.BlackPlayerID, Color: core.ColorBlack, Type: core.PlayerType(record.BlackType),
 			Level: record.BlackLevel, SearchTime: record.BlackSearchTime, ClaimedBy: record.BlackClaimedBy,
+			Name: record.BlackName,
 		},
 	}
 }

@@ -8,8 +8,11 @@
 
 BASE_URL="http://localhost:8080"
 API_URL="${BASE_URL}/api/v1"
-TEST_DB="test.db"
 CHESS_SERVER_EXEC=${1:-"bin/chess-server"}
+# Same disposable database as the running test server (see run-test-server.sh).
+# Use a libpq-compatible DSN: it is passed to both chess-server and psql.
+: "${CHESS_TEST_DSN:?set CHESS_TEST_DSN to the test server database}"
+export CHESS_DSN="$CHESS_TEST_DSN"
 API_DELAY=${API_DELAY:-50}
 
 # Colors
@@ -121,7 +124,7 @@ api_request() {
 }
 
 # Check dependencies
-for cmd in jq sqlite3 curl; do
+for cmd in jq psql curl; do
     if ! command -v $cmd &> /dev/null; then
         echo -e "${RED}Error: $cmd is required but not installed${NC}"
         exit 1
@@ -145,7 +148,7 @@ fi
 print_header "Database & User Management Test Suite"
 echo "Server: $BASE_URL"
 echo "Executable: $CHESS_SERVER_EXEC"
-echo "Test Database (server-managed): $TEST_DB"
+echo "Test Database: \$CHESS_TEST_DSN (server-managed)"
 echo ""
 
 # ==============================================================================
@@ -153,11 +156,11 @@ print_header "SECTION 1: CLI User Operations"
 # ==============================================================================
 
 test_case "1.1: database initialization"
-assert_command "$CHESS_SERVER_EXEC db init -path $TEST_DB" 0 "initialize database"
+assert_command "$CHESS_SERVER_EXEC db init" 0 "initialize database"
 
 # Create testuser1 first (not charlie)
 test_case "1.2: Add First User via CLI"
-OUTPUT=$($CHESS_SERVER_EXEC db user add -path "$TEST_DB" -username "testuser1" \
+OUTPUT=$($CHESS_SERVER_EXEC db user add -username "testuser1" \
     -email "testuser1@test.com" -password "TestPass123" 2>&1)
 if echo "$OUTPUT" | grep -qi "User created successfully"; then
     echo -e "${GREEN}  ✓ User created: testuser1${NC}"
@@ -168,7 +171,7 @@ else
 fi
 
 test_case "1.3: Add Second User"
-OUTPUT=$($CHESS_SERVER_EXEC db user add -path "$TEST_DB" -username "testuser2" \
+OUTPUT=$($CHESS_SERVER_EXEC db user add -username "testuser2" \
     -password "TestPass456" 2>&1)
 if echo "$OUTPUT" | grep -qi "User created successfully"; then
     echo -e "${GREEN}  ✓ User created: testuser2${NC}"
@@ -180,7 +183,7 @@ fi
 
 # Now test duplicate prevention with an existing user
 test_case "1.4: Duplicate Username Prevention"
-assert_command "$CHESS_SERVER_EXEC db user add -path $TEST_DB -username testuser1 -password TestPass789" 1 \
+assert_command "$CHESS_SERVER_EXEC db user add -username testuser1 -password TestPass789" 1 \
     "Duplicate username rejected"
 
 test_case "1.5: Login with Case-Insensitive Username (ALICE)"
@@ -196,11 +199,11 @@ else
 fi
 
 test_case "1.6: Update User Email"
-assert_command "$CHESS_SERVER_EXEC db user set-email -path $TEST_DB -username testuser2 -email testuser2_updated@test.com" 0 \
+assert_command "$CHESS_SERVER_EXEC db user set-email -username testuser2 -email testuser2_updated@test.com" 0 \
     "Email update"
 
 test_case "1.7: Update User Password"
-assert_command "$CHESS_SERVER_EXEC db user set-password -path $TEST_DB -username testuser2 -password NewPass789" 0 \
+assert_command "$CHESS_SERVER_EXEC db user set-password -username testuser2 -password NewPass789" 0 \
     "Password update"
 
 test_case "2.1: Health Check"
@@ -324,7 +327,7 @@ test_case "4.1: Verify Game Storage with User ID"
 if [ -n "$GAME_ID" ]; then
     sleep 0.5  # Allow async write
 
-    DB_WHITE_ID=$(sqlite3 "$TEST_DB" "SELECT white_player_id FROM games WHERE game_id = '$GAME_ID';" 2>/dev/null)
+    DB_WHITE_ID=$(psql "$CHESS_TEST_DSN" -XAtqc "SELECT white_player_id FROM games WHERE game_id = '$GAME_ID';" 2>/dev/null)
     if [ "$DB_WHITE_ID" = "$USER_ID_ALICE" ]; then
         echo -e "${GREEN}  ✓ User ID correctly persisted in database${NC}"
         ((PASS++))
@@ -335,7 +338,7 @@ if [ -n "$GAME_ID" ]; then
 fi
 
 test_case "4.2: Query Games by User ID"
-GAMES_COUNT=$(sqlite3 "$TEST_DB" "SELECT COUNT(*) FROM games WHERE white_player_id = '$USER_ID_ALICE' OR black_player_id = '$USER_ID_ALICE';" 2>/dev/null)
+GAMES_COUNT=$(psql "$CHESS_TEST_DSN" -XAtqc "SELECT COUNT(*) FROM games WHERE white_player_id = '$USER_ID_ALICE' OR black_player_id = '$USER_ID_ALICE';" 2>/dev/null)
 if [ "$GAMES_COUNT" -ge "2" ]; then
     echo -e "${GREEN}  ✓ User's games queryable: found $GAMES_COUNT games${NC}"
     ((PASS++))
@@ -350,7 +353,7 @@ print_header "SECTION 5: Password Operations"
 
 # Now TEST_PASS2_NEW is defined, this test should work
 test_case "5.1: Update User Password via CLI for 'bob'"
-assert_command "$CHESS_SERVER_EXEC db user set-password -path $TEST_DB -username $TEST_USER2 -password $TEST_PASS2_NEW" 0 \
+assert_command "$CHESS_SERVER_EXEC db user set-password -username $TEST_USER2 -password $TEST_PASS2_NEW" 0 \
     "CLI password update for '$TEST_USER2'"
 
 test_case "5.2: Login with NEW Password for 'bob'"
@@ -373,11 +376,11 @@ STATUS=$(api_request POST "$API_URL/auth/login" \
 assert_status 401 "$STATUS" "Old password correctly rejected for '$TEST_USER2'"
 
 test_case "5.4: Add new user '$TEST_USER_CLI' via CLI for hash test"
-assert_command "$CHESS_SERVER_EXEC db user add -path $TEST_DB -username $TEST_USER_CLI -password $TEST_PASS_CLI" 0 \
+assert_command "$CHESS_SERVER_EXEC db user add -username $TEST_USER_CLI -password $TEST_PASS_CLI" 0 \
     "Add user '$TEST_USER_CLI' for hash test"
 
 test_case "5.5: CLI rejects unsupported hash format"
-assert_command "$CHESS_SERVER_EXEC db user set-hash -path $TEST_DB -username $TEST_USER_CLI -hash '$UNSUPPORTED_HASH'" 1 \
+assert_command "$CHESS_SERVER_EXEC db user set-hash -username $TEST_USER_CLI -hash '$UNSUPPORTED_HASH'" 1 \
     "Unsupported bcrypt hash rejected by CLI"
 
 # ==============================================================================
@@ -409,7 +412,7 @@ test_case "6.2: Concurrent Registration Handling"
 wait
 
 # Check only one user was created
-USER_COUNT=$(sqlite3 "$TEST_DB" "SELECT COUNT(*) FROM users WHERE username = 'concurrent';" 2>/dev/null)
+USER_COUNT=$(psql "$CHESS_TEST_DSN" -XAtqc "SELECT COUNT(*) FROM users WHERE username = 'concurrent';" 2>/dev/null)
 if [ "$USER_COUNT" = "1" ]; then
     echo -e "${GREEN}  ✓ Concurrent registration handled correctly${NC}"
     ((PASS++))
@@ -420,15 +423,15 @@ fi
 
 test_case "6.3: Delete User"
 # First, get a user to delete
-OUTPUT=$($CHESS_SERVER_EXEC db user add -path "$TEST_DB" -username "deleteme" \
+OUTPUT=$($CHESS_SERVER_EXEC db user add -username "deleteme" \
     -password "TempPass123" 2>&1)
 TEMP_ID=$(echo "$OUTPUT" | grep "ID:" | awk '{print $2}')
 
-assert_command "$CHESS_SERVER_EXEC db user delete -path $TEST_DB -username deleteme" 0 \
+assert_command "$CHESS_SERVER_EXEC db user delete -username deleteme" 0 \
     "User deletion by username"
 
 # Verify deletion
-USER_EXISTS=$(sqlite3 "$TEST_DB" "SELECT COUNT(*) FROM users WHERE user_id = '$TEMP_ID';" 2>/dev/null)
+USER_EXISTS=$(psql "$CHESS_TEST_DSN" -XAtqc "SELECT COUNT(*) FROM users WHERE user_id = '$TEMP_ID';" 2>/dev/null)
 if [ "$USER_EXISTS" = "0" ]; then
     echo -e "${GREEN}  ✓ User successfully deleted from database${NC}"
     ((PASS++))

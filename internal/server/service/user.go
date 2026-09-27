@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"chess/internal/server/storage"
@@ -18,122 +19,129 @@ var (
 	ErrStorageDisabled    = errors.New("storage disabled")
 	ErrStorageUnavailable = errors.New("storage unavailable")
 	ErrAtCapacity         = errors.New("at capacity")
-	ErrPermanentSlotsFull = errors.New("permanent slots full")
+	ErrUserExists         = errors.New("username or email already exists")
+	ErrInvalidCredentials = errors.New("invalid credentials")
+	ErrAuthBusy           = errors.New("authentication capacity exhausted")
 )
+
+const (
+	// JWTIssuer and JWTAudience scope chess tokens so a token minted by another
+	// service sharing a key is rejected.
+	JWTIssuer   = "chess-server"
+	JWTAudience = "chess-api"
+
+	// MaxConcurrentKDF bounds simultaneous Argon2id derivations (64 MiB each at
+	// the auth defaults), capping password-hashing memory near 256 MiB.
+	MaxConcurrentKDF = 4
+	kdfWaitTimeout   = 5 * time.Second
+)
+
+// dummyPasswordHash is verified for unknown identifiers so a login for a
+// missing account costs the same Argon2id work as one with a wrong password.
+var dummyPasswordHash = sync.OnceValues(func() (string, error) {
+	return auth.HashPassword(uuid.NewString())
+})
 
 // User represents a registered user account
 type User struct {
-	UserID      string
-	Username    string
-	Email       string
-	AccountType string
-	CreatedAt   time.Time
-	ExpiresAt   *time.Time
+	UserID    string
+	Username  string
+	Email     string
+	CreatedAt time.Time
 }
 
-// CreateUser creates new user with registration limits enforcement
-func (s *Service) CreateUser(username, email, password string, permanent bool) (*User, error) {
-	user, _, err := s.createUser(username, email, password, permanent, false)
-	return user, err
+// acquireKDF reserves one Argon2id slot, waiting at most kdfWaitTimeout.
+func (s *Service) acquireKDF() (release func(), err error) {
+	timer := time.NewTimer(kdfWaitTimeout)
+	defer timer.Stop()
+	select {
+	case s.kdf <- struct{}{}:
+		return func() { <-s.kdf }, nil
+	case <-timer.C:
+		return nil, ErrAuthBusy
+	}
 }
 
-// RegisterUser creates the account and its initial session in one SQLite
+func (s *Service) hashPassword(password string) (string, error) {
+	release, err := s.acquireKDF()
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	return auth.HashPassword(password)
+}
+
+func (s *Service) verifyPassword(password, hash string) error {
+	release, err := s.acquireKDF()
+	if err != nil {
+		return err
+	}
+	defer release()
+	return auth.VerifyPassword(password, hash)
+}
+
+// RegisterUser creates the account and its initial session in one database
 // transaction, so a successful registration always returns a usable account.
-func (s *Service) RegisterUser(username, email, password string, permanent bool) (*User, string, error) {
-	return s.createUser(username, email, password, permanent, true)
-}
-
-func (s *Service) createUser(
-	username, email, password string,
-	permanent, withSession bool,
-) (*User, string, error) {
-	s.userMu.Lock()
-	defer s.userMu.Unlock()
-
+// Registered accounts are identical to CLI-created ones and never expire.
+func (s *Service) RegisterUser(username, email, password string) (*User, string, error) {
 	if s.store == nil {
 		return nil, "", ErrStorageDisabled
 	}
 
-	// Determine account type
-	accountType := "temp"
-	var expiresAt *time.Time
-
-	if permanent {
-		accountType = "permanent"
-	} else {
-		expiry := time.Now().UTC().Add(TempUserTTL)
-		expiresAt = &expiry
-	}
-
-	// Hash password
-	passwordHash, err := auth.HashPassword(password)
+	// Hash before touching storage; account creation itself is serialized by
+	// the store, so concurrent registrations only contend for KDF slots.
+	passwordHash, err := s.hashPassword(password)
 	if err != nil {
+		if errors.Is(err, ErrAuthBusy) {
+			return nil, "", err
+		}
 		return nil, "", fmt.Errorf("failed to hash password: %w", err)
 	}
 
-	// Generate unique user ID
-	userID, err := s.generateUniqueUserID()
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to generate unique ID: %w", err)
-	}
+	now := time.Now().UTC()
 
-	// Create user record
+	// A random UUIDv4 needs no existence probe; the primary key rejects the
+	// negligible collision case.
+	userID := uuid.NewString()
 	user := &User{
-		UserID:      userID,
-		Username:    username,
-		Email:       email,
-		AccountType: accountType,
-		CreatedAt:   time.Now().UTC(),
-		ExpiresAt:   expiresAt,
+		UserID:    userID,
+		Username:  strings.ToLower(username),
+		Email:     strings.ToLower(email),
+		CreatedAt: now,
 	}
-
 	record := storage.UserRecord{
 		UserID:       userID,
-		Username:     strings.ToLower(username),
-		Email:        strings.ToLower(email),
+		Username:     user.Username,
+		Email:        user.Email,
 		PasswordHash: passwordHash,
-		AccountType:  accountType,
-		CreatedAt:    user.CreatedAt,
-		ExpiresAt:    expiresAt,
+		CreatedAt:    now,
 	}
-
-	var sessionID string
-	var session *storage.SessionRecord
-	if withSession {
-		sessionID = uuid.New().String()
-		session = &storage.SessionRecord{
-			SessionID: sessionID,
-			UserID:    userID,
-			CreatedAt: user.CreatedAt,
-			ExpiresAt: user.CreatedAt.Add(SessionTTL),
-		}
+	sessionID := uuid.NewString()
+	session := &storage.SessionRecord{
+		SessionID: sessionID,
+		UserID:    userID,
+		CreatedAt: now,
+		ExpiresAt: now.Add(SessionTTL),
 	}
-	limits := storage.UserLimits{
-		MaxUsers:       MaxUsers,
-		PermanentSlots: PermanentSlots,
-	}
+	limits := storage.UserLimits{MaxUsers: int(s.maxUsers.Load())}
 	if err = s.store.CreateUserWithinLimits(record, session, limits); err != nil {
 		switch {
 		case errors.Is(err, storage.ErrUserAlreadyExists):
-			return nil, "", fmt.Errorf("username or email already exists: %w", err)
-		case errors.Is(err, storage.ErrPermanentCapacity):
-			return nil, "", fmt.Errorf("%w (%d maximum)", ErrPermanentSlotsFull, PermanentSlots)
+			return nil, "", ErrUserExists
 		case errors.Is(err, storage.ErrUserCapacity):
-			return nil, "", fmt.Errorf("%w: no temporary account can be replaced", ErrAtCapacity)
+			return nil, "", fmt.Errorf("%w: registration is limited to %d accounts", ErrAtCapacity, limits.MaxUsers)
 		default:
 			return nil, "", fmt.Errorf("%w: create user: %v", ErrStorageUnavailable, err)
 		}
 	}
-	slog.Debug("user created",
-		"user_id", userID,
-		"account_type", accountType,
-		"initial_session", withSession,
-	)
+	slog.Debug("user created", "user_id", userID)
 
 	return user, sessionID, nil
 }
 
-// AuthenticateUser verifies credentials and creates a new session
+// AuthenticateUser verifies credentials and creates a new session. Unknown
+// identifiers and wrong passwords both return ErrInvalidCredentials after the
+// same Argon2id work.
 func (s *Service) AuthenticateUser(identifier, password string) (*User, string, error) {
 	if s.store == nil {
 		return nil, "", ErrStorageDisabled
@@ -141,73 +149,47 @@ func (s *Service) AuthenticateUser(identifier, password string) (*User, string, 
 
 	var userRecord *storage.UserRecord
 	var err error
-
-	// Check if identifier looks like email
 	if strings.Contains(identifier, "@") {
 		userRecord, err = s.store.GetUserByEmail(identifier)
 	} else {
 		userRecord, err = s.store.GetUserByUsername(identifier)
 	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, "", fmt.Errorf("%w: look up user: %v", ErrStorageUnavailable, err)
+	}
 
-	if err != nil {
-		auth.HashPassword(password) // Timing attack prevention
-		if !errors.Is(err, sql.ErrNoRows) {
-			return nil, "", fmt.Errorf("%w: look up user: %v", ErrStorageUnavailable, err)
+	hash := ""
+	if userRecord != nil {
+		hash = userRecord.PasswordHash
+	} else if hash, err = dummyPasswordHash(); err != nil {
+		return nil, "", fmt.Errorf("prepare credential check: %w", err)
+	}
+	if err := s.verifyPassword(password, hash); err != nil || userRecord == nil {
+		if errors.Is(err, ErrAuthBusy) {
+			return nil, "", err
 		}
-		return nil, "", fmt.Errorf("invalid credentials")
+		return nil, "", ErrInvalidCredentials
 	}
 
-	// Verify password
-	if err := auth.VerifyPassword(password, userRecord.PasswordHash); err != nil {
-		return nil, "", fmt.Errorf("invalid credentials")
-	}
-
-	// Check if temp user expired
-	if userRecord.AccountType == "temp" && userRecord.ExpiresAt != nil {
-		if time.Now().UTC().After(*userRecord.ExpiresAt) {
-			return nil, "", fmt.Errorf("account expired")
-		}
-	}
-
-	// Create new session (invalidates any existing session)
-	sessionID := uuid.New().String()
-	sessionRecord := storage.SessionRecord{
+	now := time.Now().UTC()
+	// Replaces any existing session and records the login time.
+	sessionID := uuid.NewString()
+	if err := s.store.CreateSession(storage.SessionRecord{
 		SessionID: sessionID,
 		UserID:    userRecord.UserID,
-		CreatedAt: time.Now().UTC(),
-		ExpiresAt: time.Now().UTC().Add(SessionTTL),
-	}
-
-	if err := s.store.CreateSession(sessionRecord); err != nil {
+		CreatedAt: now,
+		ExpiresAt: now.Add(SessionTTL),
+	}); err != nil {
 		return nil, "", fmt.Errorf("%w: create session: %v", ErrStorageUnavailable, err)
 	}
 	slog.Debug("user authenticated", "user_id", userRecord.UserID)
 
-	// Update last login
-	if err := s.store.UpdateUserLastLoginSync(userRecord.UserID, time.Now().UTC()); err != nil {
-		slog.Warn("failed to record user login time", "user_id", userRecord.UserID, "error", err)
-	}
-
 	return &User{
-		UserID:      userRecord.UserID,
-		Username:    userRecord.Username,
-		Email:       userRecord.Email,
-		AccountType: userRecord.AccountType,
-		CreatedAt:   userRecord.CreatedAt,
-		ExpiresAt:   userRecord.ExpiresAt,
+		UserID:    userRecord.UserID,
+		Username:  userRecord.Username,
+		Email:     userRecord.Email,
+		CreatedAt: userRecord.CreatedAt,
 	}, sessionID, nil
-}
-
-// ValidateSession checks if a session is valid
-func (s *Service) ValidateSession(sessionID string) (bool, error) {
-	if s.store == nil {
-		return false, ErrStorageDisabled
-	}
-	valid, err := s.store.IsSessionValid(sessionID)
-	if err != nil {
-		return false, fmt.Errorf("%w: validate session: %v", ErrStorageUnavailable, err)
-	}
-	return valid, nil
 }
 
 // InvalidateSession removes a session (logout)
@@ -236,34 +218,23 @@ func (s *Service) GetUserByID(userID string) (*User, error) {
 	}
 
 	return &User{
-		UserID:      userRecord.UserID,
-		Username:    userRecord.Username,
-		Email:       userRecord.Email,
-		AccountType: userRecord.AccountType,
-		CreatedAt:   userRecord.CreatedAt,
-		ExpiresAt:   userRecord.ExpiresAt,
+		UserID:    userRecord.UserID,
+		Username:  userRecord.Username,
+		Email:     userRecord.Email,
+		CreatedAt: userRecord.CreatedAt,
 	}, nil
 }
 
-// GenerateUserToken creates a JWT token for the specified user with session ID
+// GenerateUserToken signs a scoped JWT bound to the persisted session. The
+// token carries only the subject and session ID: JWT payloads are readable by
+// the holder, so profile data such as email stays behind /auth/me.
 func (s *Service) GenerateUserToken(userID, sessionID string) (string, error) {
-	user, err := s.GetUserByID(userID)
-	if err != nil {
-		return "", err
-	}
-
-	claims := map[string]any{
-		"username":   user.Username,
-		"email":      user.Email,
-		"session_id": sessionID,
-	}
-
-	return auth.GenerateHS256Token(s.jwtSecret, userID, claims, SessionTTL)
+	return s.jwt.GenerateToken(userID, map[string]any{"session_id": sessionID})
 }
 
 // ValidateToken verifies JWT token and session validity
 func (s *Service) ValidateToken(token string) (string, map[string]any, error) {
-	userID, claims, err := auth.ValidateHS256Token(s.jwtSecret, token)
+	userID, claims, err := s.jwt.ValidateToken(token)
 	if err != nil {
 		return "", nil, err
 	}
@@ -284,44 +255,4 @@ func (s *Service) ValidateToken(token string) (string, map[string]any, error) {
 	}
 
 	return userID, claims, nil
-}
-
-// generateUniqueUserID creates a unique user ID with collision detection
-func (s *Service) generateUniqueUserID() (string, error) {
-	const maxAttempts = 10
-
-	for i := 0; i < maxAttempts; i++ {
-		id := uuid.New().String()
-		if _, err := s.store.GetUserByID(id); errors.Is(err, sql.ErrNoRows) {
-			return id, nil
-		} else if err != nil {
-			return "", fmt.Errorf("%w: check generated user ID: %v", ErrStorageUnavailable, err)
-		}
-	}
-
-	return "", fmt.Errorf("failed to generate unique user ID")
-}
-
-// CreateUserSession creates a session for a trusted internal caller without
-// re-authenticating. Public registration uses RegisterUser so account and
-// initial session creation remain atomic.
-func (s *Service) CreateUserSession(userID string) (string, error) {
-	if s.store == nil {
-		return "", ErrStorageDisabled
-	}
-
-	sessionID := uuid.New().String()
-	sessionRecord := storage.SessionRecord{
-		SessionID: sessionID,
-		UserID:    userID,
-		CreatedAt: time.Now().UTC(),
-		ExpiresAt: time.Now().UTC().Add(SessionTTL),
-	}
-
-	if err := s.store.CreateSession(sessionRecord); err != nil {
-		return "", fmt.Errorf("%w: create session: %v", ErrStorageUnavailable, err)
-	}
-	slog.Debug("user session created", "user_id", userID)
-
-	return sessionID, nil
 }

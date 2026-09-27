@@ -4,7 +4,10 @@ set -e
 
 # Configuration
 CHESS_SERVER_EXEC=${1:-"bin/chess-server"}
-TEST_DB="test.db"
+# A DISPOSABLE database: every chess table in it is dropped on start and exit.
+# Use a libpq-compatible DSN; test-db.sh also passes it to psql.
+: "${CHESS_TEST_DSN:?set CHESS_TEST_DSN to a disposable PostgreSQL database}"
+export CHESS_DSN="$CHESS_TEST_DSN"
 PID_FILE="/tmp/chess-server_test.pid"
 API_PORT=${API_PORT:-8080}
 LOG_LEVEL=${LOG_LEVEL:-debug}
@@ -41,9 +44,9 @@ cleanup() {
         rm -f "$PID_FILE"
     fi
 
-    # Clean up database files
-    echo "Removing test database files..."
-    rm -f "$TEST_DB" "${TEST_DB}-wal" "${TEST_DB}-shm"
+    # Drop test tables
+    echo "Dropping test database tables..."
+    "$CHESS_SERVER_EXEC" db delete -confirm >/dev/null || true
 
     echo -e "${GREEN}Cleanup complete${NC}"
 }
@@ -51,13 +54,14 @@ cleanup() {
 # Set up trap for cleanup on exit
 trap cleanup EXIT SIGINT SIGTERM
 
-# Clean slate - remove any existing test DB files
+# Clean slate - drop tables left by an earlier run
 echo -e "${CYAN}Preparing test environment...${NC}"
-rm -f "$TEST_DB" "${TEST_DB}-wal" "${TEST_DB}-shm" "$PID_FILE"
+rm -f "$PID_FILE"
+"$CHESS_SERVER_EXEC" db delete -confirm
 
 # Initialize database
 echo -e "${CYAN}Initializing test database...${NC}"
-"$CHESS_SERVER_EXEC" db init -path "$TEST_DB"
+"$CHESS_SERVER_EXEC" db init
 if [ $? -ne 0 ]; then
     echo -e "${RED}Failed to initialize database${NC}"
     exit 1
@@ -65,14 +69,14 @@ fi
 
 # Add test users
 echo -e "${CYAN}Adding test users...${NC}"
-"$CHESS_SERVER_EXEC" db user add -path "$TEST_DB" \
+"$CHESS_SERVER_EXEC" db user add \
     -username alice -email alice@test.com -password AlicePass123
 if [ $? -ne 0 ]; then
     echo -e "${RED}Failed to create user alice${NC}"
     exit 1
 fi
 
-"$CHESS_SERVER_EXEC" db user add -path "$TEST_DB" \
+"$CHESS_SERVER_EXEC" db user add \
     -username bob -email bob@test.com -password BobSecure456
 if [ $? -ne 0 ]; then
     echo -e "${RED}Failed to create user bob${NC}"
@@ -90,9 +94,9 @@ echo -e "${CYAN}╚════════════════════�
 echo ""
 echo "Configuration:"
 echo "  Executable: $CHESS_SERVER_EXEC"
-echo "  Database:   $TEST_DB"
+echo "  Database:   \$CHESS_TEST_DSN (tables dropped on exit)"
 echo "  Port:       $API_PORT"
-echo "  Mode:       Development (relaxed rate limits; persistent WAL storage)"
+echo "  Mode:       Development (relaxed rate limits; PostgreSQL storage)"
 echo "  Log level:  $LOG_LEVEL (HTTP requests: $LOG_HTTP)"
 echo "  Purpose:    Backend for chess-server tests"
 echo "  PID File:   $PID_FILE"
@@ -111,7 +115,6 @@ echo ""
 	-dev \
 	-log-level "$LOG_LEVEL" \
 	-log-http="$LOG_HTTP" \
-	-storage-path "$TEST_DB" \
     -api-port "$API_PORT" \
     -pid "$PID_FILE" \
     -pid-lock

@@ -284,4 +284,3 @@ func (u *UCI) Close() error {
 	u.killLocked()
 	return nil
 }
-

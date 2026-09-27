@@ -2,59 +2,62 @@ package storage
 
 import "time"
 
-// UserRecord represents a user account in the database
+// UserRecord represents a user account in the database. Accounts created by
+// public registration and by the CLI are identical and do not expire.
 type UserRecord struct {
-	UserID       string     `db:"user_id"`
-	Username     string     `db:"username"`
-	Email        string     `db:"email"`
-	PasswordHash string     `db:"password_hash"`
-	AccountType  string     `db:"account_type"` // "permanent" or "temp"
-	CreatedAt    time.Time  `db:"created_at"`
-	ExpiresAt    *time.Time `db:"expires_at"` // nil for permanent
-	LastLoginAt  *time.Time `db:"last_login_at"`
+	UserID       string
+	Username     string
+	Email        string // empty when the account has no email (stored as NULL)
+	PasswordHash string
+	CreatedAt    time.Time
+	LastLoginAt  *time.Time
 }
 
 // SessionRecord represents an active user session
 type SessionRecord struct {
-	SessionID string    `db:"session_id"`
-	UserID    string    `db:"user_id"`
-	CreatedAt time.Time `db:"created_at"`
-	ExpiresAt time.Time `db:"expires_at"`
+	SessionID string
+	UserID    string
+	CreatedAt time.Time
+	ExpiresAt time.Time
 }
 
 // GameRecord represents a row in the games table
 type GameRecord struct {
-	GameID          string     `db:"game_id"`
-	InitialFEN      string     `db:"initial_fen"`
-	WhitePlayerID   string     `db:"white_player_id"`
-	WhiteType       int        `db:"white_type"`
-	WhiteLevel      int        `db:"white_level"`
-	WhiteSearchTime int        `db:"white_search_time"`
-	WhiteClaimedBy  string     `db:"white_claimed_by"`
-	BlackPlayerID   string     `db:"black_player_id"`
-	BlackType       int        `db:"black_type"`
-	BlackLevel      int        `db:"black_level"`
-	BlackSearchTime int        `db:"black_search_time"`
-	BlackClaimedBy  string     `db:"black_claimed_by"`
-	Result          string     `db:"result"`
-	StartTimeUTC    time.Time  `db:"start_time_utc"`
-	EndTimeUTC      *time.Time `db:"end_time_utc"`
+	GameID          string
+	InitialFEN      string
+	WhitePlayerID   string
+	WhiteType       int
+	WhiteLevel      int
+	WhiteSearchTime int
+	WhiteClaimedBy  string
+	WhiteName       string // claimant's username when the claim was recorded
+	BlackPlayerID   string
+	BlackType       int
+	BlackLevel      int
+	BlackSearchTime int
+	BlackClaimedBy  string
+	BlackName       string
+	Result          string
+	StartTimeUTC    time.Time
+	EndTimeUTC      *time.Time
 }
 
+// GameSummaryRecord is a game row plus its replay extent. MoveCount and
+// FinalFEN come from the last move, so a picker needs no move-list read.
 type GameSummaryRecord struct {
 	GameRecord
-	MoveCount int `db:"move_count"`
+	MoveCount int
+	FinalFEN  string
 }
 
 // MoveRecord represents a row in the moves table
 type MoveRecord struct {
-	MoveID       int64     `db:"move_id"`
-	GameID       string    `db:"game_id"`
-	MoveNumber   int       `db:"move_number"`
-	MoveUCI      string    `db:"move_uci"`
-	FENAfterMove string    `db:"fen_after_move"`
-	PlayerColor  string    `db:"player_color"`
-	MoveTimeUTC  time.Time `db:"move_time_utc"`
+	GameID       string
+	MoveNumber   int
+	MoveUCI      string
+	FENAfterMove string
+	PlayerColor  string
+	MoveTimeUTC  time.Time
 }
 
 // MovePersistence groups changes caused by one accepted move so the move,
@@ -67,72 +70,98 @@ type MovePersistence struct {
 	EndTimeUTC *time.Time
 }
 
-// Schema defines tables only. Indexes are applied after legacy column
-// migrations so upgrading an older games table never references a missing
-// column.
-const Schema = `
-CREATE TABLE IF NOT EXISTS users (
-	user_id TEXT PRIMARY KEY,
-	username TEXT UNIQUE NOT NULL COLLATE NOCASE,
-	email TEXT COLLATE NOCASE,
-	password_hash TEXT NOT NULL,
-	account_type TEXT NOT NULL DEFAULT 'temp' CHECK(account_type IN ('permanent', 'temp')),
-	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	expires_at DATETIME,
-	last_login_at DATETIME
+// schemaVersion is the newest schema this binary understands. Migrations are
+// applied in order inside one transaction; PostgreSQL DDL is transactional, so
+// a failed upgrade leaves the previous version intact.
+const schemaVersion = 1
+
+// migrations[v-1] upgrades the schema from version v-1 to v. Never edit a
+// released migration; append a new one.
+var migrations = []string{
+	// v1: initial PostgreSQL schema.
+	//
+	// Identifiers are uuid (16 bytes, validated on input). Usernames and emails
+	// are stored lowercase, so plain unique constraints give case-insensitive
+	// uniqueness without citext or a nondeterministic collation. Game-to-user
+	// association is by claim: every authenticated human slot records its
+	// claimant, and claims survive player reconfiguration. The claimant's
+	// username is copied into the game when the claim is written, so replays
+	// and PGN keep the name after a rename or account deletion. Games with no
+	// claim belong to anonymous players and are purged after inactivity.
+	`
+CREATE TABLE schema_version (
+	singleton  boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+	version    integer NOT NULL CHECK (version > 0),
+	updated_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS sessions (
-	session_id TEXT PRIMARY KEY,
-	user_id TEXT NOT NULL UNIQUE,
-	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	expires_at DATETIME NOT NULL,
-	FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+CREATE TABLE users (
+	user_id       uuid PRIMARY KEY,
+	username      text NOT NULL,
+	email         text,
+	password_hash text NOT NULL,
+	created_at    timestamptz NOT NULL DEFAULT now(),
+	last_login_at timestamptz,
+	CONSTRAINT users_username_key UNIQUE (username),
+	CONSTRAINT users_email_key UNIQUE (email),
+	CONSTRAINT users_username_check
+		CHECK (username = lower(username) AND char_length(username) BETWEEN 1 AND 64),
+	CONSTRAINT users_email_check
+		CHECK (email = lower(email) AND char_length(email) BETWEEN 3 AND 254)
 );
 
-CREATE TABLE IF NOT EXISTS games (
-	game_id TEXT PRIMARY KEY,
-	initial_fen TEXT NOT NULL,
-	white_player_id TEXT NOT NULL,
-	white_type INTEGER NOT NULL,
-	white_level INTEGER NOT NULL DEFAULT 0,
-	white_search_time INTEGER NOT NULL DEFAULT 1000,
-	black_player_id TEXT NOT NULL,
-	black_type INTEGER NOT NULL,
-	black_level INTEGER NOT NULL DEFAULT 0,
-	black_search_time INTEGER NOT NULL DEFAULT 1000,
-	start_time_utc DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	result TEXT CHECK(result IS NULL OR result IN ('white_wins', 'black_wins', 'draw', 'stalemate')),
-	end_time_utc DATETIME,
-	white_claimed_by TEXT,
-	black_claimed_by TEXT
+CREATE TABLE sessions (
+	session_id uuid PRIMARY KEY,
+	user_id    uuid NOT NULL REFERENCES users (user_id) ON DELETE CASCADE,
+	created_at timestamptz NOT NULL DEFAULT now(),
+	expires_at timestamptz NOT NULL,
+	CONSTRAINT sessions_user_id_key UNIQUE (user_id)
 );
 
-CREATE TABLE IF NOT EXISTS moves (
-	move_id INTEGER PRIMARY KEY AUTOINCREMENT,
-	game_id TEXT NOT NULL,
-	move_number INTEGER NOT NULL,
-	move_uci TEXT NOT NULL,
-	fen_after_move TEXT NOT NULL,
-	player_color TEXT NOT NULL CHECK(player_color IN ('w', 'b')),
-	move_time_utc DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	FOREIGN KEY (game_id) REFERENCES games(game_id) ON DELETE CASCADE,
-	UNIQUE(game_id, move_number)
+CREATE TABLE games (
+	game_id           uuid PRIMARY KEY,
+	initial_fen       text NOT NULL CHECK (initial_fen <> ''),
+	white_player_id   uuid NOT NULL,
+	white_type        smallint NOT NULL CHECK (white_type IN (1, 2)),
+	white_level       smallint NOT NULL DEFAULT 0 CHECK (white_level BETWEEN 0 AND 20),
+	white_search_time integer NOT NULL DEFAULT 0 CHECK (white_search_time >= 0),
+	white_claimed_by  uuid,
+	white_name        text CHECK (char_length(white_name) BETWEEN 1 AND 64),
+	black_player_id   uuid NOT NULL,
+	black_type        smallint NOT NULL CHECK (black_type IN (1, 2)),
+	black_level       smallint NOT NULL DEFAULT 0 CHECK (black_level BETWEEN 0 AND 20),
+	black_search_time integer NOT NULL DEFAULT 0 CHECK (black_search_time >= 0),
+	black_claimed_by  uuid,
+	black_name        text CHECK (char_length(black_name) BETWEEN 1 AND 64),
+	start_time_utc    timestamptz NOT NULL DEFAULT now(),
+	result            text CHECK (result IN ('white_wins', 'black_wins', 'draw', 'stalemate')),
+	end_time_utc      timestamptz,
+	CONSTRAINT games_result_end_time_check CHECK ((result IS NULL) = (end_time_utc IS NULL))
 );
-`
 
-const Indexes = `
-CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique
-	ON users(email) WHERE email IS NOT NULL AND email != '';
-CREATE INDEX IF NOT EXISTS idx_users_temp_created_at
-	ON users(created_at) WHERE account_type = 'temp';
-CREATE INDEX IF NOT EXISTS idx_users_temp_expires_at
-	ON users(expires_at) WHERE account_type = 'temp' AND expires_at IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
-CREATE INDEX IF NOT EXISTS idx_games_white_player ON games(white_player_id);
-CREATE INDEX IF NOT EXISTS idx_games_black_player ON games(black_player_id);
-CREATE INDEX IF NOT EXISTS idx_games_white_claimed ON games(white_claimed_by)
+-- Moves are numbered 1..n without gaps; the primary key serves ordered replay
+-- reads and the last-move probe used by game listings.
+CREATE TABLE moves (
+	game_id        uuid NOT NULL REFERENCES games (game_id) ON DELETE CASCADE,
+	move_number    integer NOT NULL CHECK (move_number > 0),
+	move_uci       text NOT NULL CHECK (move_uci ~ '^[a-h][1-8][a-h][1-8][qrbn]?$'),
+	fen_after_move text NOT NULL CHECK (fen_after_move <> ''),
+	player_color   text NOT NULL CHECK (player_color IN ('w', 'b')),
+	move_time_utc  timestamptz NOT NULL DEFAULT now(),
+	PRIMARY KEY (game_id, move_number)
+);
+
+CREATE INDEX sessions_expires_at_idx ON sessions (expires_at);
+-- Candidates for the anonymous-game purge: a game that started after the
+-- cutoff cannot have been idle since it.
+CREATE INDEX games_anonymous_start_idx ON games (start_time_utc)
+	WHERE white_claimed_by IS NULL AND black_claimed_by IS NULL;
+CREATE INDEX games_white_claimed_idx ON games (white_claimed_by, start_time_utc DESC, game_id DESC)
 	WHERE white_claimed_by IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_games_black_claimed ON games(black_claimed_by)
+CREATE INDEX games_black_claimed_idx ON games (black_claimed_by, start_time_utc DESC, game_id DESC)
 	WHERE black_claimed_by IS NOT NULL;
-`
+`,
+}
+
+// ownedTables lists every table created by migrations, children first.
+var ownedTables = []string{"moves", "games", "sessions", "users", "schema_version"}
