@@ -50,19 +50,28 @@ type BoardResponse struct {
 // GameHistoryResponse is the durable replay representation of a game. Moves
 // are ordered and include the resulting FEN so clients do not need an engine
 // to replay a stored game.
+//
+// PGNResult is the PGN result token ("1-0", "0-1", "1/2-1/2", or "*") and
+// Termination names how a result was reached ("checkmate", "stalemate",
+// "draw"; omitted while the game is unfinished).
 type GameHistoryResponse struct {
 	GameID       string          `json:"gameId"`
 	InitialFEN   string          `json:"initialFen"`
 	Result       string          `json:"result,omitempty"`
+	PGNResult    string          `json:"pgnResult"`
+	Termination  string          `json:"termination,omitempty"`
 	StartTimeUTC time.Time       `json:"startTimeUtc"`
 	EndTimeUTC   *time.Time      `json:"endTimeUtc,omitempty"`
 	Players      PlayersResponse `json:"players"`
 	Moves        []HistoryMove   `json:"moves"`
 }
 
+// HistoryMove is one ply. SAN is derived on read and omitted only when the
+// stored move cannot be notated.
 type HistoryMove struct {
 	MoveNumber   int       `json:"moveNumber"`
 	MoveUCI      string    `json:"moveUci"`
+	SAN          string    `json:"san,omitempty"`
 	FENAfterMove string    `json:"fenAfterMove"`
 	PlayerColor  string    `json:"playerColor"`
 	MoveTimeUTC  time.Time `json:"moveTimeUtc"`
@@ -76,17 +85,22 @@ type GameSummary struct {
 	InitialFEN   string          `json:"initialFen"`
 	FinalFEN     string          `json:"finalFen"`
 	Result       string          `json:"result,omitempty"`
+	PGNResult    string          `json:"pgnResult"`
 	StartTimeUTC time.Time       `json:"startTimeUtc"`
 	EndTimeUTC   *time.Time      `json:"endTimeUtc,omitempty"`
 	MoveCount    int             `json:"moveCount"`
 	Players      PlayersResponse `json:"players"`
 }
 
+// GameListResponse pages newest first. NextCursor continues the listing and
+// stays stable while new games are added; NextOffset is kept for clients
+// that page by position and is omitted on cursor requests.
 type GameListResponse struct {
 	Games      []GameSummary `json:"games"`
 	Limit      int           `json:"limit"`
 	Offset     int           `json:"offset"`
 	NextOffset *int          `json:"nextOffset,omitempty"`
+	NextCursor string        `json:"nextCursor,omitempty"`
 }
 
 type ErrorResponse struct {

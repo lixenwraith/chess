@@ -339,23 +339,70 @@ func (s *Store) GetGameHistory(gameID string) (*GameRecord, []MoveRecord, error)
 	return &record, moves, nil
 }
 
-// QueryGamesForUser returns a page of games claimed by userID in either color,
-// newest first. The last move is read through a LATERAL probe of the moves
-// primary key, so the summary costs one index lookup per game rather than a
-// move count over the whole line.
-func (s *Store) QueryGamesForUser(userID string, limit, offset int) ([]GameSummaryRecord, error) {
-	if userID == "" || limit < 1 || limit > MaxUserGamesPage || offset < 0 {
+// UserGamesQuery selects a page of a user's games, newest first. After, when
+// set, continues strictly below that (start time, game ID) key; Offset
+// remains for clients that page by position and must be 0 with After.
+type UserGamesQuery struct {
+	Limit  int
+	Offset int
+	After  *GameCursor
+	Color  string // "" either, "w" or "b": the color the user claimed
+	Status string // "" any, "ongoing", or "finished"
+}
+
+// GameCursor is a keyset position in a newest-first game listing.
+type GameCursor struct {
+	StartTimeUTC time.Time
+	GameID       string
+}
+
+// QueryGamesForUser returns a page of games claimed by userID, newest first.
+// The last move is read through a LATERAL probe of the moves primary key, so
+// the summary costs one index lookup per game rather than a move count over
+// the whole line.
+func (s *Store) QueryGamesForUser(userID string, q UserGamesQuery) ([]GameSummaryRecord, error) {
+	if userID == "" || q.Limit < 1 || q.Limit > MaxUserGamesPage || q.Offset < 0 {
 		return nil, fmt.Errorf("user ID, limit from 1 to %d, and non-negative offset are required",
 			MaxUserGamesPage)
+	}
+	if q.After != nil && (q.Offset != 0 || !validUUID(q.After.GameID)) {
+		return nil, errors.New("a cursor requires a valid game ID and offset 0")
 	}
 	if !validUUID(userID) {
 		return []GameSummaryRecord{}, nil
 	}
+
+	args := []any{userID, q.Limit, q.Offset}
+	var where string
+	switch q.Color {
+	case "":
+		where = "(g.white_claimed_by = $1 OR g.black_claimed_by = $1)"
+	case "w":
+		where = "g.white_claimed_by = $1"
+	case "b":
+		where = "g.black_claimed_by = $1"
+	default:
+		return nil, fmt.Errorf("invalid color filter %q", q.Color)
+	}
+	switch q.Status {
+	case "":
+	case "ongoing":
+		where += " AND g.result IS NULL"
+	case "finished":
+		where += " AND g.result IS NOT NULL"
+	default:
+		return nil, fmt.Errorf("invalid status filter %q", q.Status)
+	}
+	if q.After != nil {
+		args = append(args, q.After.StartTimeUTC, q.After.GameID)
+		where += " AND (g.start_time_utc, g.game_id) < ($4, $5)"
+	}
+
 	if err := s.flushBeforeRead(); err != nil {
 		return nil, err
 	}
 	started := time.Now()
-	const query = `SELECT ` + gameSelectColumns + `,
+	query := `SELECT ` + gameSelectColumns + `,
 		COALESCE(last.move_number, 0), COALESCE(last.fen_after_move, g.initial_fen)
 		FROM games g
 		LEFT JOIN LATERAL (
@@ -364,12 +411,12 @@ func (s *Store) QueryGamesForUser(userID string, limit, offset int) ([]GameSumma
 			ORDER BY m.move_number DESC
 			LIMIT 1
 		) last ON true
-		WHERE g.white_claimed_by = $1 OR g.black_claimed_by = $1
+		WHERE ` + where + `
 		ORDER BY g.start_time_utc DESC, g.game_id DESC
 		LIMIT $2 OFFSET $3`
 	ctx, cancel := opContext()
 	defer cancel()
-	rows, err := s.db.QueryContext(ctx, query, userID, limit, offset)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query user games: %w", err)
 	}
@@ -389,11 +436,54 @@ func (s *Store) QueryGamesForUser(userID string, limit, offset int) ([]GameSumma
 	slog.Debug("storage user games queried",
 		"user_id", userID,
 		"count", len(games),
-		"limit", limit,
-		"offset", offset,
+		"limit", q.Limit,
+		"offset", q.Offset,
+		"cursor", q.After != nil,
 		"duration", time.Since(started),
 	)
 	return games, nil
+}
+
+// ResolveGameID expands a game ID prefix of at least 8 hexadecimal digits,
+// as printed by administrative listings, to the unique full ID.
+func (s *Store) ResolveGameID(prefix string) (string, error) {
+	prefix = strings.ToLower(prefix)
+	if validUUID(prefix) {
+		return prefix, nil
+	}
+	if len(prefix) < 8 || len(prefix) > 36 || strings.Trim(prefix, "0123456789abcdef-") != "" {
+		return "", fmt.Errorf("game ID or a prefix of at least 8 hex digits required, got %q", prefix)
+	}
+	if err := s.flushBeforeRead(); err != nil {
+		return "", err
+	}
+	ctx, cancel := opContext()
+	defer cancel()
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT game_id FROM games WHERE game_id::text LIKE $1 || '%' ORDER BY game_id LIMIT 2`, prefix)
+	if err != nil {
+		return "", fmt.Errorf("resolve game ID: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return "", fmt.Errorf("resolve game ID: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("resolve game ID: %w", err)
+	}
+	switch len(ids) {
+	case 0:
+		return "", sql.ErrNoRows
+	case 1:
+		return ids[0], nil
+	default:
+		return "", fmt.Errorf("game ID prefix %q is ambiguous", prefix)
+	}
 }
 
 type rowScanner interface {

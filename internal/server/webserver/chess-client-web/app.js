@@ -79,6 +79,13 @@ document.getElementById('login-submit-btn').addEventListener('click', handleLogi
 document.getElementById('register-submit-btn').addEventListener('click', handleRegister);
 document.getElementById('auth-cancel-btn').addEventListener('click', hideAuthModal);
 document.getElementById('auth-cancel-btn-2').addEventListener('click', hideAuthModal);
+document.querySelectorAll('.promotion-choice').forEach(btn => {
+    btn.addEventListener('click', () => closePromotion(btn.dataset.piece));
+});
+document.getElementById('promotion-cancel-btn').addEventListener('click', () => closePromotion(null));
+document.getElementById('promotion-overlay').addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) closePromotion(null);
+});
 
 
 // Auth functions
@@ -705,6 +712,7 @@ function renderBoardFromFEN(fen) {
         s.textContent = '';
         s.classList.remove('white-piece', 'black-piece', 'mated-king');
         delete s.dataset.pieceColor;
+        delete s.dataset.pieceType;
     });
 
     let rank = 7, file = 0;
@@ -765,10 +773,63 @@ function flashSquare(element, success = true) {
     setTimeout(() => element.classList.remove(className), 400);
 }
 
+// A pawn stepping or capturing onto its last rank needs a promotion piece; UCI
+// requires the suffix (e7e8q), and the server rejects the bare move. Other
+// moves go to the server as-is, which remains the only legality check.
+function isPromotionMove(from, to) {
+    const fromEl = document.querySelector(`[data-square="${from}"]`);
+    if (!fromEl || fromEl.dataset.pieceType !== 'p') return false;
+    const fileDelta = Math.abs(from.charCodeAt(0) - to.charCodeAt(0));
+    if (fileDelta > 1) return false;
+    const color = fromEl.dataset.pieceColor;
+    return (color === 'w' && from[1] === '7' && to[1] === '8') ||
+        (color === 'b' && from[1] === '2' && to[1] === '1');
+}
+
+// Resolves with 'q', 'r', 'b' or 'n', or null when cancelled. Keyboard: Q/R/B/N
+// pick, Escape cancels, Tab/Enter work on the focused button.
+let promotionResolve = null;
+
+function choosePromotion(color) {
+    const overlay = document.getElementById('promotion-overlay');
+    const choices = overlay.querySelector('.promotion-choices');
+    choices.classList.toggle('white', color === 'w');
+    choices.classList.toggle('black', color !== 'w');
+    overlay.classList.add('show');
+    document.addEventListener('keydown', handlePromotionKeydown);
+    overlay.querySelector('.promotion-choice[data-piece="q"]').focus();
+    return new Promise(resolve => { promotionResolve = resolve; });
+}
+
+function closePromotion(piece) {
+    document.getElementById('promotion-overlay').classList.remove('show');
+    document.removeEventListener('keydown', handlePromotionKeydown);
+    const resolve = promotionResolve;
+    promotionResolve = null;
+    if (resolve) resolve(piece);
+}
+
+function handlePromotionKeydown(e) {
+    const key = e.key.toLowerCase();
+    if (key === 'q' || key === 'r' || key === 'b' || key === 'n') {
+        e.preventDefault();
+        closePromotion(key);
+    } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closePromotion(null);
+    }
+}
+
 async function handleHumanMove(from, to) {
-    const move = from + to;
+    let move = from + to;
     const fromEl = document.querySelector(`[data-square="${from}"]`);
     const toEl = document.querySelector(`[data-square="${to}"]`);
+
+    if (isPromotionMove(from, to)) {
+        const piece = await choosePromotion(fromEl.dataset.pieceColor);
+        if (!piece) return;
+        move += piece;
+    }
 
     try {
         const response = await authFetch(`${gameState.apiUrl}/api/games/${gameState.gameId}/moves`, {

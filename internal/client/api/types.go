@@ -104,6 +104,8 @@ type GameHistoryResponse struct {
 	GameID       string          `json:"gameId"`
 	InitialFEN   string          `json:"initialFen"`
 	Result       string          `json:"result,omitempty"`
+	PGNResult    string          `json:"pgnResult"`
+	Termination  string          `json:"termination,omitempty"`
 	StartTimeUTC time.Time       `json:"startTimeUtc"`
 	EndTimeUTC   *time.Time      `json:"endTimeUtc,omitempty"`
 	Players      PlayersResponse `json:"players"`
@@ -113,6 +115,7 @@ type GameHistoryResponse struct {
 type HistoryMove struct {
 	MoveNumber   int       `json:"moveNumber"`
 	MoveUCI      string    `json:"moveUci"`
+	SAN          string    `json:"san,omitempty"`
 	FENAfterMove string    `json:"fenAfterMove"`
 	PlayerColor  string    `json:"playerColor"`
 	MoveTimeUTC  time.Time `json:"moveTimeUtc"`
@@ -123,6 +126,7 @@ type GameSummary struct {
 	InitialFEN   string          `json:"initialFen"`
 	FinalFEN     string          `json:"finalFen"`
 	Result       string          `json:"result,omitempty"`
+	PGNResult    string          `json:"pgnResult"`
 	StartTimeUTC time.Time       `json:"startTimeUtc"`
 	EndTimeUTC   *time.Time      `json:"endTimeUtc,omitempty"`
 	MoveCount    int             `json:"moveCount"`
@@ -134,4 +138,5 @@ type GameListResponse struct {
 	Limit      int           `json:"limit"`
 	Offset     int           `json:"offset"`
 	NextOffset *int          `json:"nextOffset,omitempty"`
+	NextCursor string        `json:"nextCursor,omitempty"`
 }

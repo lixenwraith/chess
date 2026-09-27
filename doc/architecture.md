@@ -58,6 +58,10 @@ schema is current, which lets a DML-only runtime role start the server.
 - **Engine** (`internal/engine`): UCI protocol wrapper for Stockfish process communication
 - **Game** (`internal/game`): Game state with snapshot history and player associations
 - **Board** (`internal/board`): FEN parsing and ASCII generation
+- **Rules core** (`internal/server/chess`): dependency-free position model,
+  legal move generation, SAN, PGN, and draw-rule detection. It validates
+  custom starting FENs, notates stored games, and shadows the engine on every
+  live move; Stockfish stays the authority for live play
 - **Core** (`internal/core`): Shared types, API models, error constants
 - **CLI** (`cmd/chess-server/cli`): Database and user management commands
 - **Client** (`cmd/chess-client-cli`, `internal/client`): Interactive debugging client with command registry, session management, and colored terminal output
@@ -84,8 +88,10 @@ schema is current, which lets a DML-only runtime role start the server.
 1. HTTP handler receives `POST /games/{id}/moves` with move
 2. Optional JWT validation for user verification
 3. Creates MakeMoveCommand, calls `processor.Execute()`
-4. Processor validates move via locked validation engine
-5. If legal, gets new FEN from engine
+4. The rules core checks the move first only to name a missing promotion
+   piece; the processor then validates it via the locked validation engine
+5. If legal, gets new FEN from engine, and logs a warning if the rules core
+   disagrees on legality or the resulting position
 6. Calls `service.ApplyMoveWithState()` with the FEN, turn, and state that were validated
 7. Service rejects a stale concurrent commit or atomically updates the move, optional slot claim, and terminal result
 8. The same logical mutation is queued as one database transaction
@@ -115,8 +121,10 @@ schema is current, which lets a DML-only runtime role start the server.
 2. Storage queues a barrier after all previously accepted gameplay writes
 3. The writer reaches the barrier only after those transactions finish
 4. Storage reads the game row and ordered moves in one REPEATABLE READ transaction
-5. The API returns the initial FEN plus every UCI move and resulting FEN
-6. This path works after terminal-memory eviction or a server restart
+5. The service derives SAN for each ply from the stored FEN before it
+6. The API returns the initial FEN plus every UCI move, its SAN, and the
+   resulting FEN, with a strong ETag; `/pgn` renders the same read as PGN
+7. This path works after terminal-memory eviction or a server restart
 
 ## Persistence Flow
 
