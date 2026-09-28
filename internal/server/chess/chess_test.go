@@ -223,41 +223,45 @@ func TestReplayReportsPly(t *testing.T) {
 	}
 }
 
-func TestOutcomes(t *testing.T) {
-	cases := []struct {
-		fen  string
-		uci  []string
-		want Outcome
-	}{
-		{StartFEN, []string{"f2f3", "e7e5", "g2g4", "d8h4"}, Checkmate},
-		{"7k/5Q2/6K1/8/8/8/8/8 b - - 0 1", nil, Stalemate},
-		{"4k3/8/8/8/8/8/8/4K3 w - - 0 1", nil, InsufficientMaterial},
-		{"4k3/8/8/8/8/8/8/3NK3 w - - 0 1", nil, InsufficientMaterial},
-		{"2b1k3/8/8/8/8/8/8/2B1K3 w - - 0 1", nil, Ongoing},             // opposite-colored bishops
-		{"3bk3/8/8/8/8/8/8/2B1K3 w - - 0 1", nil, InsufficientMaterial}, // same-colored bishops
-		{"4k3/8/8/8/8/8/8/2NNK3 w - - 0 1", nil, Ongoing},               // two knights can mate with help
-		{"4k3/8/8/8/8/8/8/R3K3 w - - 149 90", []string{"a1a2"}, SeventyFiveMoves},
-		{StartFEN, repeat([]string{"g1f3", "g8f6", "f3g1", "f6g8"}, 4), FivefoldRepetition},
-	}
-	for _, tc := range cases {
-		line, err := Replay(tc.fen, tc.uci)
+func TestDrawPrimitives(t *testing.T) {
+	for fen, want := range map[string]bool{
+		"4k3/8/8/8/8/8/8/4K3 w - - 0 1":     true,  // bare kings
+		"4k3/8/8/8/8/8/8/3NK3 w - - 0 1":    true,  // one knight
+		"3bk3/8/8/8/8/8/8/2B1K3 w - - 0 1":  true,  // bishops on one color
+		"2b1k3/8/8/8/8/8/8/2B1K3 w - - 0 1": false, // opposite-colored bishops
+		"4k3/8/8/8/8/8/8/2NNK3 w - - 0 1":   false, // two knights can mate with help
+		"4k3/8/8/8/8/8/P7/4K3 w - - 0 1":    false,
+	} {
+		pos, err := ParseFEN(fen)
 		if err != nil {
-			t.Fatalf("%s %v: %v", tc.fen, tc.uci, err)
+			t.Fatal(err)
 		}
-		if got := line.Outcome(len(tc.uci)); got != tc.want {
-			t.Errorf("%s %v: outcome = %v, want %v", tc.fen, tc.uci, got, tc.want)
+		if got := pos.InsufficientMaterial(); got != want {
+			t.Errorf("%s: InsufficientMaterial = %v, want %v", fen, got, want)
 		}
 	}
 
-	line, err := Replay(StartFEN, repeat([]string{"g1f3", "g8f6", "f3g1", "f6g8"}, 2))
+	cycle := []string{"g1f3", "g8f6", "f3g1", "f6g8"}
+	line, err := Replay(StartFEN, repeat(cycle, 2))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if threefold, fifty := line.Claimable(8); !threefold || fifty {
-		t.Errorf("Claimable(8) = %v, %v; want threefold only", threefold, fifty)
+	for ply, want := range map[int]int{0: 1, 3: 1, 4: 2, 5: 2, 8: 3} {
+		if got := line.Repetitions(ply); got != want {
+			t.Errorf("Repetitions(%d) = %d, want %d", ply, got, want)
+		}
 	}
-	if got := line.Repetitions(4); got != 2 {
-		t.Errorf("Repetitions(4) = %d, want 2", got)
+	// A pawn move in between resets the window: the start position cannot
+	// recur after 1. e3.
+	line, err = Replay(StartFEN, append([]string{"e2e3", "e7e6"}, repeat(cycle, 2)...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := line.Repetitions(10); got != 3 {
+		t.Errorf("after pawn moves: Repetitions(10) = %d, want 3", got)
+	}
+	if got := Repetitions(nil); got != 0 {
+		t.Errorf("Repetitions(nil) = %d", got)
 	}
 }
 
@@ -335,5 +339,32 @@ func TestResultToken(t *testing.T) {
 		if got := ResultToken(in); got != want {
 			t.Errorf("ResultToken(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestASCII(t *testing.T) {
+	pos, err := ParseFEN(StartFEN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `  a b c d e f g h
+8 r n b q k b n r 8
+7 p p p p p p p p 7
+6 . . . . . . . . 6
+5 . . . . . . . . 5
+4 . . . . . . . . 4
+3 . . . . . . . . 3
+2 P P P P P P P P 2
+1 R N B Q K B N R 1
+  a b c d e f g h`
+	if got := pos.ASCII(); got != want {
+		t.Fatalf("ASCII() =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestPGNComment(t *testing.T) {
+	text := PGN{SAN: []string{"e4", "e5"}, Comment: "White {resigns}.\n", Result: "0-1"}.String()
+	if !strings.HasSuffix(text, "\n\n1. e4 e5 { White resigns. } 0-1\n") {
+		t.Fatalf("PGN comment:\n%s", text)
 	}
 }

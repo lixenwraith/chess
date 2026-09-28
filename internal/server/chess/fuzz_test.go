@@ -73,9 +73,10 @@ func FuzzPGN(f *testing.F) {
 	f.Add("White", `a\b`, "Ω")
 	f.Fuzz(func(t *testing.T, name, value, other string) {
 		text := PGN{
-			Tags:   []Tag{{name, value}, {"White", other}, {"Black", value}},
-			SAN:    []string{"e4", "e5"},
-			Result: "*",
+			Tags:    []Tag{{name, value}, {"White", other}, {"Black", value}},
+			SAN:     []string{"e4", "e5"},
+			Comment: other,
+			Result:  "*",
 		}.String()
 		header, movetext, ok := strings.Cut(text, "\n\n")
 		if !ok {
@@ -86,7 +87,11 @@ func FuzzPGN(f *testing.F) {
 				t.Fatalf("malformed tag line %q", l)
 			}
 		}
-		if movetext != "1. e4 e5 *\n" {
+		// The comment must stay one brace comment: exactly one of each brace,
+		// in order, before the result.
+		if !strings.HasPrefix(movetext, "1. e4 e5 ") || !strings.HasSuffix(movetext, "*\n") ||
+			strings.Count(movetext, "{") > 1 || strings.Count(movetext, "}") != strings.Count(movetext, "{") ||
+			strings.Index(movetext, "}") < strings.Index(movetext, "{") {
 			t.Fatalf("movetext = %q", movetext)
 		}
 	})

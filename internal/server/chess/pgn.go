@@ -20,11 +20,13 @@ var sevenTagRoster = [...]string{"Event", "Site", "Date", "Round", "White", "Bla
 // PGN is a game ready for export. Tags may hold any of the Seven Tag Roster
 // (missing ones are written as "?", Result from the Result field) followed by
 // supplemental tags in the given order. StartFEN is written as SetUp/FEN
-// tags when it is not the standard start.
+// tags when it is not the standard start. Comment, if set, is written as a
+// brace comment before the result, e.g. "White resigns.".
 type PGN struct {
 	Tags     []Tag
 	StartFEN string
 	SAN      []string
+	Comment  string
 	Result   string // "1-0", "0-1", "1/2-1/2", or "*"
 }
 
@@ -100,9 +102,29 @@ func (g PGN) String() string {
 		}
 		turn = turn.Other()
 	}
+	if words := strings.Fields(commentText(g.Comment)); len(words) > 0 {
+		// A comment may be broken across lines at spaces, so it wraps like
+		// movetext; braces cannot nest and are removed from the text.
+		emit("{")
+		for _, word := range words {
+			emit(word)
+		}
+		emit("}")
+	}
 	emit(result)
 	b.WriteByte('\n')
 	return b.String()
+}
+
+// commentText drops braces and control characters, which would end or
+// corrupt a brace comment.
+func commentText(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '{' || r == '}' || r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 func isRosterTag(name string) bool {

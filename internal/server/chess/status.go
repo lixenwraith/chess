@@ -2,43 +2,9 @@ package chess
 
 import "strconv"
 
-// Outcome classifies a position by the rules of chess, independent of how
-// the stored game recorded its result.
-type Outcome uint8
-
-const (
-	// Ongoing: the side to move has a legal move and no automatic draw applies.
-	Ongoing Outcome = iota
-	Checkmate
-	Stalemate
-	// InsufficientMaterial: no sequence of legal moves can checkmate (a dead
-	// position by material alone: bare kings, one minor piece, or only
-	// bishops on squares of one color).
-	InsufficientMaterial
-	// SeventyFiveMoves: 150 plies without a capture or pawn move (automatic
-	// draw under FIDE Article 9.6.2).
-	SeventyFiveMoves
-	// FivefoldRepetition: the same position five times (FIDE 9.6.1).
-	FivefoldRepetition
-)
-
-func (o Outcome) String() string {
-	switch o {
-	case Checkmate:
-		return "checkmate"
-	case Stalemate:
-		return "stalemate"
-	case InsufficientMaterial:
-		return "insufficient_material"
-	case SeventyFiveMoves:
-		return "seventy_five_moves"
-	case FivefoldRepetition:
-		return "fivefold_repetition"
-	}
-	return "ongoing"
-}
-
-// InsufficientMaterial reports a dead position by material alone.
+// InsufficientMaterial reports a dead position by material alone: bare
+// kings, a single minor piece, or only bishops, all on squares of one color.
+// Two knights are not included: mate is possible with the loser's help.
 func (p *Position) InsufficientMaterial() bool {
 	minors := 0
 	bishopColors := [2]bool{}
@@ -61,14 +27,32 @@ func (p *Position) InsufficientMaterial() bool {
 	return knights == 0 && !(bishopColors[0] && bishopColors[1])
 }
 
-// Line is a replayed game: the positions before and after every ply, plus
-// repetition counts for draw claims.
+// Repetitions counts how often the last of positions occurs in the line,
+// itself included. positions[i] is the position after i plies of one game.
+// Only positions since the last capture or pawn move can repeat, and only
+// every other ply has the same side to move, so at most halfmove/2 earlier
+// positions are compared.
+func Repetitions(positions []*Position) int {
+	last := len(positions) - 1
+	if last < 0 {
+		return 0
+	}
+	key := positions[last].Key()
+	count := 1
+	for i := last - 2; i >= 0 && last-i <= positions[last].halfmove; i -= 2 {
+		if positions[i].Key() == key {
+			count++
+		}
+	}
+	return count
+}
+
+// Line is a replayed game: the positions before and after every ply.
 type Line struct {
 	Start     *Position
 	Moves     []Move
 	SAN       []string
 	positions []*Position // positions[i] is the position after i plies
-	keys      []string
 }
 
 // Replay applies UCI moves from a starting FEN. On an illegal move it
@@ -83,7 +67,6 @@ func Replay(startFEN string, uci []string) (*Line, error) {
 		Moves:     make([]Move, 0, len(uci)),
 		SAN:       make([]string, 0, len(uci)),
 		positions: append(make([]*Position, 0, len(uci)+1), start),
-		keys:      append(make([]string, 0, len(uci)+1), start.Key()),
 	}
 	pos := start
 	for i, text := range uci {
@@ -96,7 +79,6 @@ func Replay(startFEN string, uci []string) (*Line, error) {
 		line.Moves = append(line.Moves, m)
 		pos = pos.Play(m)
 		line.positions = append(line.positions, pos)
-		line.keys = append(line.keys, pos.Key())
 	}
 	return line, nil
 }
@@ -116,43 +98,5 @@ func (l *Line) Position(ply int) *Position { return l.positions[ply] }
 // Final returns the position after the last replayed ply.
 func (l *Line) Final() *Position { return l.positions[len(l.positions)-1] }
 
-// Repetitions counts earlier occurrences of the position after ply, plus
-// itself. Only positions since the last irreversible move can repeat.
-func (l *Line) Repetitions(ply int) int {
-	pos := l.positions[ply]
-	count := 1
-	for i := ply - 2; i >= 0 && i >= ply-pos.halfmove; i -= 2 {
-		if l.keys[i] == l.keys[ply] {
-			count++
-		}
-	}
-	return count
-}
-
-// Outcome classifies the position after ply using the rules that end a game
-// without a claim: mate, stalemate, dead material, the 75-move rule, and
-// fivefold repetition.
-func (l *Line) Outcome(ply int) Outcome {
-	pos := l.positions[ply]
-	if !pos.HasLegalMoves() {
-		if pos.InCheck() {
-			return Checkmate
-		}
-		return Stalemate
-	}
-	switch {
-	case pos.InsufficientMaterial():
-		return InsufficientMaterial
-	case pos.halfmove >= 150:
-		return SeventyFiveMoves
-	case l.Repetitions(ply) >= 5:
-		return FivefoldRepetition
-	}
-	return Ongoing
-}
-
-// Claimable reports draws a player could claim after ply: threefold
-// repetition or the fifty-move rule.
-func (l *Line) Claimable(ply int) (threefold, fiftyMove bool) {
-	return l.Repetitions(ply) >= 3, l.positions[ply].halfmove >= 100
-}
+// Repetitions counts occurrences of the position after ply, itself included.
+func (l *Line) Repetitions(ply int) int { return Repetitions(l.positions[:ply+1]) }

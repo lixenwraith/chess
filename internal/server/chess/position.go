@@ -404,3 +404,27 @@ func NormalizeFEN(fen string) (string, error) {
 	}
 	return p.FEN(), nil
 }
+
+// ASCII renders the board from White's side: files on the first and last
+// lines, ranks at both ends of each row, "." for an empty square.
+func (p *Position) ASCII() string {
+	var b strings.Builder
+	b.Grow(200)
+	b.WriteString("  a b c d e f g h\n")
+	for rank := 7; rank >= 0; rank-- {
+		b.WriteByte(byte('1' + rank))
+		b.WriteByte(' ')
+		for file := 0; file < 8; file++ {
+			if piece := p.board[MakeSquare(file, rank)]; piece != NoPiece {
+				b.WriteByte(piece.Letter())
+			} else {
+				b.WriteByte('.')
+			}
+			b.WriteByte(' ')
+		}
+		b.WriteByte(byte('1' + rank))
+		b.WriteByte('\n')
+	}
+	b.WriteString("  a b c d e f g h")
+	return b.String()
+}
