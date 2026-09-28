@@ -17,6 +17,8 @@ let gameState = {
     username: null,
     authBusy: false,
     newGameBusy: false,
+    termination: '',
+    actionBusy: false, // a draw or resign request is in flight
 };
 
 // Chess piece Unicode: all black pieces for better fill, white pawn due to inability to override emoji variant display
@@ -55,6 +57,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     document.getElementById('new-game-btn').addEventListener('click', showNewGameModal);
     document.getElementById('undo-btn').addEventListener('click', undoMoves);
+    document.getElementById('draw-btn').addEventListener('click', offerDraw);
+    document.getElementById('resign-btn').addEventListener('click', showResignModal);
+    document.getElementById('resign-confirm-btn').addEventListener('click', resignGame);
+    document.getElementById('resign-cancel-btn').addEventListener('click', hideResignModal);
     document.getElementById('start-game-btn').addEventListener('click', startNewGame);
     document.getElementById('cancel-btn').addEventListener('click', hideNewGameModal);
     document.getElementById('copy-history').addEventListener('click', copyHistory);
@@ -442,24 +448,20 @@ function updateTurnIndicator(state, turn) {
         switch(state) {
             case 'white wins':
                 status = 'white-wins';
-                tooltipText = 'White Wins';
                 break;
             case 'black wins':
                 status = 'black-wins';
-                tooltipText = 'Black Wins';
                 break;
             case 'stalemate':
                 status = 'stalemate';
-                tooltipText = 'Stalemate';
                 break;
             case 'draw':
                 status = 'draw';
-                tooltipText = 'Draw';
                 break;
             default:
                 status = 'unknown';
-                tooltipText = 'Game Over';
         }
+        tooltipText = describeResult(state, gameState.termination);
     } else if (state === 'stuck') {
         status = 'degraded';
         tooltipText = 'Engine Error';
@@ -953,11 +955,13 @@ async function pollOnce() {
 function lockBoard() {
     gameState.isLocked = true;
     updateTurnIndicator('pending', gameState.turn);
+    updateGameControls();
 }
 
 function unlockBoard() {
     gameState.isLocked = false;
-    updateTurnIndicator('', gameState.turn);
+    updateTurnIndicator(gameState.state, gameState.turn);
+    updateGameControls();
 }
 
 async function undoMoves() {
@@ -1054,9 +1058,11 @@ function renderMoveHistory(moves) {
 }
 
 function updateGameDisplay(game) {
+    const wasOver = isGameOver(gameState.state);
     gameState.fen = game.fen;
     gameState.turn = game.turn;
     gameState.state = game.state;
+    gameState.termination = game.termination || '';
     gameState.moveList = game.moves || [];
 
     renderBoardFromFEN(game.fen);
@@ -1087,9 +1093,130 @@ function updateGameDisplay(game) {
     // Update undo button
     document.getElementById('undo-btn').disabled = !game.moves || game.moves.length < 2;
 
-    // Handle checkmate visually
-    if (game.state === 'white wins' || game.state === 'black wins') {
+    // Mark the mated king; a resignation leaves the board as it was
+    if ((game.state === 'white wins' || game.state === 'black wins') &&
+        (game.termination || 'checkmate') === 'checkmate') {
         markMatedKing(game);
+    }
+
+    updateGameControls();
+    if (!wasOver && isGameOver(game.state)) {
+        flashMessage(describeResult(game.state, game.termination), 'info', 4000);
+    }
+}
+
+// describeResult names a finished game's outcome and how it was reached.
+function describeResult(state, termination) {
+    const winner = state === 'white wins' ? 'White' : 'Black';
+    const loser = state === 'white wins' ? 'Black' : 'White';
+    switch (termination) {
+        case 'resignation': return `${loser} resigned — ${winner} wins`;
+        case 'stalemate': return 'Stalemate — draw';
+        case 'insufficient_material': return 'Draw — insufficient material';
+        case 'threefold_repetition': return 'Draw — threefold repetition';
+        case 'fifty_move_rule': return 'Draw — fifty-move rule';
+        case 'agreement': return 'Draw agreed';
+    }
+    switch (state) {
+        case 'white wins':
+        case 'black wins': return `Checkmate — ${winner} wins`;
+        case 'stalemate': return 'Stalemate — draw';
+        case 'draw': return 'Draw';
+    }
+    return 'Game over';
+}
+
+// Draw needs a game in progress with the board free; resigning only needs
+// an unfinished game (also while the computer thinks or the engine is stuck).
+function updateGameControls() {
+    const hasGame = !!gameState.gameId;
+    const idle = !gameState.isLocked && !gameState.actionBusy;
+    document.getElementById('draw-btn').disabled =
+        !hasGame || !idle || gameState.state !== 'ongoing';
+    document.getElementById('resign-btn').disabled =
+        !hasGame || gameState.actionBusy || isGameOver(gameState.state);
+}
+
+function playerColor() {
+    return gameState.isPlayerWhite ? 'w' : 'b';
+}
+
+async function offerDraw() {
+    if (gameState.actionBusy || !gameState.gameId) return;
+    gameState.actionBusy = true;
+    updateGameControls();
+    try {
+        const response = await authFetch(`${gameState.apiUrl}/api/games/${gameState.gameId}/draw`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'offer', color: playerColor() })
+        });
+        if (response.status === 409) {
+            flashErrorMessage('Make a move before offering again', 2500);
+            return;
+        }
+        if (!response.ok) {
+            handleApiError('offer draw', null, response);
+            return;
+        }
+        const game = await response.json();
+        if (game.drawOutcome === 'declined') {
+            flashMessage('Draw declined', 'info', 2500);
+        }
+        gameState.actionBusy = false;
+        updateGameDisplay(game);
+    } catch (error) {
+        handleApiError('offer draw', error);
+    } finally {
+        gameState.actionBusy = false;
+        updateGameControls();
+    }
+}
+
+function showResignModal() {
+    if (!gameState.gameId || isGameOver(gameState.state)) return;
+    document.getElementById('resign-overlay').classList.add('show');
+    document.addEventListener('keydown', handleResignKeydown);
+    document.getElementById('resign-cancel-btn').focus();
+}
+
+function hideResignModal() {
+    document.getElementById('resign-overlay').classList.remove('show');
+    document.removeEventListener('keydown', handleResignKeydown);
+}
+
+function handleResignKeydown(e) {
+    if (e.key === 'Escape') {
+        e.preventDefault();
+        hideResignModal();
+    }
+}
+
+async function resignGame() {
+    hideResignModal();
+    if (gameState.actionBusy || !gameState.gameId) return;
+    gameState.actionBusy = true;
+    updateGameControls();
+    try {
+        const response = await authFetch(`${gameState.apiUrl}/api/games/${gameState.gameId}/resign`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ color: playerColor() })
+        });
+        if (!response.ok) {
+            handleApiError('resign', null, response);
+            return;
+        }
+        const game = await response.json();
+        stopPolling(); // a computer move in flight is discarded by the server
+        gameState.isLocked = false;
+        gameState.actionBusy = false;
+        updateGameDisplay(game);
+    } catch (error) {
+        handleApiError('resign', error);
+    } finally {
+        gameState.actionBusy = false;
+        updateGameControls();
     }
 }
 
@@ -1196,10 +1323,17 @@ function handleApiError(action, error, response = null) {
 }
 
 function flashErrorMessage(message, duration = 1500) {
+    flashMessage(message, 'error', duration);
+}
+
+// Shows a short message over the status indicators; 'info' for results and
+// answers to draw offers, 'error' for failures.
+function flashMessage(message, type = 'error', duration = 1500) {
     const overlay = document.getElementById('error-flash-overlay');
     const messageEl = document.getElementById('error-flash-message');
 
     messageEl.textContent = message;
+    messageEl.classList.toggle('info', type === 'info');
     overlay.classList.add('show');
 
     // Clear any pending timeout to avoid premature hide on rapid calls

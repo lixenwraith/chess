@@ -48,6 +48,8 @@
                 <div class="controls">
                     <button id="new-game-btn" class="btn btn-primary">New Game</button>
                     <button id="undo-btn" class="btn btn-secondary" disabled>Undo</button>
+                    <button id="draw-btn" class="btn btn-secondary" title="Offer a draw" disabled>Draw</button>
+                    <button id="resign-btn" class="btn btn-secondary" title="Resign this game" disabled>Resign</button>
                 </div>
 
                 <div class="move-history-container">
@@ -143,6 +145,17 @@
         <div class="modal-buttons">
             <button id="start-game-btn" class="btn btn-primary">Start Game</button>
             <button id="cancel-btn" class="btn btn-secondary">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<!-- Resign Confirmation -->
+<div id="resign-overlay" class="modal-overlay">
+    <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="resign-title">
+        <h2 id="resign-title">Resign this game?</h2>
+        <div class="modal-buttons">
+            <button id="resign-confirm-btn" class="btn btn-primary">Resign</button>
+            <button id="resign-cancel-btn" class="btn btn-secondary">Cancel</button>
         </div>
     </div>
 </div>
