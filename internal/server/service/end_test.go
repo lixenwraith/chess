@@ -1,8 +1,10 @@
 package service
 
 import (
+	"database/sql"
 	"errors"
 	"testing"
+	"time"
 
 	"chess/internal/server/chess"
 	"chess/internal/server/core"
@@ -173,6 +175,37 @@ func TestOfferToMissingOfferIsRejected(t *testing.T) {
 	})
 	if !errors.Is(err, ErrNoDrawOffer) {
 		t.Fatalf("accepting without an offer: %v, want ErrNoDrawOffer", err)
+	}
+}
+
+func TestGameWithDeletedRowIsUnloadedNotDegraded(t *testing.T) {
+	svc, dsn := newPersistentTestServiceDSN(t)
+	gameID := newHumanGame(t, svc)
+	if _, err := svc.GetGameHistory(gameID); err != nil { // flushes the insert
+		t.Fatal(err)
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`DELETE FROM games WHERE game_id = $1`, gameID); err != nil {
+		t.Fatal(err)
+	}
+
+	move(t, svc, gameID, "", "e2e4") // accepted in memory; its write finds no row
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := svc.GetGameView(gameID); errors.Is(err, ErrGameNotFound) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("game with a deleted row is still loaded")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if health := svc.GetStorageHealth(); health != "ok" {
+		t.Fatalf("storage health %q after a write for a deleted game", health)
 	}
 }
 

@@ -68,6 +68,15 @@ type Store struct {
 	enqueueMu    sync.RWMutex
 	closeOnce    sync.Once
 	closeErr     error
+	gameMissing  atomic.Pointer[func(gameID string)]
+}
+
+// SetGameMissingHandler registers the callback run, on its own goroutine,
+// when a write finds its game row gone. Such a write is dropped without
+// degrading storage: later writes for that game fail the same way and write
+// nothing, so no other game's history is affected.
+func (s *Store) SetGameMissingHandler(handler func(gameID string)) {
+	s.gameMissing.Store(&handler)
 }
 
 // NewStore connects to PostgreSQL and starts the async writer. dsn is a
@@ -202,6 +211,14 @@ func (s *Store) executeWrite(req writeRequest) error {
 				"queue_depth", len(s.writeChan),
 			)
 			return nil
+		}
+		if errors.Is(err, ErrGameMissing) {
+			slog.Warn("storage write dropped: game row no longer exists",
+				"operation", req.operation, "game_id", req.gameID)
+			if handler := s.gameMissing.Load(); handler != nil && req.gameID != "" {
+				go (*handler)(req.gameID)
+			}
+			return err
 		}
 		if committing || attempt >= writeAttempts || !isTransient(err) {
 			break

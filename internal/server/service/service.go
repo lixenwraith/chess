@@ -38,6 +38,9 @@ type Service struct {
 	finishedTTL  time.Duration
 	anonymousTTL time.Duration
 	maxUsers     atomic.Int64
+
+	integrityMode   IntegrityMode
+	integrityCursor string // last game ID the integrity sweep verified; cleanup goroutine only
 }
 
 // New creates a service with optional storage. jwtSecret signs session tokens
@@ -63,6 +66,9 @@ func New(store *storage.Store, jwtSecret []byte) (*Service, error) {
 		anonymousTTL: AnonymousGameTTL,
 	}
 	s.maxUsers.Store(DefaultMaxUsers)
+	if store != nil {
+		store.SetGameMissingHandler(s.evictMissingGame)
+	}
 	return s, nil
 }
 
@@ -161,8 +167,9 @@ func (s *Service) Shutdown(timeout time.Duration) error {
 	return errors.Join(errs...)
 }
 
-// RunCleanupJob periodically removes expired sessions, unloads idle games, and
-// deletes anonymous games past their retention.
+// RunCleanupJob periodically removes expired sessions, unloads idle games,
+// deletes anonymous games past their retention, and runs the integrity sweep
+// when enabled.
 func (s *Service) RunCleanupJob(ctx context.Context, interval time.Duration) {
 	s.cleanupExpired()
 	ticker := time.NewTicker(interval)
@@ -188,6 +195,7 @@ func (s *Service) cleanupExpired() {
 		}
 	}
 	s.cleanupGames(now)
+	s.checkIntegrity(now)
 }
 
 // cleanupGames unloads terminal games after the finished-game TTL and

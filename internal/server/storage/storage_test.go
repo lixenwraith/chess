@@ -944,3 +944,75 @@ func TestMigrationV2BackfillsTermination(t *testing.T) {
 		t.Error("games_result_termination_check accepted a termination without a result")
 	}
 }
+
+func TestWriteForDeletedGameIsDroppedWithoutDegrading(t *testing.T) {
+	store := openStore(t, pgtest.DSN(t))
+	missing := make(chan string, 4)
+	store.SetGameMissingHandler(func(gameID string) { missing <- gameID })
+
+	gameID := uuid.NewString()
+	if err := store.RecordNewGame(GameRecord{
+		GameID: gameID, InitialFEN: "initial",
+		WhitePlayerID: uuid.NewString(), WhiteType: 1,
+		BlackPlayerID: uuid.NewString(), BlackType: 1,
+		StartTimeUTC: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// An administrator deletes the game while the server still holds it.
+	if _, err := store.db.Exec(`DELETE FROM games WHERE game_id = $1`, gameID); err != nil {
+		t.Fatal(err)
+	}
+
+	ended := time.Now()
+	writes := []func() error{
+		func() error {
+			return store.RecordMove(MovePersistence{Move: MoveRecord{
+				GameID: gameID, MoveNumber: 1, MoveUCI: "e2e4", FENAfterMove: "after",
+				PlayerColor: "w", MoveTimeUTC: ended,
+			}})
+		},
+		func() error {
+			return store.RecordGameEnd(GameEnd{
+				GameID: gameID, Result: "black_wins", Termination: "resignation", EndTimeUTC: ended,
+			})
+		},
+		func() error { return store.RewindGame(gameID, 0) },
+	}
+	for i, write := range writes {
+		if err := write(); err != nil {
+			t.Fatalf("write %d not queued: %v", i, err)
+		}
+		if err := store.Flush(context.Background()); err != nil {
+			t.Fatalf("write %d degraded storage: %v", i, err)
+		}
+		select {
+		case id := <-missing:
+			if id != gameID {
+				t.Fatalf("handler got %s, want %s", id, gameID)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("write %d: missing-game handler not called", i)
+		}
+	}
+	if !store.IsHealthy() {
+		t.Fatal("storage degraded by writes for a deleted game")
+	}
+
+	// Other games are unaffected.
+	other := uuid.NewString()
+	if err := store.RecordNewGame(GameRecord{
+		GameID: other, InitialFEN: "initial",
+		WhitePlayerID: uuid.NewString(), WhiteType: 1,
+		BlackPlayerID: uuid.NewString(), BlackType: 1,
+		StartTimeUTC: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.GetGameHistory(other); err != nil {
+		t.Fatalf("other game: %v", err)
+	}
+}
