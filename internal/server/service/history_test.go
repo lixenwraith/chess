@@ -12,13 +12,14 @@ import (
 )
 
 // playLine creates a game and commits uci as the players' moves, with FENs
-// from the rules core and the given final state on the last move.
+// from the rules core and the given final state (reached by checkmate) on the
+// last move.
 func playLine(t *testing.T, svc *Service, userID string, black core.PlayerConfig, uci []string, final core.State) string {
 	t.Helper()
 	gameID := uuid.NewString()
 	white := core.NewPlayer(core.PlayerConfig{Type: core.PlayerHuman}, core.ColorWhite)
 	blackPlayer := core.NewPlayer(black, core.ColorBlack)
-	if err := svc.CreateGame(gameID, white, blackPlayer, chess.StartFEN, core.ColorWhite, core.StateOngoing); err != nil {
+	if err := svc.CreateGame(gameID, white, blackPlayer, chess.StartFEN, core.ColorWhite, core.StateOngoing, core.TermNone); err != nil {
 		t.Fatal(err)
 	}
 	pos, err := chess.ParseFEN(chess.StartFEN)
@@ -31,9 +32,9 @@ func playLine(t *testing.T, svc *Service, userID string, black core.PlayerConfig
 			t.Fatal(err)
 		}
 		next := pos.Play(m)
-		state := core.StateOngoing
-		if i == len(uci)-1 {
-			state = final
+		state, termination := core.StateOngoing, core.TermNone
+		if i == len(uci)-1 && final.IsTerminal() {
+			state, termination = final, core.TermCheckmate
 		}
 		turn, actor := core.ColorWhite, userID
 		if i%2 == 1 {
@@ -41,7 +42,7 @@ func playLine(t *testing.T, svc *Service, userID string, black core.PlayerConfig
 		}
 		if err := svc.ApplyMoveWithState(gameID, MoveCommit{
 			ExpectedFEN: pos.FEN(), ExpectedState: core.StateOngoing, ExpectedTurn: turn,
-			ActorUserID: actor, MoveUCI: text, NewFEN: next.FEN(), State: state,
+			ActorUserID: actor, MoveUCI: text, NewFEN: next.FEN(), State: state, Termination: termination,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -75,7 +76,7 @@ func TestHistoryNotationAndPGN(t *testing.T) {
 	for _, want := range []string{
 		"[Event \"Casual game\"]\n[Site \"?\"]\n", "[White \"Anonymous\"]\n", "[Black \"Stockfish level 3\"]\n",
 		"[Result \"0-1\"]\n", "[GameId \"" + gameID + "\"]\n", "[BlackType \"program\"]\n", "[PlyCount \"4\"]\n",
-		"[Termination \"normal\"]\n", "\n\n1. f3 e5 2. g4 Qh4# 0-1\n",
+		"[Termination \"normal\"]\n", "\n\n1. f3 e5 2. g4 Qh4# { Black wins by checkmate. } 0-1\n",
 	} {
 		if !strings.Contains(pgn.Text, want) {
 			t.Errorf("PGN lacks %q:\n%s", want, pgn.Text)

@@ -93,6 +93,8 @@ func TestAPIRoutes(t *testing.T) {
 		"GET /api/games/:gameId/history",
 		"GET /api/games/:gameId/pgn",
 		"POST /api/games/:gameId/moves",
+		"POST /api/games/:gameId/resign",
+		"POST /api/games/:gameId/draw",
 		"GET /api/users/me/games",
 	} {
 		if !registered[want] {
@@ -136,7 +138,7 @@ func TestStoredGameEndpoints(t *testing.T) {
 	gameID := uuid.NewString()
 	white := core.NewPlayer(core.PlayerConfig{Type: core.PlayerHuman}, core.ColorWhite)
 	black := core.NewPlayer(core.PlayerConfig{Type: core.PlayerHuman}, core.ColorBlack)
-	if err := svc.CreateGame(gameID, white, black, chess.StartFEN, core.ColorWhite, core.StateOngoing); err != nil {
+	if err := svc.CreateGame(gameID, white, black, chess.StartFEN, core.ColorWhite, core.StateOngoing, core.TermNone); err != nil {
 		t.Fatal(err)
 	}
 	pos, _ := chess.ParseFEN(chess.StartFEN)

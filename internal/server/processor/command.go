@@ -15,6 +15,8 @@ const (
 	CmdMakeMove
 	CmdUndoMove
 	CmdGetBoard
+	CmdResign
+	CmdDraw
 )
 
 // Command is a unified structure for all processor operations
@@ -82,5 +84,21 @@ func NewGetBoardCommand(gameID string) Command {
 	return Command{
 		Type:   CmdGetBoard,
 		GameID: gameID,
+	}
+}
+
+func NewResignCommand(gameID string, req core.ResignRequest) Command {
+	return Command{
+		Type:   CmdResign,
+		GameID: gameID,
+		Args:   req,
+	}
+}
+
+func NewDrawCommand(gameID string, req core.DrawRequest) Command {
+	return Command{
+		Type:   CmdDraw,
+		GameID: gameID,
+		Args:   req,
 	}
 }

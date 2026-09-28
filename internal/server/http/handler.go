@@ -175,6 +175,8 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 	api.Delete("/games/:gameId", h.DeleteGame)
 	api.Post("/games/:gameId/moves", OptionalAuth(validateToken), h.MakeMove)
 	api.Post("/games/:gameId/undo", h.UndoMove)
+	api.Post("/games/:gameId/resign", OptionalAuth(validateToken), h.Resign)
+	api.Post("/games/:gameId/draw", OptionalAuth(validateToken), h.Draw)
 	api.Get("/games/:gameId/board", h.GetBoard)
 	api.Get("/users/me/games", AuthRequired(validateToken), h.GetCurrentUserGames)
 
@@ -510,6 +512,58 @@ func (h *HTTPHandler) UndoMove(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(resp.Data)
+}
+
+// Resign ends the game in the opponent's favor.
+func (h *HTTPHandler) Resign(c *fiber.Ctx) error {
+	return h.executeWithBody(c, func(gameID string, body any) processor.Command {
+		return processor.NewResignCommand(gameID, *body.(*core.ResignRequest))
+	})
+}
+
+// Draw offers, accepts, or declines a draw by agreement.
+func (h *HTTPHandler) Draw(c *fiber.Ctx) error {
+	return h.executeWithBody(c, func(gameID string, body any) processor.Command {
+		return processor.NewDrawCommand(gameID, *body.(*core.DrawRequest))
+	})
+}
+
+// executeWithBody runs a game command built from the validated request body,
+// with the caller's user ID for slot authorization.
+func (h *HTTPHandler) executeWithBody(c *fiber.Ctx, build func(gameID string, body any) processor.Command) error {
+	gameID := c.Params("gameId")
+	if !isValidUUID(gameID) {
+		return invalidGameID(c)
+	}
+	body := c.Locals("validatedBody")
+	if validated, _ := c.Locals("validated").(bool); !validated || body == nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
+			Error: "validation bypass detected", Code: core.ErrInternalError,
+		})
+	}
+	cmd := build(gameID, body)
+	cmd.UserID, _ = c.Locals("userID").(string)
+
+	resp := h.proc.Execute(cmd)
+	if !resp.Success {
+		return c.Status(statusForCode(resp.Error.Code)).JSON(resp.Error)
+	}
+	return c.JSON(resp.Data)
+}
+
+// statusForCode maps processor error codes to HTTP statuses.
+func statusForCode(code string) int {
+	switch code {
+	case core.ErrGameNotFound:
+		return fiber.StatusNotFound
+	case core.ErrUnauthorized:
+		return fiber.StatusForbidden
+	case core.ErrConflict:
+		return fiber.StatusConflict
+	case core.ErrInternalError:
+		return fiber.StatusInternalServerError
+	}
+	return fiber.StatusBadRequest
 }
 
 // DeleteGame unloads a live game while retaining its durable history.

@@ -8,13 +8,15 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const gameSelectColumns = `
 	g.game_id, g.initial_fen,
 	g.white_player_id, g.white_type, g.white_level, g.white_search_time, g.white_claimed_by, g.white_name,
 	g.black_player_id, g.black_type, g.black_level, g.black_search_time, g.black_claimed_by, g.black_name,
-	g.result, g.start_time_utc, g.end_time_utc`
+	g.result, g.termination, g.start_time_utc, g.end_time_utc`
 
 // claimantName snapshots a claimant's username inside the writing
 // transaction; NULL when the slot is unclaimed or the account is gone.
@@ -33,7 +35,7 @@ func (s *Store) RecordNewGame(record GameRecord) error {
 	if record.GameID == "" || record.InitialFEN == "" || record.WhitePlayerID == "" || record.BlackPlayerID == "" {
 		return errors.New("game ID, initial FEN, and player IDs are required")
 	}
-	if err := validateResultTime(record.Result, record.EndTimeUTC); err != nil {
+	if err := validateOutcome(record.Result, record.Termination, record.EndTimeUTC); err != nil {
 		return err
 	}
 
@@ -42,9 +44,9 @@ func (s *Store) RecordNewGame(record GameRecord) error {
 			game_id, initial_fen,
 			white_player_id, white_type, white_level, white_search_time, white_claimed_by, white_name,
 			black_player_id, black_type, black_level, black_search_time, black_claimed_by, black_name,
-			start_time_utc, result, end_time_utc
+			start_time_utc, result, termination, end_time_utc
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, ` + claimantName("$7") + `,
-			$8, $9, $10, $11, $12, ` + claimantName("$12") + `, $13, $14, $15)`
+			$8, $9, $10, $11, $12, ` + claimantName("$12") + `, $13, $14, $15, $16)`
 
 		_, err := tx.ExecContext(ctx, query,
 			record.GameID, record.InitialFEN,
@@ -52,7 +54,8 @@ func (s *Store) RecordNewGame(record GameRecord) error {
 			nullableString(record.WhiteClaimedBy),
 			record.BlackPlayerID, record.BlackType, record.BlackLevel, record.BlackSearchTime,
 			nullableString(record.BlackClaimedBy),
-			record.StartTimeUTC, nullableString(record.Result), record.EndTimeUTC,
+			record.StartTimeUTC, nullableString(record.Result), nullableString(record.Termination),
+			record.EndTimeUTC,
 		)
 		return err
 	})
@@ -74,7 +77,7 @@ func (s *Store) RecordMove(record MovePersistence) error {
 	if (record.ClaimColor == "") != (record.ClaimedBy == "") {
 		return errors.New("claim color and claimant must be provided together")
 	}
-	if err := validateResultTime(record.Result, record.EndTimeUTC); err != nil {
+	if err := validateOutcome(record.Result, record.Termination, record.EndTimeUTC); err != nil {
 		return err
 	}
 
@@ -90,63 +93,86 @@ func (s *Store) RecordMove(record MovePersistence) error {
 			record.Move.PlayerColor,
 			record.Move.MoveTimeUTC,
 		); err != nil {
-			return err
+			return gameMissingOr(err, record.Move.GameID)
 		}
 
 		if record.ClaimedBy == "" && record.Result == "" {
 			return nil
 		}
-		// One UPDATE applies the optional claim and optional result. A claim may
-		// only fill an empty slot or repeat the same claimant.
-		claimColumn, nameColumn := "white_claimed_by", "white_name"
-		if record.ClaimColor == "b" {
-			claimColumn, nameColumn = "black_claimed_by", "black_name"
-		}
-		var set []string
-		args := []any{record.Move.GameID}
-		where := "game_id = $1"
-		if record.ClaimedBy != "" {
-			args = append(args, record.ClaimedBy)
-			param := fmt.Sprintf("$%d", len(args))
-			set = append(set, fmt.Sprintf("%s = %s, %s = COALESCE(%s, %s)",
-				claimColumn, param, nameColumn, nameColumn, claimantName(param)))
-			where += fmt.Sprintf(" AND (%s IS NULL OR %s = %s)", claimColumn, claimColumn, param)
-		}
-		if record.Result != "" {
-			args = append(args, record.Result, record.EndTimeUTC)
-			set = append(set, fmt.Sprintf("result = $%d, end_time_utc = $%d", len(args)-1, len(args)))
-		}
-		result, err := tx.ExecContext(ctx,
-			"UPDATE games SET "+strings.Join(set, ", ")+" WHERE "+where, args...)
-		if err != nil {
-			return err
-		}
-		return requireOneGame(result, record.Move.GameID)
+		return updateGameEnd(ctx, tx, record.Move.GameID, record.ClaimColor, record.ClaimedBy,
+			record.Result, record.Termination, record.EndTimeUTC)
 	})
 }
 
-// RecordGameResult persists a terminal transition not accompanied by a move,
-// such as a no-legal-moves engine response.
-func (s *Store) RecordGameResult(gameID, result string, at time.Time) error {
-	if gameID == "" {
+// GameEnd is a terminal transition not accompanied by a move: a resignation,
+// a draw by agreement, or an engine that found no legal move. ClaimColor and
+// ClaimedBy optionally record the acting user's claim of an empty slot.
+type GameEnd struct {
+	GameID      string
+	Result      string
+	Termination string
+	EndTimeUTC  time.Time
+	ClaimColor  string
+	ClaimedBy   string
+}
+
+// RecordGameEnd persists the result, how it was reached, and any claim in one
+// transaction.
+func (s *Store) RecordGameEnd(end GameEnd) error {
+	if end.GameID == "" {
 		return errors.New("game ID is required")
 	}
-	if !isValidResult(result) {
-		return fmt.Errorf("invalid game result %q", result)
+	if end.EndTimeUTC.IsZero() {
+		return errors.New("game end time is required")
 	}
-	if at.IsZero() {
-		return errors.New("game result time is required")
+	ended := end.EndTimeUTC.UTC()
+	if err := validateOutcome(end.Result, end.Termination, &ended); err != nil {
+		return err
 	}
-	return s.enqueue("record_game_result", gameID, func(ctx context.Context, tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx,
-			`UPDATE games SET result = $2, end_time_utc = $3 WHERE game_id = $1`,
-			gameID, result, at.UTC(),
-		)
-		if err != nil {
-			return err
-		}
-		return requireOneGame(res, gameID)
+	if end.Result == "" {
+		return errors.New("game result is required")
+	}
+	if end.ClaimColor != "" && end.ClaimColor != "w" && end.ClaimColor != "b" {
+		return fmt.Errorf("invalid claim color %q", end.ClaimColor)
+	}
+	if (end.ClaimColor == "") != (end.ClaimedBy == "") {
+		return errors.New("claim color and claimant must be provided together")
+	}
+	return s.enqueue("record_game_end", end.GameID, func(ctx context.Context, tx *sql.Tx) error {
+		return updateGameEnd(ctx, tx, end.GameID, end.ClaimColor, end.ClaimedBy,
+			end.Result, end.Termination, &ended)
 	})
+}
+
+// updateGameEnd applies an optional claim and an optional result in one
+// UPDATE. A claim may only fill an empty slot or repeat the same claimant.
+func updateGameEnd(ctx context.Context, tx *sql.Tx, gameID, claimColor, claimedBy,
+	result, termination string, ended *time.Time) error {
+	claimColumn, nameColumn := "white_claimed_by", "white_name"
+	if claimColor == "b" {
+		claimColumn, nameColumn = "black_claimed_by", "black_name"
+	}
+	var set []string
+	args := []any{gameID}
+	where := "game_id = $1"
+	if claimedBy != "" {
+		args = append(args, claimedBy)
+		param := fmt.Sprintf("$%d", len(args))
+		set = append(set, fmt.Sprintf("%s = %s, %s = COALESCE(%s, %s)",
+			claimColumn, param, nameColumn, nameColumn, claimantName(param)))
+		where += fmt.Sprintf(" AND (%s IS NULL OR %s = %s)", claimColumn, claimColumn, param)
+	}
+	if result != "" {
+		args = append(args, result, termination, ended)
+		set = append(set, fmt.Sprintf("result = $%d, termination = $%d, end_time_utc = $%d",
+			len(args)-2, len(args)-1, len(args)))
+	}
+	res, err := tx.ExecContext(ctx,
+		"UPDATE games SET "+strings.Join(set, ", ")+" WHERE "+where, args...)
+	if err != nil {
+		return err
+	}
+	return requireOneGame(ctx, tx, res, gameID)
 }
 
 // PlayerRecord is the persistence subset of a player configuration.
@@ -177,7 +203,7 @@ func (s *Store) RecordPlayers(gameID string, white, black PlayerRecord) error {
 		if err != nil {
 			return err
 		}
-		return requireOneGame(res, gameID)
+		return requireOneGame(ctx, tx, res, gameID)
 	})
 }
 
@@ -195,13 +221,13 @@ func (s *Store) RewindGame(gameID string, afterMoveNumber int) error {
 			return err
 		}
 		res, err := tx.ExecContext(ctx,
-			`UPDATE games SET result = NULL, end_time_utc = NULL WHERE game_id = $1`,
+			`UPDATE games SET result = NULL, termination = NULL, end_time_utc = NULL WHERE game_id = $1`,
 			gameID,
 		)
 		if err != nil {
 			return err
 		}
-		return requireOneGame(res, gameID)
+		return requireOneGame(ctx, tx, res, gameID)
 	})
 }
 
@@ -492,7 +518,7 @@ type rowScanner interface {
 
 // scanGame scans gameSelectColumns followed by any extra destinations.
 func scanGame(scanner rowScanner, record *GameRecord, extra ...any) error {
-	var whiteClaimed, whiteName, blackClaimed, blackName, result sql.NullString
+	var whiteClaimed, whiteName, blackClaimed, blackName, result, termination sql.NullString
 	var endTime sql.NullTime
 	dest := []any{
 		&record.GameID, &record.InitialFEN,
@@ -500,7 +526,7 @@ func scanGame(scanner rowScanner, record *GameRecord, extra ...any) error {
 		&whiteClaimed, &whiteName,
 		&record.BlackPlayerID, &record.BlackType, &record.BlackLevel, &record.BlackSearchTime,
 		&blackClaimed, &blackName,
-		&result, &record.StartTimeUTC, &endTime,
+		&result, &termination, &record.StartTimeUTC, &endTime,
 	}
 	if err := scanner.Scan(append(dest, extra...)...); err != nil {
 		return err
@@ -510,20 +536,47 @@ func scanGame(scanner rowScanner, record *GameRecord, extra ...any) error {
 	record.BlackClaimedBy = blackClaimed.String
 	record.BlackName = blackName.String
 	record.Result = result.String
+	record.Termination = termination.String
 	record.StartTimeUTC = record.StartTimeUTC.UTC()
 	record.EndTimeUTC = utcPointer(endTime)
 	return nil
 }
 
-func requireOneGame(result sql.Result, gameID string) error {
+// ErrGameMissing reports a write for a game whose row no longer exists,
+// typically deleted by hand while the server still held the game. The writer
+// drops such a write without degrading storage; see SetGameMissingHandler.
+var ErrGameMissing = errors.New("game row no longer exists")
+
+// requireOneGame checks that an UPDATE matched its game, telling a missing
+// row apart from a row whose guard (such as a claim) did not match.
+func requireOneGame(ctx context.Context, tx *sql.Tx, result sql.Result, gameID string) error {
 	rows, err := result.RowsAffected()
 	if err != nil {
 		return err
 	}
-	if rows != 1 {
-		return fmt.Errorf("game %s was not updated", gameID)
+	if rows == 1 {
+		return nil
 	}
-	return nil
+	var exists bool
+	if err := tx.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM games WHERE game_id = $1)`, gameID,
+	).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("%w: %s", ErrGameMissing, gameID)
+	}
+	return fmt.Errorf("game %s was not updated", gameID)
+}
+
+// gameMissingOr maps the moves-to-games foreign-key violation, raised when a
+// move is inserted for a deleted game, to ErrGameMissing.
+func gameMissingOr(err error, gameID string) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23503" && pgErr.ConstraintName == "moves_game_id_fkey" {
+		return fmt.Errorf("%w: %s", ErrGameMissing, gameID)
+	}
+	return err
 }
 
 func isValidResult(result string) bool {
@@ -535,15 +588,36 @@ func isValidResult(result string) bool {
 	}
 }
 
-func validateResultTime(result string, ended *time.Time) error {
+// validTermination mirrors the games_termination_check constraint.
+func validTermination(result, termination string) bool {
+	switch result {
+	case "white_wins", "black_wins":
+		return termination == "checkmate" || termination == "resignation"
+	case "stalemate":
+		return termination == "stalemate"
+	case "draw":
+		switch termination {
+		case "insufficient_material", "threefold_repetition", "fifty_move_rule", "agreement":
+			return true
+		}
+	}
+	return false
+}
+
+// validateOutcome checks that a result, its termination, and the end time are
+// all present and consistent, or all absent.
+func validateOutcome(result, termination string, ended *time.Time) error {
 	if result == "" {
-		if ended != nil {
-			return errors.New("end time requires a game result")
+		if termination != "" || ended != nil {
+			return errors.New("termination and end time require a game result")
 		}
 		return nil
 	}
 	if !isValidResult(result) {
 		return fmt.Errorf("invalid game result %q", result)
+	}
+	if !validTermination(result, termination) {
+		return fmt.Errorf("termination %q cannot produce result %q", termination, result)
 	}
 	if ended == nil || ended.IsZero() {
 		return errors.New("terminal game result requires an end time")

@@ -29,16 +29,15 @@ const (
 
 // Service coordinates game state, user management, and storage
 type Service struct {
-	games         map[string]*game.Game
-	mu            sync.RWMutex
-	store         *storage.Store
-	jwt           *auth.JWT
-	kdf           chan struct{} // Argon2id concurrency slots
-	waiter        *WaitRegistry
-	computerGames atomic.Int32 // Active games with computer players
-	finishedTTL   time.Duration
-	anonymousTTL  time.Duration
-	maxUsers      atomic.Int64
+	games        map[string]*game.Game
+	mu           sync.RWMutex
+	store        *storage.Store
+	jwt          *auth.JWT
+	kdf          chan struct{} // Argon2id concurrency slots
+	waiter       *WaitRegistry
+	finishedTTL  time.Duration
+	anonymousTTL time.Duration
+	maxUsers     atomic.Int64
 }
 
 // New creates a service with optional storage. jwtSecret signs session tokens
@@ -115,14 +114,30 @@ func (s *Service) RegisterWait(gameID string, moveCount int, ctx context.Context
 	return s.waiter.RegisterWait(gameID, moveCount, ctx)
 }
 
-// CanCreateComputerGame checks if a new computer game can be created
+// CanCreateComputerGame reports whether the computer game limit leaves room
+// for another game; CreateGame re-checks under its lock.
 func (s *Service) CanCreateComputerGame() bool {
-	return s.computerGames.Load() < MaxComputerGames
+	return s.GetComputerGameCount() < MaxComputerGames
 }
 
-// GetComputerGameCount returns current computer game count
-func (s *Service) GetComputerGameCount() int32 {
-	return s.computerGames.Load()
+// GetComputerGameCount returns the number of unfinished loaded games with a
+// computer player. Finished games stay loaded for a while but need no engine,
+// so they do not count against MaxComputerGames.
+func (s *Service) GetComputerGameCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.activeComputerGamesLocked()
+}
+
+// activeComputerGamesLocked counts as GetComputerGameCount. Caller holds s.mu.
+func (s *Service) activeComputerGamesLocked() int {
+	active := 0
+	for _, g := range s.games {
+		if g.HasComputerPlayer() && !g.State().IsTerminal() {
+			active++
+		}
+	}
+	return active
 }
 
 // Shutdown gracefully shuts down the service
@@ -198,9 +213,6 @@ func (s *Service) cleanupGames(now time.Time) {
 		default:
 			live = append(live, gameID)
 			continue
-		}
-		if g.HasComputerPlayer() {
-			s.computerGames.Add(-1)
 		}
 		delete(s.games, gameID)
 	}

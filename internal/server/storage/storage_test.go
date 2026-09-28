@@ -116,7 +116,7 @@ func TestReplayPersistenceIsAtomicAndReadAfterWriteConsistent(t *testing.T) {
 			FENAfterMove: "after-e2e4", PlayerColor: "w", MoveTimeUTC: ended,
 		},
 		ClaimColor: "w", ClaimedBy: user,
-		Result: "white_wins", EndTimeUTC: &ended,
+		Result: "white_wins", Termination: "checkmate", EndTimeUTC: &ended,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestUserGamesArePagedNewestFirstWithoutDuplicates(t *testing.T) {
 		case 1:
 			record.BlackClaimedBy = user
 			end := record.StartTimeUTC.Add(time.Minute)
-			record.Result, record.EndTimeUTC = "white_wins", &end
+			record.Result, record.Termination, record.EndTimeUTC = "white_wins", "resignation", &end
 		case 2:
 			record.WhiteClaimedBy, record.BlackClaimedBy = user, user // self-play
 		case 3:
@@ -710,6 +710,12 @@ func TestAnonymousGamesArePurgedAfterInactivity(t *testing.T) {
 			BlackPlayerID: uuid.NewString(), BlackType: 2, BlackLevel: 5, BlackSearchTime: 100,
 			StartTimeUTC: started, Result: result, EndTimeUTC: ended,
 		}
+		switch result {
+		case "stalemate":
+			record.Termination = "stalemate"
+		case "white_wins", "black_wins":
+			record.Termination = "checkmate"
+		}
 		if err := store.RecordNewGame(record); err != nil {
 			t.Fatal(err)
 		}
@@ -880,4 +886,61 @@ func explain(t *testing.T, db *sql.DB, query string, args ...any) string {
 		t.Fatal(err)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func TestMigrationV2BackfillsTermination(t *testing.T) {
+	dsn := pgtest.DSN(t)
+	store, err := NewStore(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	// A version 1 database with one game of each stored result.
+	if _, err := store.db.Exec(migrations[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`INSERT INTO schema_version (version) VALUES (1)`); err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]string{}
+	for _, result := range []string{"", "white_wins", "black_wins", "stalemate", "draw"} {
+		id := uuid.NewString()
+		ids[result] = id
+		var end any
+		if result != "" {
+			end = time.Now()
+		}
+		if _, err := store.db.Exec(`INSERT INTO games (game_id, initial_fen, white_player_id, white_type,
+			black_player_id, black_type, result, end_time_utc) VALUES ($1, 'initial', $2, 1, $3, 1, $4, $5)`,
+			id, uuid.NewString(), uuid.NewString(), nullableString(result), end); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := store.InitDB(); err != nil {
+		t.Fatal(err)
+	}
+	for result, want := range map[string]string{
+		"": "", "white_wins": "checkmate", "black_wins": "checkmate", "stalemate": "stalemate", "draw": "agreement",
+	} {
+		var termination sql.NullString
+		if err := store.db.QueryRow(`SELECT termination FROM games WHERE game_id = $1`, ids[result]).
+			Scan(&termination); err != nil {
+			t.Fatal(err)
+		}
+		if termination.String != want {
+			t.Errorf("result %q: termination %q, want %q", result, termination.String, want)
+		}
+	}
+
+	// The constraints reject a termination that cannot produce the result.
+	if _, err := store.db.Exec(`UPDATE games SET termination = 'agreement' WHERE game_id = $1`,
+		ids["white_wins"]); err == nil {
+		t.Error("games_termination_check accepted a win by agreement")
+	}
+	if _, err := store.db.Exec(`UPDATE games SET termination = 'resignation' WHERE game_id = $1`,
+		ids[""]); err == nil {
+		t.Error("games_result_termination_check accepted a termination without a result")
+	}
 }

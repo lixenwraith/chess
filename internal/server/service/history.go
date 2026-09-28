@@ -12,6 +12,7 @@ import (
 
 	"chess/internal/server/chess"
 	"chess/internal/server/core"
+	"chess/internal/server/replay"
 	"chess/internal/server/storage"
 
 	"github.com/google/uuid"
@@ -21,9 +22,9 @@ var (
 	// ErrInvalidListQuery reports a malformed cursor or filter.
 	ErrInvalidListQuery = errors.New("invalid list query")
 	// ErrPlyOutOfRange reports a PGN ply beyond the stored line.
-	ErrPlyOutOfRange = errors.New("ply out of range")
+	ErrPlyOutOfRange = replay.ErrPlyOutOfRange
 	// ErrNotation reports a stored move the rules core cannot notate.
-	ErrNotation = errors.New("cannot derive notation")
+	ErrNotation = replay.ErrNotation
 )
 
 // GetGameHistory returns a durable replay even after the live game has been
@@ -39,13 +40,16 @@ func (s *Service) GetGameHistory(gameID string) (*core.GameHistoryResponse, erro
 		InitialFEN:   record.InitialFEN,
 		Result:       record.Result,
 		PGNResult:    chess.ResultToken(record.Result),
-		Termination:  termination(record.Result),
+		Termination:  record.Termination,
 		StartTimeUTC: record.StartTimeUTC,
 		EndTimeUTC:   record.EndTimeUTC,
 		Players:      playersResponse(*record),
 		Moves:        make([]core.HistoryMove, 0, len(moves)),
 	}
-	san, _ := notate(record.GameID, record.InitialFEN, moves)
+	san, err := replay.Notate(record.InitialFEN, moves)
+	if err != nil {
+		slog.Warn("stored game has moves without notation", "game_id", record.GameID, "error", err)
+	}
 	for i, move := range moves {
 		history.Moves = append(history.Moves, core.HistoryMove{
 			MoveNumber:   move.MoveNumber,
@@ -59,71 +63,17 @@ func (s *Service) GetGameHistory(gameID string) (*core.GameHistoryResponse, erro
 	return history, nil
 }
 
-// GamePGN is a PGN export and its suggested download name.
-type GamePGN struct {
-	Text     string
-	Filename string
-}
-
-// GetGamePGN exports the stored game in PGN. ply < 0 exports every move;
-// otherwise the first ply moves, with result "*" when that stops short of the
-// end of the line.
-func (s *Service) GetGamePGN(gameID string, ply int) (*GamePGN, error) {
+// GetGamePGN exports the stored game in PGN; see replay.BuildPGN for ply.
+func (s *Service) GetGamePGN(gameID string, ply int) (*replay.PGN, error) {
 	record, moves, err := s.loadHistory(gameID)
 	if err != nil {
 		return nil, err
 	}
-	return BuildPGN(record, moves, ply)
-}
-
-// BuildPGN exports a stored game read by storage.GetGameHistory; see
-// GetGamePGN for ply.
-func BuildPGN(record *storage.GameRecord, moves []storage.MoveRecord, ply int) (*GamePGN, error) {
-	if ply > len(moves) {
-		return nil, fmt.Errorf("%w: game has %d plies", ErrPlyOutOfRange, len(moves))
+	pgn, err := replay.BuildPGN(record, moves, ply)
+	if errors.Is(err, replay.ErrNotation) {
+		slog.Warn("stored game cannot be exported as PGN", "game_id", gameID, "error", err)
 	}
-	san, err := notate(record.GameID, record.InitialFEN, moves)
-	if err != nil {
-		return nil, err
-	}
-
-	complete := ply < 0 || ply == len(moves)
-	if !complete {
-		san = san[:ply]
-	}
-	result := "*"
-	if complete {
-		result = chess.ResultToken(record.Result)
-	}
-	start := record.StartTimeUTC.UTC()
-	tags := []chess.Tag{
-		{Name: "Event", Value: "Casual game"},
-		{Name: "Date", Value: start.Format("2006.01.02")},
-		{Name: "White", Value: pgnPlayerName(record.WhiteType, record.WhiteLevel, record.WhiteName)},
-		{Name: "Black", Value: pgnPlayerName(record.BlackType, record.BlackLevel, record.BlackName)},
-		{Name: "GameId", Value: record.GameID},
-		{Name: "UTCDate", Value: start.Format("2006.01.02")},
-		{Name: "UTCTime", Value: start.Format("15:04:05")},
-		{Name: "WhiteType", Value: pgnPlayerType(record.WhiteType)},
-		{Name: "BlackType", Value: pgnPlayerType(record.BlackType)},
-		{Name: "PlyCount", Value: strconv.Itoa(len(san))},
-	}
-	if complete {
-		value := "unterminated"
-		if record.Result != "" {
-			value = "normal"
-		}
-		tags = append(tags, chess.Tag{Name: "Termination", Value: value})
-	}
-
-	name := fmt.Sprintf("chess-%s-%s", start.Format("20060102"), record.GameID[:8])
-	if !complete {
-		name += fmt.Sprintf("-ply%d", ply)
-	}
-	return &GamePGN{
-		Text:     chess.PGN{Tags: tags, StartFEN: record.InitialFEN, SAN: san, Result: result}.String(),
-		Filename: name + ".pgn",
-	}, nil
+	return pgn, err
 }
 
 func (s *Service) loadHistory(gameID string) (*storage.GameRecord, []storage.MoveRecord, error) {
@@ -141,63 +91,6 @@ func (s *Service) loadHistory(gameID string) (*storage.GameRecord, []storage.Mov
 		return nil, nil, fmt.Errorf("get game history: %w", err)
 	}
 	return record, moves, nil
-}
-
-// notate derives SAN for each stored move from the stored position before
-// it, so one unparsable ply does not affect the others. Plies it cannot
-// notate are left empty and reported in the error.
-func notate(gameID, initialFEN string, moves []storage.MoveRecord) ([]string, error) {
-	san := make([]string, len(moves))
-	before := initialFEN
-	var firstErr error
-	for i, move := range moves {
-		pos, err := chess.ParseFEN(before)
-		if err == nil {
-			var m chess.Move
-			if m, err = pos.ParseUCI(move.MoveUCI); err == nil {
-				san[i] = pos.SAN(m)
-			}
-		}
-		if err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("%w: ply %d (%s): %v", ErrNotation, move.MoveNumber, move.MoveUCI, err)
-		}
-		before = move.FENAfterMove
-	}
-	if firstErr != nil {
-		slog.Warn("stored game has moves without notation", "game_id", gameID, "error", firstErr)
-	}
-	return san, firstErr
-}
-
-// termination names how a stored result was reached. Results are produced
-// only by mate and stalemate today; "draw" has no rule behind it yet.
-func termination(result string) string {
-	switch result {
-	case "white_wins", "black_wins":
-		return "checkmate"
-	case "stalemate":
-		return "stalemate"
-	case "draw":
-		return "draw"
-	}
-	return ""
-}
-
-func pgnPlayerName(playerType, level int, name string) string {
-	switch {
-	case core.PlayerType(playerType) == core.PlayerComputer:
-		return "Stockfish level " + strconv.Itoa(level)
-	case name != "":
-		return name
-	}
-	return "Anonymous"
-}
-
-func pgnPlayerType(playerType int) string {
-	if core.PlayerType(playerType) == core.PlayerComputer {
-		return "program"
-	}
-	return "human"
 }
 
 // UserGamesOptions selects a page of the caller's games. Cursor, when set,

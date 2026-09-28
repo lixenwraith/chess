@@ -105,6 +105,12 @@ func (w *WaitRegistry) NotifyGame(gameID string, currentMoveCount int, state cor
 	}
 }
 
+// NotifyAll wakes every client waiting on a game, for changes that neither
+// move nor settle it, such as a draw offer.
+func (w *WaitRegistry) NotifyAll(gameID string) {
+	w.RemoveGame(gameID)
+}
+
 // RemoveGame removes all waiters for a game (called before game deletion)
 func (w *WaitRegistry) RemoveGame(gameID string) {
 	w.mu.RLock()

@@ -19,20 +19,40 @@ type MoveRequest struct {
 	Move string `json:"move" validate:"required,min=4,max=5"` // "cccc" for computer move, 4-5 chars for UCI moves
 }
 
+// ResignRequest ends the game in the opponent's favor. Color may be omitted
+// when the caller controls exactly one human side.
+type ResignRequest struct {
+	Color string `json:"color,omitempty" validate:"omitempty,oneof=w b white black"`
+}
+
+// DrawRequest offers, accepts, or declines a draw by agreement. Offering to a
+// computer opponent is answered at once.
+type DrawRequest struct {
+	Action string `json:"action" validate:"required,oneof=offer accept decline"`
+	Color  string `json:"color,omitempty" validate:"omitempty,oneof=w b white black"`
+}
+
 type UndoRequest struct {
 	Count int `json:"count" validate:"required,min=1,max=300"` // Max based on longest games in history (272), theoretical max 5949
 }
 
 // Response types
 
+// GameResponse is the live game. Termination names how a finished game ended;
+// DrawOffer is the color whose draw offer awaits an answer; DrawOutcome
+// reports what a draw request did ("offered", "accepted", "declined") and is
+// set only on responses to that request.
 type GameResponse struct {
-	GameID   string          `json:"gameId"`
-	FEN      string          `json:"fen"`
-	Turn     string          `json:"turn"`  // "w" or "b"
-	State    string          `json:"state"` // "ongoing", "white wins", etc
-	Moves    []string        `json:"moves"`
-	Players  PlayersResponse `json:"players"`
-	LastMove *MoveInfo       `json:"lastMove,omitempty"`
+	GameID      string          `json:"gameId"`
+	FEN         string          `json:"fen"`
+	Turn        string          `json:"turn"`  // "w" or "b"
+	State       string          `json:"state"` // "ongoing", "white wins", etc
+	Termination string          `json:"termination,omitempty"`
+	DrawOffer   string          `json:"drawOffer,omitempty"`
+	DrawOutcome string          `json:"drawOutcome,omitempty"`
+	Moves       []string        `json:"moves"`
+	Players     PlayersResponse `json:"players"`
+	LastMove    *MoveInfo       `json:"lastMove,omitempty"`
 }
 
 type MoveInfo struct {
@@ -52,8 +72,8 @@ type BoardResponse struct {
 // to replay a stored game.
 //
 // PGNResult is the PGN result token ("1-0", "0-1", "1/2-1/2", or "*") and
-// Termination names how a result was reached ("checkmate", "stalemate",
-// "draw"; omitted while the game is unfinished).
+// Termination names how a result was reached (see core.Termination; omitted
+// while the game is unfinished).
 type GameHistoryResponse struct {
 	GameID       string          `json:"gameId"`
 	InitialFEN   string          `json:"initialFen"`

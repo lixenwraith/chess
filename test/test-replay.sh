@@ -103,7 +103,7 @@ case "$(header Content-Disposition)" in
 esac
 check "seven tag roster order" "Event Site Date Round White Black Result" \
     "$(head -7 "$TMP/body" | sed -E 's/^\[([A-Za-z]+) .*/\1/' | tr '\n' ' ' | sed 's/ $//')"
-check "movetext" "1. f3 e5 2. g4 Qh4# 0-1" "$(sed -n '/^$/,$p' "$TMP/body" | sed '/^$/d')"
+check "movetext" "1. f3 e5 2. g4 Qh4# { Black wins by checkmate. } 0-1" "$(sed -n '/^$/,$p' "$TMP/body" | sed '/^$/d')"
 grep -q '^\[Termination "normal"\]$' "$TMP/body" && ok "Termination tag" || bad "Termination tag missing"
 PGN_ETAG=$(header ETag)
 check "pgn 304" 304 "$(request GET "/games/$GAME/pgn" -H "If-None-Match: $PGN_ETAG")"
