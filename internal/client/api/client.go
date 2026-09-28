@@ -203,6 +203,22 @@ func (c *Client) UndoMoves(gameID string, count int) (*GameResponse, error) {
 	return &resp, err
 }
 
+// Resign ends the game in the opponent's favor; color may be "" when the
+// caller plays exactly one human side.
+func (c *Client) Resign(gameID, color string) (*GameResponse, error) {
+	var resp GameResponse
+	err := c.doRequest("POST", "/api/games/"+gameID+"/resign", &ResignRequest{Color: color}, &resp)
+	return &resp, err
+}
+
+// Draw offers, accepts, or declines a draw; the response's DrawOutcome says
+// what happened.
+func (c *Client) Draw(gameID, action, color string) (*GameResponse, error) {
+	var resp GameResponse
+	err := c.doRequest("POST", "/api/games/"+gameID+"/draw", &DrawRequest{Action: action, Color: color}, &resp)
+	return &resp, err
+}
+
 func (c *Client) GetBoard(gameID string) (*BoardResponse, error) {
 	var resp BoardResponse
 	err := c.doRequest("GET", "/api/games/"+gameID+"/board", nil, &resp)

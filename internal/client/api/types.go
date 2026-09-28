@@ -36,13 +36,25 @@ type LoginRequest struct {
 
 // Response types
 type GameResponse struct {
-	GameID   string          `json:"gameId"`
-	FEN      string          `json:"fen"`
-	Turn     string          `json:"turn"`
-	State    string          `json:"state"`
-	Moves    []string        `json:"moves"`
-	Players  PlayersResponse `json:"players"`
-	LastMove *MoveInfo       `json:"lastMove,omitempty"`
+	GameID      string          `json:"gameId"`
+	FEN         string          `json:"fen"`
+	Turn        string          `json:"turn"`
+	State       string          `json:"state"`
+	Termination string          `json:"termination,omitempty"`
+	DrawOffer   string          `json:"drawOffer,omitempty"`
+	DrawOutcome string          `json:"drawOutcome,omitempty"`
+	Moves       []string        `json:"moves"`
+	Players     PlayersResponse `json:"players"`
+	LastMove    *MoveInfo       `json:"lastMove,omitempty"`
+}
+
+type ResignRequest struct {
+	Color string `json:"color,omitempty"`
+}
+
+type DrawRequest struct {
+	Action string `json:"action"`
+	Color  string `json:"color,omitempty"`
 }
 
 type PlayersResponse struct {

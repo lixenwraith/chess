@@ -78,6 +78,22 @@ func (r *Registry) registerGameCommands() {
 	})
 
 	r.Register(&Command{
+		Name:        "resign",
+		ShortName:   "",
+		Description: "Resign the current game",
+		Usage:       "resign [w|b]  (side optional when you play one human side)",
+		Handler:     resignHandler,
+	})
+
+	r.Register(&Command{
+		Name:        "draw",
+		ShortName:   "",
+		Description: "Offer, accept, or decline a draw",
+		Usage:       "draw [offer|accept|decline] [w|b]  (default: offer)",
+		Handler:     drawHandler,
+	})
+
+	r.Register(&Command{
 		Name:        "games",
 		ShortName:   "g",
 		Description: "List your stored games, newest first (login required)",
@@ -361,21 +377,101 @@ func computerMoveHandler(s *session.Session, args []string) error {
 	return nil
 }
 
-// printOutcome reports terminal or error states using the server's actual
-// State.String() values ("white wins"/"black wins", not "checkmate").
+// printOutcome reports terminal or error states using the server's State
+// ("white wins", "draw", ...) and Termination ("checkmate", "resignation",
+// "threefold_repetition", ...) values, and a pending draw offer.
 func printOutcome(resp *api.GameResponse) {
 	switch resp.State {
-	case "white wins":
-		display.Println(display.Green, "\nCHECKMATE! White wins!")
-	case "black wins":
-		display.Println(display.Green, "\nCHECKMATE! Black wins!")
+	case "white wins", "black wins":
+		winner := "White"
+		if resp.State == "black wins" {
+			winner = "Black"
+		}
+		if resp.Termination == "resignation" {
+			display.Println(display.Green, "\n%s wins by resignation.", winner)
+		} else {
+			display.Println(display.Green, "\nCHECKMATE! %s wins!", winner)
+		}
 	case "stalemate":
 		display.Println(display.Yellow, "\nSTALEMATE! Game drawn.")
 	case "draw":
-		display.Println(display.Yellow, "\nDRAW! Game drawn.")
+		display.Println(display.Yellow, "\nDRAW %s.", drawReason(resp.Termination))
 	case "stuck":
 		display.Println(display.Yellow, "\nEngine error — 'undo' to recover, or 'new'/'delete'.")
 	}
+	if resp.DrawOffer != "" {
+		offerer := "White"
+		if resp.DrawOffer == "b" {
+			offerer = "Black"
+		}
+		display.Println(display.Magenta, "%s offers a draw: 'draw accept' or 'draw decline'.", offerer)
+	}
+}
+
+func drawReason(termination string) string {
+	switch termination {
+	case "insufficient_material":
+		return "by insufficient material"
+	case "threefold_repetition":
+		return "by threefold repetition"
+	case "fifty_move_rule":
+		return "by the fifty-move rule"
+	case "agreement":
+		return "by agreement"
+	}
+	return ""
+}
+
+// resignHandler resigns the current game for the given side, or the side the
+// server infers (the one human side, or the one the user claimed).
+func resignHandler(s *session.Session, args []string) error {
+	gameID := s.CurrentGame
+	if gameID == "" {
+		return fmt.Errorf("no current game, use 'new' or 'join <gameId>'")
+	}
+	color := ""
+	if len(args) > 0 {
+		color = args[0]
+	}
+	resp, err := s.Client.Resign(gameID, color)
+	if err != nil {
+		return err
+	}
+	s.LastMoveCount = len(resp.Moves)
+	s.CurrentGameState = resp
+	printOutcome(resp)
+	return nil
+}
+
+// drawHandler offers (default), accepts, or declines a draw.
+func drawHandler(s *session.Session, args []string) error {
+	gameID := s.CurrentGame
+	if gameID == "" {
+		return fmt.Errorf("no current game, use 'new' or 'join <gameId>'")
+	}
+	action, color := "offer", ""
+	for _, arg := range args {
+		switch arg {
+		case "offer", "accept", "decline":
+			action = arg
+		default:
+			color = arg
+		}
+	}
+	resp, err := s.Client.Draw(gameID, action, color)
+	if err != nil {
+		return err
+	}
+	s.LastMoveCount = len(resp.Moves)
+	s.CurrentGameState = resp
+	switch resp.DrawOutcome {
+	case "offered":
+		display.Println(display.Green, "Draw offered; it stands until answered or the opponent moves.")
+	case "declined":
+		display.Println(display.Yellow, "Draw declined.")
+	}
+	printOutcome(resp)
+	return nil
 }
 
 func undoHandler(s *session.Session, args []string) error {
