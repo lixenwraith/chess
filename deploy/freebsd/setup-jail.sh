@@ -78,7 +78,7 @@ yes_no() {
 [ "$(id -u)" -eq 0 ] || die "run as root"
 [ "$(uname -s)" = FreeBSD ] || die "this script targets FreeBSD"
 [ -f "$CHESS_BINARY" ] || die "CHESS_BINARY not found: $CHESS_BINARY"
-for f in "$repo/deploy/postgresql/setup.sql" "$here/rc.d/chessd" "$here/chess-backup.sh"; do
+for f in "$repo/deploy/postgresql/setup.sql" "$here/rc.d/chessd" "$repo/deploy/postgresql/chess-backup.sh"; do
 	[ -f "$f" ] || die "missing $f; run from a complete repository copy"
 done
 yes_no SPLIT_PRIVILEGES "$SPLIT_PRIVILEGES"
@@ -255,7 +255,7 @@ fi
 if [ "$ENABLE_BACKUP" = yes ]; then
 	# Nightly pg_dump at 03:30 as postgres, keeping 14 days.
 	[ -d "$SBIN_DIR" ] || install -d "$SBIN_DIR"
-	install -o root -g wheel -m 0555 "$here/chess-backup.sh" "$SBIN_DIR/chess-backup"
+	install -o root -g wheel -m 0555 "$repo/deploy/postgresql/chess-backup.sh" "$SBIN_DIR/chess-backup"
 	[ -d "$BACKUP_DIR" ] || install -d -o postgres -g postgres -m 0700 "$BACKUP_DIR"
 	[ -d "$CRON_DIR" ] || install -d "$CRON_DIR"
 	printf '%s\n' \

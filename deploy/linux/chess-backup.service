@@ -1,0 +1,17 @@
+# Nightly pg_dump of the chess database; started by chess-backup.timer.
+# Installed by deploy/linux/setup.sh when ENABLE_BACKUP=yes. Dumps go to
+# backups/ in the postgres home (/var/lib/postgresql on Debian and Ubuntu,
+# /var/lib/postgres on Arch) and are kept for 14 days.
+
+[Unit]
+Description=Back up the chess database
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=postgres
+Group=postgres
+ExecStart=/usr/local/sbin/chess-backup
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full

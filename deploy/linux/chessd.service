@@ -1,0 +1,61 @@
+# chess-server as a systemd service. Installed by deploy/linux/setup.sh as
+# /etc/systemd/system/chessd.service; settings live in /etc/chessd/chessd.env.
+# Local changes belong in a drop-in (systemctl edit chessd), which setup.sh
+# never overwrites.
+
+[Unit]
+Description=Chess API server
+Documentation=https://github.com/lixenwraith/chess/blob/main/doc/deployment-linux.md
+Wants=network-online.target postgresql.service
+After=network-online.target postgresql.service
+# PostgreSQL may still be starting at boot; keep retrying instead of giving up.
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+User=chess
+Group=chess
+EnvironmentFile=/etc/chessd/chessd.env
+# Stockfish is /usr/games/stockfish on Debian and Ubuntu, /usr/bin elsewhere.
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/usr/games
+# ${VAR} stays one argument (the DSN has spaces); $CHESSD_FLAGS splits into
+# words and expands to nothing when empty.
+ExecStart=/usr/local/bin/chess-server \
+    -api-host ${CHESSD_HOST} -api-port ${CHESSD_PORT} \
+    -dsn ${CHESSD_DSN} -jwt-secret-file ${CHESSD_JWT_KEY} \
+    -trusted-proxies ${CHESSD_TRUSTED_PROXIES} \
+    $CHESSD_FLAGS
+Restart=on-failure
+RestartSec=5
+
+# /var/lib/chessd holds the JWT key; the service can read and write nothing
+# else. PostgreSQL is reached over its Unix socket under /run.
+StateDirectory=chessd
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
