@@ -40,7 +40,7 @@ into phases that each ship and test on their own.
 | D2 | History visibility | **Decided: shareable by game ID.** The history endpoint stays public to holders of the 122-bit random ID; IDs are never listed publicly and the list endpoint stays authenticated. |
 | D3 | Where SAN/PGN is produced | **Decided: server-side Go** (R1), derived on read from the initial FEN and the UCI line: no schema change, one implementation for web and CLI, no third-party script under the CSP. |
 | D4 | Player names | **Done.** `white_name`/`black_name` snapshot the claimant's username in the claim transaction and survive renames and deletions; exposed as `players.*.name`. |
-| D5 | Draw rules | **Detection done, enforcement open.** The core detects dead material, the 75-move rule, and fivefold repetition (automatic draws under FIDE 9.6), plus claimable threefold and fifty-move draws. Live play still ends only on mate or stalemate, so such games run on. Open: end live games on the automatic draws (recommended; needs a stored termination cause), and add claim/offer/resign flows. PGN `Result` is `*` for unterminated games. |
+| D5 | Draw rules | **Done.** Draws apply automatically after every move, as on most online servers: dead material, threefold repetition, and the fifty-move rule (FIDE's claimable draws, and so also its 75-move and fivefold rules). Draw offers (a computer answers from its evaluation) and resignation exist; the stored `termination` says how a game ended. |
 | D6 | Undo after a result | **Decided: keep allowed**, so a player can step back from a finished game and play a line again. Consequence: a finished game's stored history, result, and end time are rewritten by undo; replay shows the line as it stands now. |
 | D7 | List pagination | **Done.** Opaque keyset `cursor` on `(start_time_utc, game_id)`; `offset` kept for existing clients and exclusive with `cursor`. |
 
@@ -163,7 +163,9 @@ Test gate:
 - [ ] Retention and user-initiated deletion or anonymization of games.
 - [ ] Thread request contexts from HTTP handlers into storage calls; today each
   call carries its own deadline.
-- [ ] Draw and resign flows (D5) for live play, independent of replay.
+- [x] Draw and resign flows (D5) for live play.
+- [x] A game row deleted by hand no longer degrades storage; optional
+  integrity sweep (`-db-cleanup`) for broken or orphaned data.
 - [ ] Once `db verify` and the live shadow check stay clean in production,
   consider validating human moves with the core instead of the engine: no
   engine round trip or lock per move, and Stockfish only for computer play.

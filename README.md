@@ -20,6 +20,8 @@ Go backend server providing a RESTful API for chess gameplay with user authentic
 - User registration and JWT authentication
 - Stockfish engine integration for validation
 - Human vs human, human vs computer, computer vs computer modes
+- Resignation, draw offers (the computer answers from its evaluation), and
+  automatic draws: dead material, threefold repetition, fifty-move rule
 - Custom FEN position support
 - Asynchronous engine move calculation
 - Configurable engine strength and thinking time
@@ -32,6 +34,8 @@ Go backend server providing a RESTful API for chess gameplay with user authentic
 - Configurable structured debug logs for persistence, cleanup, and engine work
 - User management with secure Argon2id password storage and scoped JWTs
 - Static, CGO-free binaries (cross-compiles for FreeBSD)
+- Scripted deployment: FreeBSD jail (rc.d) or Linux (sandboxed systemd unit)
+- Optional hourly integrity sweep of stored games and accounts
 - PID file management for singleton enforcement
 - Database CLI for storage and user administration
 
@@ -39,7 +43,8 @@ Go backend server providing a RESTful API for chess gameplay with user authentic
 
 - Go 1.27+
 - Stockfish chess engine (`stockfish` in PATH)
-- PostgreSQL 18 (for persistence and accounts; see [Deployment](./doc/deployment.md))
+- PostgreSQL 17+, 18 recommended (for persistence and accounts; see
+  [FreeBSD](./doc/deployment.md) or [Linux](./doc/deployment-linux.md) deployment)
 
 ### Installation
 ```bash
@@ -176,7 +181,8 @@ Access the UI at `http://localhost:9090` when server is running with `-serve` fl
 
 - [API Reference](./doc/api.md) - Endpoint specifications including auth
 - [Deployment](./doc/deployment.md) - FreeBSD jail, PostgreSQL 18, `chessd` service, nginx, web clients
-- [Database Operations](./doc/database.md) - psql recipes: games, users, deletion, starting fresh
+- [Linux Deployment](./doc/deployment-linux.md) - Debian/Ubuntu/Arch, systemd service, development setup
+- [Database Operations](./doc/database.md) - layout, psql as `postgres`, games, users, integrity sweep, starting fresh
 - [Architecture](./doc/architecture.md) - System design with auth layer
 - [Development](./doc/development.md) - Build, test, and user management
 - [Client Guide](./doc/client.md) - Interactive debugging client

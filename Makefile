@@ -148,6 +148,18 @@ test-db:
 test-longpoll:
 	test/test-longpoll.sh
 
+.PHONY: test-endstate
+test-endstate:
+	test/test-endstate.sh
+
+.PHONY: test-replay
+test-replay:
+	test/test-replay.sh
+
+.PHONY: test-draw
+test-draw:
+	test/test-draw.sh
+
 # Database operations
 .PHONY: db-init
 db-init: server
@@ -229,6 +241,9 @@ help:
 	@echo "  make test-api     Run API tests"
 	@echo "  make test-db      Run database tests"
 	@echo "  make test-longpoll Run long-poll tests"
+	@echo "  make test-endstate Run end-state tests"
+	@echo "  make test-replay  Run replay (SAN, PGN, listing) tests"
+	@echo "  make test-draw    Run draw and resignation tests"
 	@echo ""
 	@echo "Database targets (CHESS_DSN=$(CHESS_DSN)):"
 	@echo "  make db-init      Create or migrate the schema"

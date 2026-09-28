@@ -150,6 +150,28 @@ Long-poll for game updates (waits up to 30 seconds).
 chess > poll
 ```
 
+#### `resign`
+Resign the current game. The side may be omitted when you play one human side
+(or claimed one); name it in a hot-seat game.
+```
+chess > resign
+chess > resign b
+```
+
+#### `draw`
+Offer (the default), accept, or decline a draw. A computer answers an offer
+at once; a human opponent sees the offer in their next response, and it
+lapses if they move instead of answering.
+```
+chess > draw              # offer
+chess > draw accept b
+chess > draw decline w
+```
+
+Game outcomes print with how they were reached, e.g. `DRAW by threefold
+repetition.` or `Black wins by resignation.`; a pending offer is shown as
+`White offers a draw`.
+
 #### `games` / `g`
 List your stored games, newest first, 20 per page (requires login). The
 result column is the PGN token (`1-0`, `0-1`, `1/2-1/2`, `*`).

@@ -228,12 +228,12 @@ carries its SAN, derived on read from the stored position before it.
 `result` is omitted while a game is ongoing. Persisted terminal values are
 `white_wins`, `black_wins`, `draw`, and `stalemate`. `pgnResult` is the PGN
 token for the same outcome (`1-0`, `0-1`, `1/2-1/2`, or `*` while ongoing),
-and `termination` names how it was reached (`checkmate`, `stalemate`, or
-`draw`; omitted while ongoing). `moveNumber` counts plies from 1. `san` is
-omitted only for a stored move the rules core cannot notate, which the server
-logs. A claimed player's `name` is their username when the claim was
-recorded; it survives later renames and account deletion, and is omitted for
-anonymous and computer players.
+and `termination` names how it was reached (see
+[Game End](#game-end-draws-and-resignation); omitted while ongoing).
+`moveNumber` counts plies from 1. `san` is omitted only for a stored move the
+rules core cannot notate, which the server logs. A claimed player's `name` is
+their username when the claim was recorded; it survives later renames and
+account deletion, and is omitted for anonymous and computer players.
 
 Undo stays available after a result (a finished game can be rewound and
 played on), so a stored game is never final. Responses carry a strong `ETag`
@@ -273,6 +273,10 @@ as well as download it.
 
 1. f3 e5 2. g4 Qh4# 0-1
 ```
+
+The movetext of a finished game ends with a comment naming the outcome
+before the result, e.g. `{ Black wins by resignation. } 0-1` or
+`{ Draw by threefold repetition. } 1/2-1/2`.
 
 Players are the name snapshot, `Anonymous`, or `Stockfish level N`. A game
 from a custom position adds `SetUp "1"` and `FEN` tags, and its movetext
@@ -349,10 +353,79 @@ last rank without the piece returns 400 `INVALID_MOVE` with
 {"move": "cccc"}
 ```
 
+A move that ends the game (mate, stalemate, or an automatic draw) returns the
+terminal state and `termination` in the same response.
+
+### Game End: Draws and Resignation
+
+A live game (`GET /games/{gameId}` and every game response) carries:
+
+| Field | Meaning |
+|---|---|
+| `state` | `ongoing`, `pending` (computer thinking), `stuck` (engine failed), `white wins`, `black wins`, `stalemate`, or `draw` |
+| `termination` | How a finished game ended: `checkmate`, `resignation`, `stalemate`, `insufficient_material`, `threefold_repetition`, `fifty_move_rule`, or `agreement`; omitted while unfinished |
+| `drawOffer` | `w` or `b`: that side's draw offer awaits an answer; omitted when none |
+| `drawOutcome` | Only on responses to `POST .../draw`: `offered`, `accepted`, or `declined` |
+
+**Automatic draws.** After every move the game is drawn, without a claim, as
+on most online servers, when:
+
+- neither side can mate: bare kings, one minor piece, or only bishops all on
+  squares of one color (two knights do not count: mate is possible);
+- the position occurs for the third time with the same side to move,
+  castling rights, and en-passant possibility (threefold repetition);
+- 50 moves by each side pass without a capture or pawn move (the halfmove
+  clock reaches 100).
+
+Mate and stalemate take precedence. A custom starting position that is
+already dead, or whose halfmove clock is at 100, is created drawn.
+
+#### Resign
+`POST /games/{gameId}/resign`
+
+```json
+{"color": "w"}
+```
+
+Ends the game in the other side's favor, with `termination: "resignation"`.
+`color` (`w`, `b`, `white`, `black`) may be omitted when the server can infer
+the side: the one side the authenticated caller claimed, else the only human
+side. Allowed while the game is unfinished, including while the computer is
+thinking (its move is discarded) or the engine is stuck.
+
+#### Offer, accept, or decline a draw
+`POST /games/{gameId}/draw`
+
+```json
+{"action": "offer", "color": "b"}
+```
+
+`action` is `offer`, `accept`, or `decline`; `color` works as for resign.
+Allowed only while `state` is `ongoing`.
+
+- **To a human:** the offer stands (`drawOffer`) until the opponent accepts,
+  declines, or makes a move instead, which declines it; the offerer's own
+  move keeps it. Offering while the opponent's offer stands accepts it.
+  Repeating a standing offer is a no-op. Waiting long-poll clients are woken
+  on offers and answers.
+- **To the computer:** answered at once in `drawOutcome`. The computer
+  declines before both sides have made ten moves; after that it accepts when
+  a short full-strength search rates its own side level or worse.
+- **One offer per move:** after an offer is declined, the same side must make
+  a move before offering again (409 `GAME_CONFLICT`).
+
+Resign and draw share the move endpoint's authorization: a side claimed by a
+user acts only for that user (403 `UNAUTHORIZED`), and an authenticated
+resignation or acceptance claims an unclaimed side as a first move would.
+Other errors are 400: `GAME_OVER` for a finished game, `INVALID_REQUEST` for
+an ambiguous or computer side, a missing offer, or a game that is not
+ongoing. Both return the game.
+
 ### Undo Moves
 `POST /games/{gameId}/undo`
 
-Reverts moves from history.
+Reverts moves from history. Undo stays available after a result, including a
+resignation or an agreed draw: it rewinds the result and any draw offer.
 
 ### Configure Players
 `PUT /games/{gameId}/players`

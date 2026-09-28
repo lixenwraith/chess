@@ -1,64 +1,97 @@
 # Database Operations
 
-`psql` recipes for inspecting and maintaining the `chess` database in the
-jail. Deployment and provisioning are in [deployment.md](deployment.md).
-Paths and the DSN below are the `rc.d/chessd` defaults.
+`psql` recipes for inspecting and maintaining the chess database as the
+PostgreSQL administrator. Installation is in [deployment.md](deployment.md)
+(FreeBSD jail) and [deployment-linux.md](deployment-linux.md) (Linux with
+systemd).
+
+## Typical Layout
+
+The server expects one database with its tables in one schema of the same
+name, owned by a role that exists only for it:
+
+| Object | Name | Notes |
+|---|---|---|
+| Database | `chess` | Owned by `postgres`; only the `chess` role may connect |
+| Schema | `chess` | All tables; `public` is locked down and stays empty |
+| Login role | `chess` | No password, no superuser, create-database, or create-role rights; 20 connections |
+| Owner role (split mode only) | `chess_owner` | Cannot log in; owns the schema while `chess` only reads and writes rows |
+
+The service runs as an OS account named `chess` and connects over the local
+Unix socket with **peer** authentication, which maps the OS account to the
+role of the same name, so no password exists anywhere. The `chess` role has
+its `search_path` set to `chess` in this database, so the service never names
+the schema. [`deploy/postgresql/setup.sql`](../deploy/postgresql/setup.sql)
+creates all of this; the deployment scripts run it once.
+
+Administration uses the `postgres` superuser account, which keeps the
+distribution's defaults. Its `search_path` (`"$user", public`) does not
+include `chess`, so **every recipe names the schema explicitly** (`chess.games`).
+This keeps other databases and tools on the same server unaffected, and a
+statement typed into the wrong database fails instead of acting on whatever
+it finds.
 
 ## Connecting
 
 ```sh
-jail# su -m postgres -c 'psql -X -d chess'   # administrator (superuser)
-jail# su -m chess -c 'psql -X -d chess'      # the service role
+# Linux
+sudo -u postgres psql -X -d chess
+# FreeBSD jail
+su -m postgres -c 'psql -X -d chess'
 ```
 
-Everything lives in schema **`chess`**, not `public`. The `chess` role
-resolves names there by itself (`search_path` is set for it by `setup.sql`);
-a `postgres` session does not, so `\dt` reports no tables until the schema
-is selected:
+Working with the `chess` schema as `postgres`:
 
-```sql
-SET search_path = chess;   -- this session; or qualify names: \dt chess.*
-\dt
-```
+| Goal | How |
+|---|---|
+| List the tables | `\dt chess.*` (a plain `\dt` shows `public`, which is empty) |
+| Describe a table | `\d chess.games` |
+| List schemas and owners | `\dn+` |
+| Query | `SELECT ... FROM chess.games` |
+| Unqualified names for one session | `SET search_path = chess;` (lasts until you disconnect) |
+| Unqualified names for one invocation | `sudo -u postgres env PGOPTIONS='-c search_path=chess' psql -X -d chess` |
 
-To make it permanent for the administrator in this database only:
+Neither of the last two changes anything stored: the next session starts with
+the defaults again. Avoid `ALTER ROLE postgres ... SET search_path`, which
+would persist.
 
-```sql
-ALTER ROLE postgres IN DATABASE chess SET search_path = chess, public;
-```
-
-The database is owned by `postgres` and `chess` holds only `CONNECT` on it
-(`\l` shows `chess=c/postgres`); in the default owner mode `chess` owns schema
-`chess` and its tables, and nothing else.
+The tables:
 
 | Table | Contents |
 |---|---|
-| `schema_version` | One row: the applied migration |
-| `users` | Accounts: lowercase username and email, Argon2id password hash |
-| `sessions` | One active session per user; deleting it signs the user out |
-| `games` | Players, claims (`*_claimed_by`), name snapshots, result, times |
-| `moves` | Ply `move_number` 1..n, UCI move, FEN after the move |
+| `chess.schema_version` | One row: the applied migration |
+| `chess.users` | Accounts: lowercase username and email, Argon2id password hash |
+| `chess.sessions` | One active session per user; deleting it signs the user out |
+| `chess.games` | Players, claims (`*_claimed_by`), name snapshots, `result`, `termination`, times |
+| `chess.moves` | Ply `move_number` 1..n, UCI move, FEN after the move |
 
-The recipes below assume `SET search_path = chess;`. `\set g '<game-id>'`
-stores a game ID for the `:'g'` references.
+`result` is `white_wins`, `black_wins`, `stalemate`, or `draw`, and
+`termination` says how: `checkmate`, `resignation`, `stalemate`,
+`insufficient_material`, `threefold_repetition`, `fifty_move_rule`, or
+`agreement`. Both are empty while a game is unfinished.
+
+`\set g '<game-id>'` stores a game ID for the `:'g'` references below.
 
 ## Overview
 
 ```sql
-SELECT version, updated_at FROM schema_version;
+SELECT version, updated_at FROM chess.schema_version;
 
-SELECT (SELECT count(*) FROM users)    AS users,
-       (SELECT count(*) FROM games)    AS games,
-       (SELECT count(*) FROM games WHERE result IS NULL) AS unfinished,
-       (SELECT count(*) FROM moves)    AS plies,
-       (SELECT count(*) FROM sessions WHERE expires_at > now()) AS signed_in;
+SELECT (SELECT count(*) FROM chess.users)    AS users,
+       (SELECT count(*) FROM chess.games)    AS games,
+       (SELECT count(*) FROM chess.games WHERE result IS NULL) AS unfinished,
+       (SELECT count(*) FROM chess.moves)    AS plies,
+       (SELECT count(*) FROM chess.sessions WHERE expires_at > now()) AS signed_in;
+
+SELECT coalesce(termination, 'unfinished') AS termination, count(*)
+FROM chess.games GROUP BY 1 ORDER BY 2 DESC;
 ```
 
 ## Users
 
 ```sql
 SELECT user_id, username, email, created_at, last_login_at
-FROM users ORDER BY created_at;
+FROM chess.users ORDER BY created_at;
 ```
 
 Passwords are not stored. `password_hash` is an Argon2id string in PHC
@@ -69,66 +102,71 @@ secret parts:
 ```sql
 SELECT username, split_part(password_hash, '$', 2) AS algorithm,
        split_part(password_hash, '$', 4) AS parameters
-FROM users;
+FROM chess.users;
 ```
 
-Create, reset, and rename accounts with the server CLI, not SQL: it
-normalizes names, enforces uniqueness rules, and hashes passwords. Run it as
-`chess` so peer authentication selects the right role; without `-password`
-it prompts, which keeps the password out of the shell history and `ps`.
+Create, reset, and rename accounts with the server's CLI, not SQL: it
+normalizes names, enforces uniqueness rules, and hashes passwords. Without
+`-password` it prompts, which keeps the password out of the shell history and
+the process list.
 
 ```sh
-jail# su -m chess -c '/home/chess/bin/chess-server db user add -username <name> [-email <addr>] -dsn "postgres:///chess?host=/tmp"'
-jail# su -m chess -c '/home/chess/bin/chess-server db user set-password -username <name> -dsn "postgres:///chess?host=/tmp"'
-jail# su -m chess -c '/home/chess/bin/chess-server db user list -dsn "postgres:///chess?host=/tmp"'
+# Linux: chess-db runs `chess-server db ...` as the chess account
+sudo chess-db user add -username <name> [-email <addr>]
+sudo chess-db user set-password -username <name>
+sudo chess-db user list
+# FreeBSD jail
+su -m chess -c '/home/chess/bin/chess-server db user add -username <name> -dsn "postgres:///chess?host=/tmp"'
 ```
 
-Other `db user` subcommands: `delete`, `set-email`, `set-username`, and
+Other `user` subcommands: `delete`, `set-email`, `set-username`, and
 `set-hash` (an existing PHC string). CLI-created accounts are identical to
 site registrations, and the CLI ignores the registration cap.
 
 Sign a user out everywhere (takes effect on their next request):
 
 ```sql
-DELETE FROM sessions WHERE user_id = (SELECT user_id FROM users WHERE username = 'alice');
+DELETE FROM chess.sessions
+WHERE user_id = (SELECT user_id FROM chess.users WHERE username = 'alice');
 ```
 
 Deleting a user removes their session; their games keep the claim and the
-name snapshot.
+name snapshot. Games left with no remaining registered player are removed by
+the optional integrity sweep (below) once idle for a day.
 
 ## Games
 
-Recent games with players and length:
+Recent games with players, outcome, and length:
 
 ```sql
 SELECT g.game_id, g.start_time_utc,
        coalesce(g.white_name, CASE g.white_type WHEN 2 THEN 'Stockfish L' || g.white_level ELSE 'anonymous' END) AS white,
        coalesce(g.black_name, CASE g.black_type WHEN 2 THEN 'Stockfish L' || g.black_level ELSE 'anonymous' END) AS black,
-       coalesce(g.result, 'ongoing') AS result,
-       (SELECT count(*) FROM moves m WHERE m.game_id = g.game_id) AS plies
-FROM games g ORDER BY g.start_time_utc DESC LIMIT 20;
+       coalesce(g.result || ' by ' || g.termination, 'unfinished') AS outcome,
+       (SELECT count(*) FROM chess.moves m WHERE m.game_id = g.game_id) AS plies
+FROM chess.games g ORDER BY g.start_time_utc DESC LIMIT 20;
 ```
 
 A user's games: add
-`WHERE (SELECT user_id FROM users WHERE username = 'alice') IN (g.white_claimed_by, g.black_claimed_by)`.
+`WHERE (SELECT user_id FROM chess.users WHERE username = 'alice') IN (g.white_claimed_by, g.black_claimed_by)`.
 Find a game from the 8-digit prefix that `db query` prints:
-`SELECT game_id FROM games WHERE game_id::text LIKE '68007fd1%';`.
+`SELECT game_id FROM chess.games WHERE game_id::text LIKE '68007fd1%';`.
 
 One game, header and every ply with its FEN:
 
 ```sql
 \set g '68007fd1-8970-4d84-950d-2f6ec6375c0b'
-SELECT * FROM games WHERE game_id = :'g' \gx
+SELECT * FROM chess.games WHERE game_id = :'g' \gx
 SELECT move_number AS ply, player_color, move_uci, fen_after_move, move_time_utc
-FROM moves WHERE game_id = :'g' ORDER BY move_number;
+FROM chess.moves WHERE game_id = :'g' ORDER BY move_number;
 ```
 
 Final position:
 
 ```sql
 SELECT coalesce(
-  (SELECT fen_after_move FROM moves WHERE game_id = :'g' ORDER BY move_number DESC LIMIT 1),
-  (SELECT initial_fen FROM games WHERE game_id = :'g')) AS final_fen;
+  (SELECT fen_after_move FROM chess.moves WHERE game_id = :'g' ORDER BY move_number DESC LIMIT 1),
+  (SELECT initial_fen FROM chess.games WHERE game_id = :'g')) AS final_fen;
 ```
 
 The move line in UCI with move numbers (numbering follows the initial FEN, so
@@ -137,105 +175,135 @@ a game that starts with Black to move begins `N...`):
 ```sql
 WITH s AS (SELECT split_part(initial_fen, ' ', 2) AS side,
                   split_part(initial_fen, ' ', 6)::int AS fullmove
-           FROM games WHERE game_id = :'g')
+           FROM chess.games WHERE game_id = :'g')
 SELECT string_agg(
          CASE WHEN m.player_color = 'w'
                 THEN (s.fullmove + (m.move_number - CASE s.side WHEN 'w' THEN 1 ELSE 0 END) / 2) || '. '
               WHEN m.move_number = 1 THEN s.fullmove || '... '
               ELSE '' END || m.move_uci,
          ' ' ORDER BY m.move_number) AS uci_line
-FROM moves m, s WHERE m.game_id = :'g';
+FROM chess.moves m, s WHERE m.game_id = :'g';
 ```
 
-SQL has no SAN; the database stores UCI and the server derives notation on
-read. For real PGN use the CLI (a full ID or 8-digit prefix; `-ply N` stops
-after N plies) or the API:
+SQL has no SAN; the database stores UCI and notation is derived on read. For
+real PGN use the CLI (a full ID or 8-digit prefix; `-ply N` stops after N
+plies) or the API:
 
 ```sh
-jail# su -m chess -c '/home/chess/bin/chess-server db pgn -gameId 68007fd1 -dsn "postgres:///chess?host=/tmp"'
-host# curl -s https://<site>/chess/api/games/<game-id>/pgn
+sudo chess-db pgn -gameId 68007fd1                                   # Linux
+su -m chess -c '/home/chess/bin/chess-server db pgn -gameId 68007fd1 -dsn "postgres:///chess?host=/tmp"'  # FreeBSD
+curl -s https://<site>/chess/api/games/<game-id>/pgn
 ```
 
-Check every stored game against the rules (each move legal from the stored
-position before it, the stored position after it reproduced, results
-consistent with the final position); it exits non-zero on any problem:
+`db verify` checks every stored game against the rules (move numbering, each
+move legal from the stored position before it, the stored position after it
+reproduced, the result and its termination consistent with the final
+position) and exits non-zero on any problem:
 
 ```sh
-jail# su -m chess -c '/home/chess/bin/chess-server db verify -dsn "postgres:///chess?host=/tmp"'
+sudo chess-db verify
 ```
 
 ### Deleting games
 
-The server keeps unfinished games, and finished ones for `-finished-game-ttl`
-(default 1 hour), in memory. Deleting the row of a game it still holds makes
-that game's next write fail, which marks storage `degraded` until `chessd`
-restarts. Delete old finished games freely; for anything else, stop `chessd`
-first (`service chessd stop`, delete, `service chessd start`).
+Delete finished or unfinished games at any time:
 
 ```sql
 BEGIN;
-DELETE FROM games WHERE game_id = :'g';   -- its moves are removed by cascade
+DELETE FROM chess.games WHERE game_id = :'g';   -- its moves are removed by cascade
 COMMIT;
 ```
 
 All games of one user (both colors):
 
 ```sql
-DELETE FROM games
-WHERE (SELECT user_id FROM users WHERE username = 'alice') IN (white_claimed_by, black_claimed_by);
+DELETE FROM chess.games
+WHERE (SELECT user_id FROM chess.users WHERE username = 'alice') IN (white_claimed_by, black_claimed_by);
 ```
 
-Games without a registered player are already deleted by the server 24
-hours after their last activity (`-anonymous-game-ttl`).
+A game the server is still playing is unloaded when its next write finds the
+row gone (that last move is not stored), or earlier by the integrity sweep;
+the server stays healthy. Deleting individual `chess.moves` rows instead leaves a broken line
+that replay cannot use: delete the whole game, or let the integrity sweep do
+it.
+
+Games without a registered player are already deleted by the server 24 hours
+after their last activity (`-anonymous-game-ttl`).
+
+### Integrity sweep
+
+With the server flag `-db-cleanup report` (log only) or `-db-cleanup delete`,
+an hourly sweep looks for data the server cannot use:
+
+- games whose rows were deleted while the server held them (unloaded);
+- games with missing plies, i.e. deleted move rows;
+- games that fail `db verify`, 200 per run in ID order;
+- games whose registered players were all deleted, once idle for the
+  anonymous-game retention;
+- accounts whose password hash is not a usable Argon2id string (nobody can
+  sign in to them).
+
+Each finding is logged at warning level with its reason; `delete` also
+removes them. Start with `report`, read the log, then switch. Set it through
+`CHESSD_FLAGS` in `/etc/chessd/chessd.env` (Linux) or `chessd_flags` in
+`rc.conf` (FreeBSD), and restart the service.
 
 ## Starting Fresh
 
-Every option below loses data: take a dump first if any of it matters
-(`su -m postgres -c 'pg_dump -Fc -d chess -f /var/db/postgres/chess-<date>.dump'`).
-
-**Clear the data, keep the schema** (accounts, sessions, and games):
+Every option below loses data: take a dump first if any of it matters.
 
 ```sh
-jail# service chessd stop
-jail# su -m postgres -c 'psql -X -d chess -c "TRUNCATE chess.moves, chess.games, chess.sessions, chess.users"'
-jail# service chessd start
+sudo -u postgres pg_dump -Fc -d chess -f /var/lib/postgresql/chess-$(date +%F).dump   # Linux (Debian/Ubuntu path)
+su -m postgres -c 'pg_dump -Fc -d chess -f /var/db/postgres/chess-$(date +%F).dump'  # FreeBSD
 ```
 
-**Recreate the tables** (drops and re-runs the migrations):
+The service commands are `systemctl stop|start chessd` on Linux and
+`service chessd stop|start` on FreeBSD.
 
-```sh
-jail# service chessd stop
-jail# su -m chess -c '/home/chess/bin/chess-server db delete -confirm -dsn "postgres:///chess?host=/tmp"'
-jail# su -m chess -c '/home/chess/bin/chess-server db init -dsn "postgres:///chess?host=/tmp"'
-jail# service chessd start
+**Clear the data, keep the schema** (accounts, sessions, and games), with the
+service stopped:
+
+```sql
+TRUNCATE chess.moves, chess.games, chess.sessions, chess.users;
 ```
 
-`db init` prints `Database schema ready (version 1)`. In owner mode the
-server would also create missing tables at startup; running `db init`
-first surfaces any error before the service starts.
-
-**Rebuild the database and role** (as on a new jail):
+**Recreate the tables** (drops and re-runs the migrations), with the service
+stopped:
 
 ```sh
-jail# service chessd stop
-jail# su -m postgres -c 'psql -X -d postgres' <<'SQL'
+sudo chess-db delete -confirm && sudo chess-db init          # Linux
+su -m chess -c '/home/chess/bin/chess-server db delete -confirm -dsn "postgres:///chess?host=/tmp"'   # FreeBSD
+su -m chess -c '/home/chess/bin/chess-server db init -dsn "postgres:///chess?host=/tmp"'
+```
+
+`db init` prints `Database schema ready (version 2)`. In split mode the
+`chess` role owns no tables and cannot drop or create them; run both commands
+as `postgres` acting as the owner role instead, e.g. on Linux:
+
+```sh
+sudo -u postgres /usr/local/bin/chess-server db delete -confirm \
+    -dsn "dbname=chess user=postgres options='-c role=chess_owner -c search_path=chess'"
+```
+
+**Rebuild the database and role** (as on a new host), with the service
+stopped:
+
+```sql
 DROP DATABASE IF EXISTS chess WITH (FORCE);
 DROP ROLE IF EXISTS chess_owner;   -- exists only in split mode
 DROP ROLE IF EXISTS chess;
-SQL
-jail# CHESS_BINARY=/home/chess/bin/chess-server TRUSTED_PROXIES=<nginx-address> \
-      sh deploy/freebsd/setup-jail.sh
 ```
 
-With neither role nor database present, `setup-jail.sh` runs `setup.sql`,
-creates the tables, starts `chessd`, and checks `/health`. The JWT key is
-kept; sessions are gone with the users, so everyone signs in again (and
-accounts must be created again).
+Then rerun the deployment script (`deploy/linux/setup.sh` or
+`deploy/freebsd/setup-jail.sh`) with the same inputs as before. With neither
+role nor database present it runs `setup.sql`, creates the tables, starts the
+service, and checks `/health`. The JWT key is kept; accounts are gone, so
+create them again.
 
 Verify any of them:
 
 ```sql
 \dt chess.*                                   -- games, moves, schema_version, sessions, users
-SELECT version FROM chess.schema_version;     -- 1
-\drds                                         -- chess: search_path, statement/lock/idle timeouts
+SELECT version FROM chess.schema_version;     -- 2
+\drds                                         -- chess: search_path and timeouts in database chess
 ```
