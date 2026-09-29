@@ -36,6 +36,15 @@ type Game struct {
 	drawOffer    core.Color
 	// offerPly[c] is the ply count when color c last offered a draw, or -1.
 	offerPly map[core.Color]int
+	// concession is the first resignation or agreed draw; an undo keeps it.
+	concession *Concession
+}
+
+// Concession is a result the players chose, and the ply it was chosen at.
+type Concession struct {
+	State       core.State
+	Termination core.Termination
+	Ply         int
 }
 
 // View is an immutable copy of the state needed by processors and transports.
@@ -54,6 +63,7 @@ type View struct {
 	Termination core.Termination
 	DrawOffer   core.Color // color whose offer awaits an answer; 0 when none
 	OfferPly    map[core.Color]int
+	Concession  *Concession
 	LastResult  *MoveResult
 	EndTimeUTC  *time.Time
 }
@@ -125,7 +135,26 @@ func (g *Game) View() View {
 		copy := *g.endTimeUTC
 		view.EndTimeUTC = &copy
 	}
+	if g.concession != nil {
+		copy := *g.concession
+		view.Concession = &copy
+	}
 	return view
+}
+
+// BothHuman reports whether neither side is played by the computer.
+func (v View) BothHuman() bool {
+	return bothHuman(v.WhitePlayer, v.BlackPlayer)
+}
+
+// BothHuman reports whether neither side is played by the computer.
+func (g *Game) BothHuman() bool {
+	return bothHuman(g.players[core.ColorWhite], g.players[core.ColorBlack])
+}
+
+func bothHuman(white, black *core.Player) bool {
+	return white != nil && white.Type == core.PlayerHuman &&
+		black != nil && black.Type == core.PlayerHuman
 }
 
 func (v View) NextPlayer() *core.Player {
@@ -268,6 +297,11 @@ func (g *Game) ClearDrawOffers() {
 	g.offerPly[core.ColorBlack] = -1
 }
 
+// Concession returns the game's first resignation or agreed draw, or nil.
+func (g *Game) Concession() *Concession {
+	return g.concession
+}
+
 // Termination returns how a finished game ended.
 func (g *Game) Termination() core.Termination {
 	return g.termination
@@ -288,12 +322,15 @@ func (g *Game) State() core.State {
 }
 
 // SetOutcome sets the state and how it was reached; a non-terminal state
-// clears the termination.
+// clears the termination. The first concession is remembered.
 func (g *Game) SetOutcome(s core.State, termination core.Termination, at time.Time) {
 	g.SetStateAt(s, at)
 	if s.IsTerminal() {
 		g.termination = termination
 		g.drawOffer = 0
+		if termination.IsConcession() && g.concession == nil {
+			g.concession = &Concession{State: s, Termination: termination, Ply: g.Plies()}
+		}
 	} else {
 		g.termination = core.TermNone
 	}

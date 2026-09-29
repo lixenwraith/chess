@@ -41,7 +41,8 @@ type UndoRequest struct {
 // GameResponse is the live game. Termination names how a finished game ended;
 // DrawOffer is the color whose draw offer awaits an answer; DrawOutcome
 // reports what a draw request did ("offered", "accepted", "declined") and is
-// set only on responses to that request.
+// set only on responses to that request. Concession is the game's first
+// resignation or agreed draw, kept after an undo continues play.
 type GameResponse struct {
 	GameID      string          `json:"gameId"`
 	FEN         string          `json:"fen"`
@@ -50,9 +51,20 @@ type GameResponse struct {
 	Termination string          `json:"termination,omitempty"`
 	DrawOffer   string          `json:"drawOffer,omitempty"`
 	DrawOutcome string          `json:"drawOutcome,omitempty"`
+	Concession  *Concession     `json:"concession,omitempty"`
 	Moves       []string        `json:"moves"`
 	Players     PlayersResponse `json:"players"`
 	LastMove    *MoveInfo       `json:"lastMove,omitempty"`
+}
+
+// Concession records a resignation or agreed draw. Result uses the enclosing
+// response's vocabulary: a state ("black wins") in GameResponse, a stored
+// result ("black_wins") in GameHistoryResponse. Ply is the number of moves
+// played when it was made.
+type Concession struct {
+	Result      string `json:"result"`
+	Termination string `json:"termination"`
+	Ply         int    `json:"ply"`
 }
 
 type MoveInfo struct {
@@ -73,7 +85,8 @@ type BoardResponse struct {
 //
 // PGNResult is the PGN result token ("1-0", "0-1", "1/2-1/2", or "*") and
 // Termination names how a result was reached (see core.Termination; omitted
-// while the game is unfinished).
+// while the game is unfinished). Concession is the game's first resignation
+// or agreed draw, kept when an undo continued play past it.
 type GameHistoryResponse struct {
 	GameID       string          `json:"gameId"`
 	InitialFEN   string          `json:"initialFen"`
@@ -82,6 +95,7 @@ type GameHistoryResponse struct {
 	Termination  string          `json:"termination,omitempty"`
 	StartTimeUTC time.Time       `json:"startTimeUtc"`
 	EndTimeUTC   *time.Time      `json:"endTimeUtc,omitempty"`
+	Concession   *Concession     `json:"concession,omitempty"`
 	Players      PlayersResponse `json:"players"`
 	Moves        []HistoryMove   `json:"moves"`
 }

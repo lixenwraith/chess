@@ -46,6 +46,12 @@ func (s *Service) GetGameHistory(gameID string) (*core.GameHistoryResponse, erro
 		Players:      playersResponse(*record),
 		Moves:        make([]core.HistoryMove, 0, len(moves)),
 	}
+	if record.ConcessionResult != "" {
+		history.Concession = &core.Concession{
+			Result: record.ConcessionResult, Termination: record.ConcessionTermination,
+			Ply: record.ConcessionPly,
+		}
+	}
 	san, err := replay.Notate(record.InitialFEN, moves)
 	if err != nil {
 		slog.Warn("stored game has moves without notation", "game_id", record.GameID, "error", err)

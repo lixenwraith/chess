@@ -21,7 +21,41 @@ var (
 	ErrNotHuman     = errors.New("that side is played by the computer")
 	ErrNoDrawOffer  = errors.New("no draw offer from the opponent")
 	ErrOfferLimit   = errors.New("one draw offer per move: make a move before offering again")
+	// ErrConcessionFinal refuses to continue a game two human players ended
+	// by resignation or agreement.
+	ErrConcessionFinal = errors.New("a resignation or agreed draw between two human players is final")
 )
+
+// requireControl lets actor rewind or reconfigure g only when no side is
+// claimed by another user. A claim is what protects a player's moves; an
+// unclaimed side is open to anyone holding the game ID.
+func requireControl(g *game.Game, actor string) error {
+	for _, color := range []core.Color{core.ColorWhite, core.ColorBlack} {
+		if owner := g.GetSlotOwner(color); owner != "" && owner != actor {
+			return ErrSlotOwner
+		}
+	}
+	return nil
+}
+
+// requireParticipant lets actor unload g when it holds one of its claims, or
+// when nothing is claimed.
+func requireParticipant(g *game.Game, actor string) error {
+	claimed := false
+	for _, color := range []core.Color{core.ColorWhite, core.ColorBlack} {
+		switch g.GetSlotOwner(color) {
+		case "":
+		case actor:
+			return nil
+		default:
+			claimed = true
+		}
+	}
+	if claimed {
+		return ErrSlotOwner
+	}
+	return nil
+}
 
 type MoveCommit struct {
 	ExpectedFEN   string
@@ -108,17 +142,21 @@ func (s *Service) CreateGame(
 	return nil
 }
 
-// UpdatePlayers replaces players in an existing game
-func (s *Service) UpdatePlayers(gameID string, whitePlayer, blackPlayer *core.Player) error {
+// UpdatePlayers replaces players in an existing game on behalf of actor, who
+// must not be locked out by another user's claim.
+func (s *Service) UpdatePlayers(gameID string, whitePlayer, blackPlayer *core.Player, actor string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	g, ok := s.games[gameID]
 	if !ok {
-		return fmt.Errorf("game not found: %s", gameID)
+		return fmt.Errorf("%w: %s", ErrGameNotFound, gameID)
 	}
 	if g.State() == core.StatePending {
 		return errors.New("cannot change players while computer is calculating")
+	}
+	if err := requireControl(g, actor); err != nil {
+		return err
 	}
 
 	oldWhite := g.GetPlayer(core.ColorWhite)
@@ -369,6 +407,7 @@ func (s *Service) EndGame(gameID string, commit EndCommit) error {
 		result, _ := commit.State.Result()
 		end := storage.GameEnd{
 			GameID: gameID, Result: result, Termination: string(commit.Termination), EndTimeUTC: now,
+			Ply: g.Plies(),
 		}
 		if claimUserID != "" {
 			end.ClaimColor, end.ClaimedBy = commit.Color.String(), claimUserID
@@ -490,8 +529,11 @@ func offerAllowed(g *game.Game, color core.Color) error {
 	return nil
 }
 
-// UndoMoves removes the specified number of moves from game history
-func (s *Service) UndoMoves(gameID string, count int) error {
+// UndoMoves takes back count moves on behalf of actor. Another user's claim
+// refuses it, so two players cannot rewind each other; a resignation or agreed
+// draw between two humans is final. Against the computer an undo reopens a
+// finished game and the first concession stays on record.
+func (s *Service) UndoMoves(gameID string, count int, actor string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -501,6 +543,12 @@ func (s *Service) UndoMoves(gameID string, count int) error {
 	}
 	if g.State() == core.StatePending {
 		return errors.New("cannot undo while computer move is in progress")
+	}
+	if err := requireControl(g, actor); err != nil {
+		return err
+	}
+	if g.State().IsTerminal() && g.Termination().IsConcession() && g.BothHuman() {
+		return ErrConcessionFinal
 	}
 
 	originalMoveCount := len(g.Moves())
@@ -525,6 +573,21 @@ func (s *Service) UndoMoves(gameID string, count int) error {
 	return nil
 }
 
+// UnloadGame removes a live game on behalf of actor, who must hold one of
+// its claims when it has any. Durable history is kept.
+func (s *Service) UnloadGame(gameID string, actor string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g, ok := s.games[gameID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrGameNotFound, gameID)
+	}
+	if err := requireParticipant(g, actor); err != nil {
+		return err
+	}
+	return s.deleteGameLocked(gameID, g)
+}
+
 // DeleteGame removes a game from the service
 func (s *Service) DeleteGame(gameID string) error {
 	s.mu.Lock()
@@ -534,6 +597,10 @@ func (s *Service) DeleteGame(gameID string) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrGameNotFound, gameID)
 	}
+	return s.deleteGameLocked(gameID, g)
+}
+
+func (s *Service) deleteGameLocked(gameID string, g *game.Game) error {
 	if g.State() == core.StatePending {
 		return errors.New("cannot delete game while computer move is in progress")
 	}

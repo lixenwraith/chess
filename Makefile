@@ -14,7 +14,10 @@ CLIENT_SOURCE := ./cmd/chess-client-cli
 GO_DEFAULT != uname -s | grep -q FreeBSD && sed -n 's/^go \([0-9]*\)\.\([0-9]*\).*/go\1\2/p' go.mod 2>/dev/null | grep . || echo go
 GO ?= $(GO_DEFAULT)
 GOFLAGS := -trimpath
-LDFLAGS := -s -w
+# Build identifier reported by the server's /health; "dev" outside a git
+# checkout.
+VERSION != git describe --tags --always --dirty 2>/dev/null || echo dev
+LDFLAGS := -s -w -X main.version=$(VERSION)
 # Both binaries are pure Go (pgx has no C dependency), so builds are static and
 # cross-compile without a C toolchain.
 CGO := CGO_ENABLED=0

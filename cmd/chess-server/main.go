@@ -26,6 +26,10 @@ const (
 	gracefulShutdownTimeout = time.Second * 5
 )
 
+// version is set at link time (make: -X main.version=...); /health reports it
+// so a deployment can be checked against the build it should be running.
+var version = "dev"
+
 func main() {
 	// Check for CLI database commands
 	if len(os.Args) > 1 && os.Args[1] == "db" {
@@ -184,6 +188,7 @@ func main() {
 		LogRequests:    *logHTTP,
 		TrustedProxies: trustedProxies,
 		ProxyHeader:    *proxyHeader,
+		Version:        version,
 	})
 
 	// API Server configuration
@@ -191,7 +196,7 @@ func main() {
 
 	// Start API server in a goroutine
 	go func() {
-		log.Printf("Chess API Server starting...")
+		log.Printf("Chess API Server %s starting...", version)
 		log.Printf("API Listening on: http://%s", apiAddr)
 		log.Printf("Authentication: Enabled (JWT)")
 		if *dev {

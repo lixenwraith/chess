@@ -41,6 +41,12 @@ type GameRecord struct {
 	Termination     string // how Result was reached; empty while unfinished
 	StartTimeUTC    time.Time
 	EndTimeUTC      *time.Time
+	// The first resignation or agreed draw, kept when an undo continues play;
+	// ConcessionResult is empty when there was none.
+	ConcessionResult      string
+	ConcessionTermination string
+	ConcessionPly         int
+	ConcessionTimeUTC     *time.Time
 }
 
 // GameSummaryRecord is a game row plus its replay extent. MoveCount and
@@ -75,7 +81,7 @@ type MovePersistence struct {
 // schemaVersion is the newest schema this binary understands. Migrations are
 // applied in order inside one transaction; PostgreSQL DDL is transactional, so
 // a failed upgrade leaves the previous version intact.
-const schemaVersion = 2
+const schemaVersion = 3
 
 // migrations[v-1] upgrades the schema from version v-1 to v. Never edit a
 // released migration; append a new one.
@@ -181,6 +187,31 @@ ALTER TABLE games
 		OR (result = 'stalemate' AND termination = 'stalemate')
 		OR (result = 'draw' AND termination IN
 			('insufficient_material', 'threefold_repetition', 'fifty_move_rule', 'agreement')));
+`,
+
+	// v3: the first resignation or agreed draw. An undo against the computer
+	// may reopen such a game, which clears result and termination; these
+	// columns keep the concession on record. Ply is the number of moves
+	// played when it was made. Existing concessions are backfilled from the
+	// current result and move count.
+	`
+ALTER TABLE games
+	ADD COLUMN concession_result text,
+	ADD COLUMN concession_termination text,
+	ADD COLUMN concession_ply integer,
+	ADD COLUMN concession_time_utc timestamptz;
+UPDATE games g SET
+	concession_result = g.result,
+	concession_termination = g.termination,
+	concession_ply = (SELECT count(*) FROM moves m WHERE m.game_id = g.game_id),
+	concession_time_utc = g.end_time_utc
+WHERE g.termination IN ('resignation', 'agreement');
+ALTER TABLE games ADD CONSTRAINT games_concession_check CHECK (
+	(concession_result IS NULL AND concession_termination IS NULL
+		AND concession_ply IS NULL AND concession_time_utc IS NULL)
+	OR (concession_ply >= 0 AND concession_time_utc IS NOT NULL AND (
+		(concession_result IN ('white_wins', 'black_wins') AND concession_termination = 'resignation')
+		OR (concession_result = 'draw' AND concession_termination = 'agreement'))));
 `,
 }
 

@@ -15,4 +15,5 @@ const (
 	ErrUnauthorized       = "UNAUTHORIZED"
 	ErrConflict           = "GAME_CONFLICT"
 	ErrStorageUnavailable = "STORAGE_UNAVAILABLE"
+	ErrRouteNotFound      = "NOT_FOUND"
 )

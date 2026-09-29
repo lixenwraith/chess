@@ -70,7 +70,7 @@ func TestUndoClearsDurableTerminalResult(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.UndoMoves(gameID, 1); err != nil {
+	if err := svc.UndoMoves(gameID, 1, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -100,7 +100,7 @@ func TestPlayerReconfigurationPreservesClaimAndPersistsConfiguration(t *testing.
 	replacementBlack := core.NewPlayer(
 		core.PlayerConfig{Type: core.PlayerComputer, Level: 12, SearchTime: 500}, core.ColorBlack,
 	)
-	if err := svc.UpdatePlayers(gameID, replacementWhite, replacementBlack); err != nil {
+	if err := svc.UpdatePlayers(gameID, replacementWhite, replacementBlack, userID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -118,7 +118,7 @@ func TestPlayerReconfigurationPreservesClaimAndPersistsConfiguration(t *testing.
 	computerWhite := core.NewPlayer(
 		core.PlayerConfig{Type: core.PlayerComputer, Level: 8, SearchTime: 300}, core.ColorWhite,
 	)
-	if err := svc.UpdatePlayers(gameID, computerWhite, replacementBlack); err != nil {
+	if err := svc.UpdatePlayers(gameID, computerWhite, replacementBlack, userID); err != nil {
 		t.Fatal(err)
 	}
 	history, err = svc.GetGameHistory(gameID)
