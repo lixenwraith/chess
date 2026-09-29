@@ -302,10 +302,15 @@ Restore the previous web client files on the host as well.
 
 ```sh
 jail# service chessd status
-jail# fetch -qo - http://127.0.0.1:8080/health                    # "storage":"ok"
+jail# fetch -qo - http://127.0.0.1:8080/health                    # "storage":"ok", "version" = the build
 jail# sockstat -4 -6 -l | grep postgres                           # no TCP listener
 jail# sockstat -4 -c | grep ':8080'                               # peer = nginx address
 jail# su -m chess -c 'psql -X -d chess -Atc "SHOW search_path"'   # chess
 jail# su -m chess -c 'psql -X -d postgres -c "select 1"'          # rejected by pg_hba
 host# curl -s https://<site>/chess/health                         # through nginx
 ```
+
+`version` in `/health` is `git describe` of the checkout the binary was built
+from. After an upgrade it must match the new build; a web client copied to a
+static site ahead of the server gets 404 `NOT_FOUND` (shown as "Game Not
+Found" by older clients) for endpoints the running server predates.

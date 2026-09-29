@@ -971,6 +971,9 @@ async function undoMoves() {
         console.log('No moves to undo');
         return;
     }
+    // A resignation or agreed draw stays on record when play continues.
+    const conceded = isGameOver(gameState.state) &&
+        (gameState.termination === 'resignation' || gameState.termination === 'agreement');
 
     try {
         const response = await authFetch(`${gameState.apiUrl}/api/games/${gameState.gameId}/undo`, {
@@ -994,6 +997,9 @@ async function undoMoves() {
         updateGameDisplay(game);
         if (game.state === 'stuck') {
             flashErrorMessage('Engine error — Undo to recover or start a new game');
+        } else if (conceded && game.concession) {
+            const what = game.concession.termination === 'agreement' ? 'agreed draw' : 'resignation';
+            flashMessage(`Play continues; the ${what} stays on record`, 'info', 3000);
         }
     } catch (error) {
         if (error.message === 'Failed to fetch') {
@@ -1264,7 +1270,7 @@ function handleApiError(action, error, response = null) {
                 break;
             case 403:
                 serverStatus = 'healthy';
-                if (action === 'move' || action === 'trigger computer move') {
+                if (action === 'move' || action === 'trigger computer move' || action === 'undo') {
                     statusMessage = 'Slot Claimed';
                 } else {
                     statusMessage = 'Not Authorized';

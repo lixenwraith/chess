@@ -408,6 +408,23 @@ func printOutcome(resp *api.GameResponse) {
 	}
 }
 
+// printConcession notes a resignation or agreed draw that play continued
+// past; the server keeps it on record.
+func printConcession(resp *api.GameResponse) {
+	c := resp.Concession
+	if c == nil || (c.Result == resp.State && c.Termination == resp.Termination) {
+		return
+	}
+	event := "A draw was agreed"
+	switch c.Result {
+	case "white wins":
+		event = "Black resigned"
+	case "black wins":
+		event = "White resigned"
+	}
+	display.Println(display.Yellow, "%s at ply %d; it stays on record while play continues.", event, c.Ply)
+}
+
 func drawReason(termination string) string {
 	switch termination {
 	case "insufficient_material":
@@ -498,6 +515,7 @@ func undoHandler(s *session.Session, args []string) error {
 	s.SetLastMoveCount(len(resp.Moves))
 	s.SetGameState(resp)
 	display.Println(display.Green, "Undid %d move(s)", count)
+	printConcession(resp)
 	return nil
 }
 
@@ -561,6 +579,8 @@ func showBoardHandler(s *session.Session, args []string) error {
 		}
 		fmt.Println()
 	}
+	printOutcome(game)
+	printConcession(game)
 
 	return nil
 }
@@ -619,10 +639,13 @@ func pollHandler(s *session.Session, args []string) error {
 
 	c := s.GetClient().(*api.Client)
 	moveCount := s.GetLastMoveCount()
+	previous := s.CurrentGameState
 
 	display.Println(display.Cyan, "Long-polling for updates (move count: %d)...", moveCount)
 	display.Println(display.Cyan, "This may take up to 30 seconds")
 
+	// The server answers at once for a finished game, and wakes a poll for a
+	// move, an undo, a result, or a draw offer.
 	resp, err := c.GetGameWithPoll(gameID, moveCount)
 	if err != nil {
 		return err
@@ -631,14 +654,21 @@ func pollHandler(s *session.Session, args []string) error {
 	s.SetLastMoveCount(len(resp.Moves))
 	s.SetGameState(resp)
 
-	if len(resp.Moves) > moveCount {
+	switch {
+	case len(resp.Moves) > moveCount:
 		display.Println(display.Green, "Game updated! New moves detected")
 		if resp.LastMove != nil {
 			fmt.Printf("Last move: %s\n", resp.LastMove.Move)
 		}
-	} else {
+	case len(resp.Moves) < moveCount:
+		display.Println(display.Green, "Game updated: %d move(s) taken back", moveCount-len(resp.Moves))
+	case previous == nil || previous.GameID != resp.GameID ||
+		previous.State != resp.State || previous.DrawOffer != resp.DrawOffer:
+		display.Println(display.Green, "Game updated")
+	default:
 		display.Println(display.Yellow, "No updates (timeout)")
 	}
+	printOutcome(resp)
 
 	return nil
 }

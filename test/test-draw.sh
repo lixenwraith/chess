@@ -3,7 +3,9 @@
 # Draw and resignation test suite: automatic draws (dead material, threefold
 # repetition, fifty-move rule), draw offers between humans and to the
 # computer, resignation with slot authorization, undo after a result,
-# long-poll wake-up on offers, and a game whose row is deleted by hand.
+# long-poll wake-up on offers, concessions (final between humans, on record
+# against the computer), claim checks on undo, players, and unload, and a game
+# whose row is deleted by hand.
 # Requires: curl, jq, and a server from test/run-test-server.sh; psql and
 # CHESS_TEST_DSN for the deleted-row case (skipped without them).
 
@@ -193,7 +195,50 @@ request PUT "/games/$GAME/players" -H 'Content-Type: application/json' \
 check "computer a queen up declines" "declined/ongoing" \
     "$(post "/games/$GAME/draw" '{"action":"offer"}' >/dev/null; json '.drawOutcome + "/" + .state')"
 
-section "5. A game whose row is deleted by hand"
+section "5. Concessions"
+GAME=$(new_game 1 1)
+play "$GAME" "" e2e4
+post "/games/$GAME/draw" '{"action":"offer","color":"w"}' >/dev/null
+post "/games/$GAME/draw" '{"action":"accept","color":"b"}' >/dev/null
+check "hot seat: undo after an agreed draw" 400 "$(post "/games/$GAME/undo" '{"count":1}')"
+check "error code" "GAME_OVER" "$(json .code)"
+
+OPPONENT="draw$(date +%s)$RANDOM"
+OPPONENT_TOKEN=$(register "$OPPONENT" DrawPass1234)
+[ -n "$OPPONENT_TOKEN" ] && [ "$OPPONENT_TOKEN" != null ] && ok "$OPPONENT registered" || bad "register: $(cat "$TMP/body")"
+GAME=$(new_game 1 1)
+play "$GAME" "$TOKEN" e2e4 # claims white
+play "$GAME" "$OPPONENT_TOKEN" e7e5 # claims black
+check "two players: no takeback by white" 403 "$(post "/games/$GAME/undo" '{"count":1}' "$TOKEN")"
+check "two players: no anonymous undo" 403 "$(post "/games/$GAME/undo" '{"count":1}')"
+check "two players: players cannot be changed" 403 "$(request PUT "/games/$GAME/players" \
+    -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" \
+    -d '{"white":{"type":1},"black":{"type":2,"level":5,"searchTime":100}}')"
+check "white resigns" "black wins/resignation" \
+    "$(post "/games/$GAME/resign" '{}' "$TOKEN" >/dev/null; json '.state + "/" + .termination')"
+check "the resignation stands for black too" 403 "$(post "/games/$GAME/undo" '{"count":1}' "$OPPONENT_TOKEN")"
+check "an outsider cannot unload the game" 403 "$(request DELETE "/games/$GAME")"
+check "a player can" 204 "$(request DELETE "/games/$GAME" -H "Authorization: Bearer $OPPONENT_TOKEN")"
+
+GAME=$(new_game 1 2)
+play "$GAME" "$TOKEN" e2e4
+post "/games/$GAME/resign" '{}' "$TOKEN" >/dev/null
+check "computer game: anonymous undo of a claimed side" 403 "$(post "/games/$GAME/undo" '{"count":1}')"
+check "computer game: the claimant undoes the resignation" 200 "$(post "/games/$GAME/undo" '{"count":1}' "$TOKEN")"
+check "play continues, the concession is kept" "ongoing/black wins/resignation/1" \
+    "$(json '.state + "/" + .concession.result + "/" + .concession.termination + "/" + (.concession.ply | tostring)')"
+play "$GAME" "$TOKEN" d2d4
+check "history keeps the concession" "black_wins/resignation/1/none" \
+    "$(request GET "/games/$GAME/history" >/dev/null; json '.concession.result + "/" + .concession.termination + "/" + (.concession.ply | tostring) + "/" + (.result // "none")')"
+check "PGN notes it" "1. d4 { White resigned at ply 1; play continued. } *" \
+    "$(request GET "/games/$GAME/pgn" >/dev/null; movetext)"
+
+section "6. Server"
+check "an unknown route is not a missing game" "404/NOT_FOUND" \
+    "$(status=$(post "/games/$GAME/surrender" '{}'); echo "$status/$(json .code)")"
+check "health reports the build" "true" "$(curl -s "$BASE_URL/health" | jq '.version | length > 0')"
+
+section "7. A game whose row is deleted by hand"
 if [ -z "$CHESS_TEST_DSN" ] || ! command -v psql >/dev/null; then
     skip "CHESS_TEST_DSN or psql missing; skipped"
 else

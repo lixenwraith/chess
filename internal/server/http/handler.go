@@ -24,12 +24,13 @@ const rateLimitRate = 10 // req/sec
 
 // HTTPHandler handles HTTP requests and routes them to the processor
 type HTTPHandler struct {
-	proc *processor.Processor
-	svc  *service.Service
+	proc    *processor.Processor
+	svc     *service.Service
+	version string
 }
 
-func NewHTTPHandler(proc *processor.Processor, svc *service.Service) *HTTPHandler {
-	return &HTTPHandler{proc: proc, svc: svc}
+func NewHTTPHandler(proc *processor.Processor, svc *service.Service, version string) *HTTPHandler {
+	return &HTTPHandler{proc: proc, svc: svc, version: version}
 }
 
 // Options configures the API application.
@@ -43,6 +44,8 @@ type Options struct {
 	// X-Real-IP (nginx: proxy_set_header X-Real-IP $remote_addr). Avoid
 	// X-Forwarded-For: its first entry is supplied by the client.
 	ProxyHeader string
+	// Version is the build identifier /health reports.
+	Version string
 }
 
 // appConfig returns the Fiber configuration. Client-IP resolution only honors
@@ -75,7 +78,7 @@ func clientIP(c *fiber.Ctx) string {
 
 func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) *fiber.App {
 	// Create handler
-	h := NewHTTPHandler(proc, svc)
+	h := NewHTTPHandler(proc, svc, opts.Version)
 	devMode := opts.DevMode
 
 	// Initialize Fiber app
@@ -170,11 +173,11 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 	api.Post("/games", OptionalAuth(validateToken), h.CreateGame) // Optional auth for player ID association
 	api.Get("/games/:gameId/history", h.GetGameHistory)
 	api.Get("/games/:gameId/pgn", h.GetGamePGN)
-	api.Put("/games/:gameId/players", h.ConfigurePlayers)
+	api.Put("/games/:gameId/players", OptionalAuth(validateToken), h.ConfigurePlayers)
 	api.Get("/games/:gameId", h.GetGame)
-	api.Delete("/games/:gameId", h.DeleteGame)
+	api.Delete("/games/:gameId", OptionalAuth(validateToken), h.DeleteGame)
 	api.Post("/games/:gameId/moves", OptionalAuth(validateToken), h.MakeMove)
-	api.Post("/games/:gameId/undo", h.UndoMove)
+	api.Post("/games/:gameId/undo", OptionalAuth(validateToken), h.UndoMove)
 	api.Post("/games/:gameId/resign", OptionalAuth(validateToken), h.Resign)
 	api.Post("/games/:gameId/draw", OptionalAuth(validateToken), h.Draw)
 	api.Get("/games/:gameId/board", h.GetBoard)
@@ -213,9 +216,12 @@ func customErrorHandler(c *fiber.Ctx, err error) error {
 		response.Error = e.Message
 
 		// Map HTTP status to error codes
+		// An unknown route is not a missing game: a client newer than the
+		// server must not report "game not found" for an endpoint the server
+		// predates.
 		switch code {
 		case fiber.StatusNotFound:
-			response.Code = core.ErrGameNotFound
+			response.Code = core.ErrRouteNotFound
 		case fiber.StatusBadRequest:
 			response.Code = core.ErrInvalidRequest
 		case fiber.StatusTooManyRequests:
@@ -237,6 +243,7 @@ func (h *HTTPHandler) Health(c *fiber.Ctx) error {
 		"status":  status,
 		"time":    time.Now().Unix(),
 		"storage": storageHealth,
+		"version": h.version,
 	})
 }
 
@@ -314,15 +321,12 @@ func (h *HTTPHandler) ConfigurePlayers(c *fiber.Ctx) error {
 
 	// Create command and execute
 	cmd := processor.NewConfigurePlayersCommand(gameID, req)
+	cmd.UserID, _ = c.Locals("userID").(string)
 	resp := h.proc.Execute(cmd)
 
 	// Return appropriate HTTP response
 	if !resp.Success {
-		statusCode := fiber.StatusBadRequest
-		if resp.Error.Code == core.ErrGameNotFound {
-			statusCode = fiber.StatusNotFound
-		}
-		return c.Status(statusCode).JSON(resp.Error)
+		return c.Status(statusForCode(resp.Error.Code)).JSON(resp.Error)
 	}
 
 	return c.JSON(resp.Data)
@@ -500,15 +504,12 @@ func (h *HTTPHandler) UndoMove(c *fiber.Ctx) error {
 
 	// Create command and execute
 	cmd := processor.NewUndoMoveCommand(gameID, req)
+	cmd.UserID, _ = c.Locals("userID").(string)
 	resp := h.proc.Execute(cmd)
 
 	// Return appropriate HTTP response
 	if !resp.Success {
-		statusCode := fiber.StatusBadRequest
-		if resp.Error.Code == core.ErrGameNotFound {
-			statusCode = fiber.StatusNotFound
-		}
-		return c.Status(statusCode).JSON(resp.Error)
+		return c.Status(statusForCode(resp.Error.Code)).JSON(resp.Error)
 	}
 
 	return c.JSON(resp.Data)
@@ -581,11 +582,12 @@ func (h *HTTPHandler) DeleteGame(c *fiber.Ctx) error {
 
 	// Create command and execute
 	cmd := processor.NewDeleteGameCommand(gameID)
+	cmd.UserID, _ = c.Locals("userID").(string)
 	resp := h.proc.Execute(cmd)
 
 	// Return appropriate HTTP response
 	if !resp.Success {
-		return c.Status(fiber.StatusNotFound).JSON(resp.Error)
+		return c.Status(statusForCode(resp.Error.Code)).JSON(resp.Error)
 	}
 
 	return c.SendStatus(fiber.StatusNoContent)

@@ -94,12 +94,97 @@ func TestResignationClaimsAndPersists(t *testing.T) {
 		t.Fatalf("history after resignation: %+v", history)
 	}
 
-	// Undo after a result rewinds it (D6), in memory and in storage.
-	if err := svc.UndoMoves(gameID, 1); err != nil {
+	// Between two humans a resignation is final: neither the other claimant
+	// nor an anonymous caller can take it back, and the players cannot be
+	// reconfigured around it.
+	for _, actor := range []string{alice, bob, ""} {
+		if err := svc.UndoMoves(gameID, 1, actor); !errors.Is(err, ErrSlotOwner) {
+			t.Fatalf("undo by %q after a two-player resignation: %v, want ErrSlotOwner", actor, err)
+		}
+	}
+	computer := core.NewPlayer(core.PlayerConfig{Type: core.PlayerComputer, Level: 1, SearchTime: 100}, core.ColorBlack)
+	white := core.NewPlayer(core.PlayerConfig{Type: core.PlayerHuman}, core.ColorWhite)
+	if err := svc.UpdatePlayers(gameID, white, computer, alice); !errors.Is(err, ErrSlotOwner) {
+		t.Fatalf("reconfiguring around a resignation: %v, want ErrSlotOwner", err)
+	}
+	if history.Concession == nil || history.Concession.Result != "white_wins" ||
+		history.Concession.Termination != "resignation" || history.Concession.Ply != 1 {
+		t.Fatalf("concession not recorded: %+v", history.Concession)
+	}
+}
+
+// A single controller (hotseat or anonymous) is refused only by finality.
+func TestConcessionBetweenHumansIsFinal(t *testing.T) {
+	svc := newPersistentTestService(t)
+	gameID := newHumanGame(t, svc)
+	move(t, svc, gameID, "", "e2e4")
+	view, _ := svc.GetGameView(gameID)
+	if err := svc.OfferDraw(gameID, core.ColorBlack, "", view.FEN); err != nil {
 		t.Fatal(err)
 	}
-	if history, _ = svc.GetGameHistory(gameID); history.Result != "" || history.Termination != "" {
-		t.Fatalf("undo kept the resignation: %+v", history)
+	if err := svc.EndGame(gameID, EndCommit{
+		ExpectedFEN: view.FEN, Color: core.ColorWhite, State: core.StateDraw,
+		Termination: core.TermAgreement, OfferFrom: core.ColorBlack,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.UndoMoves(gameID, 1, ""); !errors.Is(err, ErrConcessionFinal) {
+		t.Fatalf("undo after an agreed draw between humans: %v, want ErrConcessionFinal", err)
+	}
+}
+
+// Against the computer an undo reopens a resigned game; the first
+// concession stays on record through the rewind, later moves, and a second
+// resignation, while result and termination follow the live game.
+func TestConcessionAgainstComputerStaysOnRecord(t *testing.T) {
+	svc := newPersistentTestService(t)
+	gameID, alice := uuid.NewString(), uuid.NewString()
+	white := core.NewPlayer(core.PlayerConfig{Type: core.PlayerHuman}, core.ColorWhite)
+	black := core.NewPlayer(core.PlayerConfig{Type: core.PlayerComputer, Level: 1, SearchTime: 100}, core.ColorBlack)
+	if err := svc.CreateGame(gameID, white, black, chess.StartFEN, core.ColorWhite,
+		core.StateOngoing, core.TermNone); err != nil {
+		t.Fatal(err)
+	}
+	move(t, svc, gameID, alice, "e2e4")
+	move(t, svc, gameID, "", "e7e5")
+	resign := func() {
+		t.Helper()
+		view, _ := svc.GetGameView(gameID)
+		if err := svc.EndGame(gameID, EndCommit{
+			ExpectedFEN: view.FEN, Color: core.ColorWhite, ActorUserID: alice,
+			State: core.StateBlackWins, Termination: core.TermResignation,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resign()
+
+	if err := svc.UndoMoves(gameID, 2, ""); !errors.Is(err, ErrSlotOwner) {
+		t.Fatalf("anonymous undo of a claimed game: %v, want ErrSlotOwner", err)
+	}
+	if err := svc.UndoMoves(gameID, 2, alice); err != nil {
+		t.Fatal(err)
+	}
+	view, _ := svc.GetGameView(gameID)
+	if view.State != core.StateOngoing || view.Concession == nil ||
+		view.Concession.State != core.StateBlackWins || view.Concession.Ply != 2 {
+		t.Fatalf("view after undoing a resignation: %+v", view)
+	}
+	history, err := svc.GetGameHistory(gameID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if history.Result != "" || history.Termination != "" || len(history.Moves) != 0 ||
+		history.Concession == nil || history.Concession.Result != "black_wins" ||
+		history.Concession.Termination != "resignation" || history.Concession.Ply != 2 {
+		t.Fatalf("history after undoing a resignation: %+v", history)
+	}
+
+	move(t, svc, gameID, alice, "d2d4")
+	resign()
+	history, _ = svc.GetGameHistory(gameID)
+	if history.Result != "black_wins" || len(history.Moves) != 1 || history.Concession.Ply != 2 {
+		t.Fatalf("second resignation replaced the first concession: %+v", history)
 	}
 }
 

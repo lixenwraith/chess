@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"chess/internal/server/chess"
 	"chess/internal/server/core"
@@ -69,6 +70,9 @@ func BuildPGN(record *storage.GameRecord, moves []storage.MoveRecord, ply int) (
 	if complete {
 		result = chess.ResultToken(record.Result)
 		comment = Describe(record.Result, record.Termination)
+		if note := continuedAfter(record, len(moves)); note != "" {
+			comment = strings.TrimSpace(note + " " + comment)
+		}
 	}
 	start := record.StartTimeUTC.UTC()
 	tags := []chess.Tag{
@@ -103,6 +107,29 @@ func BuildPGN(record *storage.GameRecord, moves []storage.MoveRecord, ply int) (
 		}.String(),
 		Filename: name + ".pgn",
 	}, nil
+}
+
+// continuedAfter notes a resignation or agreed draw that an undo took back,
+// such as "White resigned at ply 24; play continued."; empty when there was
+// none or it is still the game's result.
+func continuedAfter(record *storage.GameRecord, plies int) string {
+	if record.ConcessionResult == "" {
+		return ""
+	}
+	if record.ConcessionResult == record.Result &&
+		record.ConcessionTermination == record.Termination && record.ConcessionPly == plies {
+		return ""
+	}
+	var event string
+	switch record.ConcessionResult {
+	case "white_wins":
+		event = "Black resigned"
+	case "black_wins":
+		event = "White resigned"
+	default:
+		event = "A draw was agreed"
+	}
+	return fmt.Sprintf("%s at ply %d; play continued.", event, record.ConcessionPly)
 }
 
 // Describe returns a sentence for a stored result and termination, such as

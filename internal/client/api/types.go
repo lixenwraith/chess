@@ -43,9 +43,18 @@ type GameResponse struct {
 	Termination string          `json:"termination,omitempty"`
 	DrawOffer   string          `json:"drawOffer,omitempty"`
 	DrawOutcome string          `json:"drawOutcome,omitempty"`
+	Concession  *Concession     `json:"concession,omitempty"`
 	Moves       []string        `json:"moves"`
 	Players     PlayersResponse `json:"players"`
 	LastMove    *MoveInfo       `json:"lastMove,omitempty"`
+}
+
+// Concession is the game's first resignation or agreed draw; the server keeps
+// it when an undo continues play against the computer.
+type Concession struct {
+	Result      string `json:"result"`
+	Termination string `json:"termination"`
+	Ply         int    `json:"ply"`
 }
 
 type ResignRequest struct {

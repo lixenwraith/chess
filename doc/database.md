@@ -62,13 +62,25 @@ The tables:
 | `chess.schema_version` | One row: the applied migration |
 | `chess.users` | Accounts: lowercase username and email, Argon2id password hash |
 | `chess.sessions` | One active session per user; deleting it signs the user out |
-| `chess.games` | Players, claims (`*_claimed_by`), name snapshots, `result`, `termination`, times |
+| `chess.games` | Players, claims (`*_claimed_by`), name snapshots, `result`, `termination`, `concession_*`, times |
 | `chess.moves` | Ply `move_number` 1..n, UCI move, FEN after the move |
 
 `result` is `white_wins`, `black_wins`, `stalemate`, or `draw`, and
 `termination` says how: `checkmate`, `resignation`, `stalemate`,
 `insufficient_material`, `threefold_repetition`, `fifty_move_rule`, or
-`agreement`. Both are empty while a game is unfinished.
+`agreement`. Both are empty while a game is unfinished, and an undo empties
+them again. `concession_result`, `concession_termination`, and
+`concession_ply` keep the first resignation or agreed draw even when an undo
+against the computer continued play:
+
+```sql
+SELECT game_id, concession_result, concession_ply,
+       coalesce(result, 'unfinished') AS now
+FROM chess.games
+WHERE concession_result IS NOT NULL
+  AND (result IS DISTINCT FROM concession_result
+       OR termination IS DISTINCT FROM concession_termination);   -- continued after conceding
+```
 
 `\set g '<game-id>'` stores a game ID for the `:'g'` references below.
 
@@ -276,7 +288,7 @@ su -m chess -c '/home/chess/bin/chess-server db delete -confirm -dsn "postgres:/
 su -m chess -c '/home/chess/bin/chess-server db init -dsn "postgres:///chess?host=/tmp"'
 ```
 
-`db init` prints `Database schema ready (version 2)`. In split mode the
+`db init` prints `Database schema ready (version 3)`. In split mode the
 `chess` role owns no tables and cannot drop or create them; run both commands
 as `postgres` acting as the owner role instead, e.g. on Linux:
 
@@ -304,6 +316,6 @@ Verify any of them:
 
 ```sql
 \dt chess.*                                   -- games, moves, schema_version, sessions, users
-SELECT version FROM chess.schema_version;     -- 2
+SELECT version FROM chess.schema_version;     -- 3
 \drds                                         -- chess: search_path and timeouts in database chess
 ```

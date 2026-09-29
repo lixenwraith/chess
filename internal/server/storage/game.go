@@ -16,7 +16,8 @@ const gameSelectColumns = `
 	g.game_id, g.initial_fen,
 	g.white_player_id, g.white_type, g.white_level, g.white_search_time, g.white_claimed_by, g.white_name,
 	g.black_player_id, g.black_type, g.black_level, g.black_search_time, g.black_claimed_by, g.black_name,
-	g.result, g.termination, g.start_time_utc, g.end_time_utc`
+	g.result, g.termination, g.start_time_utc, g.end_time_utc,
+	g.concession_result, g.concession_termination, g.concession_ply, g.concession_time_utc`
 
 // claimantName snapshots a claimant's username inside the writing
 // transaction; NULL when the slot is unclaimed or the account is gone.
@@ -114,6 +115,9 @@ type GameEnd struct {
 	EndTimeUTC  time.Time
 	ClaimColor  string
 	ClaimedBy   string
+	// Ply is the number of moves played; it is recorded with the first
+	// resignation or agreed draw (see GameRecord.ConcessionResult).
+	Ply int
 }
 
 // RecordGameEnd persists the result, how it was reached, and any claim in one
@@ -138,9 +142,25 @@ func (s *Store) RecordGameEnd(end GameEnd) error {
 	if (end.ClaimColor == "") != (end.ClaimedBy == "") {
 		return errors.New("claim color and claimant must be provided together")
 	}
+	if end.Ply < 0 {
+		return errors.New("ply must not be negative")
+	}
 	return s.enqueue("record_game_end", end.GameID, func(ctx context.Context, tx *sql.Tx) error {
-		return updateGameEnd(ctx, tx, end.GameID, end.ClaimColor, end.ClaimedBy,
-			end.Result, end.Termination, &ended)
+		if err := updateGameEnd(ctx, tx, end.GameID, end.ClaimColor, end.ClaimedBy,
+			end.Result, end.Termination, &ended); err != nil {
+			return err
+		}
+		if !isConcession(end.Termination) {
+			return nil
+		}
+		// The first concession stays; a later one after an undo is only the
+		// current result.
+		_, err := tx.ExecContext(ctx, `UPDATE games SET
+			concession_result = $2, concession_termination = $3,
+			concession_ply = $4, concession_time_utc = $5
+			WHERE game_id = $1 AND concession_result IS NULL`,
+			end.GameID, end.Result, end.Termination, end.Ply, ended)
+		return err
 	})
 }
 
@@ -209,6 +229,7 @@ func (s *Store) RecordPlayers(gameID string, white, black PlayerRecord) error {
 
 // RewindGame atomically removes undone moves and clears a previously terminal
 // result so replay readers never observe an ongoing line with a stale outcome.
+// A recorded concession is kept.
 func (s *Store) RewindGame(gameID string, afterMoveNumber int) error {
 	if gameID == "" || afterMoveNumber < 0 {
 		return errors.New("game ID and a non-negative move number are required")
@@ -519,7 +540,9 @@ type rowScanner interface {
 // scanGame scans gameSelectColumns followed by any extra destinations.
 func scanGame(scanner rowScanner, record *GameRecord, extra ...any) error {
 	var whiteClaimed, whiteName, blackClaimed, blackName, result, termination sql.NullString
-	var endTime sql.NullTime
+	var concessionResult, concessionTermination sql.NullString
+	var concessionPly sql.NullInt64
+	var endTime, concessionTime sql.NullTime
 	dest := []any{
 		&record.GameID, &record.InitialFEN,
 		&record.WhitePlayerID, &record.WhiteType, &record.WhiteLevel, &record.WhiteSearchTime,
@@ -527,6 +550,7 @@ func scanGame(scanner rowScanner, record *GameRecord, extra ...any) error {
 		&record.BlackPlayerID, &record.BlackType, &record.BlackLevel, &record.BlackSearchTime,
 		&blackClaimed, &blackName,
 		&result, &termination, &record.StartTimeUTC, &endTime,
+		&concessionResult, &concessionTermination, &concessionPly, &concessionTime,
 	}
 	if err := scanner.Scan(append(dest, extra...)...); err != nil {
 		return err
@@ -539,6 +563,10 @@ func scanGame(scanner rowScanner, record *GameRecord, extra ...any) error {
 	record.Termination = termination.String
 	record.StartTimeUTC = record.StartTimeUTC.UTC()
 	record.EndTimeUTC = utcPointer(endTime)
+	record.ConcessionResult = concessionResult.String
+	record.ConcessionTermination = concessionTermination.String
+	record.ConcessionPly = int(concessionPly.Int64)
+	record.ConcessionTimeUTC = utcPointer(concessionTime)
 	return nil
 }
 
@@ -589,6 +617,11 @@ func isValidResult(result string) bool {
 }
 
 // validTermination mirrors the games_termination_check constraint.
+// isConcession reports a result the players chose (core.Termination.IsConcession).
+func isConcession(termination string) bool {
+	return termination == "resignation" || termination == "agreement"
+}
+
 func validTermination(result, termination string) bool {
 	switch result {
 	case "white_wins", "black_wins":

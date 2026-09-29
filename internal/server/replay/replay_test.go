@@ -154,3 +154,24 @@ func TestBuildPGN(t *testing.T) {
 		t.Error("ply beyond the line accepted")
 	}
 }
+
+// A resignation taken back by an undo is noted before the live result.
+func TestBuildPGNNotesContinuedConcession(t *testing.T) {
+	moves := stored(t, chess.StartFEN, "e2e4", "e7e5", "d2d4")
+	rec := record(chess.StartFEN, "", "")
+	rec.ConcessionResult, rec.ConcessionTermination, rec.ConcessionPly = "black_wins", "resignation", 2
+
+	pgn, err := BuildPGN(rec, moves, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(pgn.Text, "\n\n1. e4 e5 2. d4 { White resigned at ply 2; play continued. } *\n") {
+		t.Errorf("continued game:\n%s", pgn.Text)
+	}
+
+	// The concession that is still the result needs no note.
+	rec.Result, rec.Termination, rec.ConcessionPly = "black_wins", "resignation", 3
+	if pgn, _ = BuildPGN(rec, moves, -1); strings.Contains(pgn.Text, "continued") {
+		t.Errorf("standing resignation noted as continued:\n%s", pgn.Text)
+	}
+}
