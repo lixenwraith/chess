@@ -237,7 +237,7 @@ Commands encapsulate operations with type, arguments, and optional user ID for a
 ### Player Configuration
 Players identified by UUID (authenticated users) or generated IDs (anonymous), configured with type (human/computer), skill level, and search time.
 
-### Storage Schema (version 2)
+### Storage Schema (version 3)
 ```sql
 users (
     user_id uuid PRIMARY KEY,
@@ -271,6 +271,10 @@ games (
                                             -- insufficient_material, threefold_repetition,
                                             -- fifty_move_rule, agreement
     end_time_utc timestamptz,               -- set exactly when result is set
+    concession_result text,                 -- first resignation (win) or agreed draw,
+    concession_termination text,            --   kept when an undo continues play
+    concession_ply integer,                 --   against the computer; all four set
+    concession_time_utc timestamptz         --   together or all NULL
 )
 
 moves (
@@ -286,7 +290,9 @@ moves (
 
 `schema_version` records the applied version; version 2 added
 `termination`, constrained to be set exactly with `result` and to fit it
-(wins by checkmate or resignation, draws by a draw rule or agreement). Indexes cover session expiry,
+(wins by checkmate or resignation, draws by a draw rule or agreement).
+Version 3 added the `concession_*` columns: a rewind clears `result` and
+`termination` but keeps them, and the first concession is never overwritten. Indexes cover session expiry,
 each claim column ordered by `(start_time_utc DESC, game_id DESC)` for the game
 listing, and the start time of unclaimed games for the anonymous-game purge.
 Claims and player IDs deliberately have no foreign key to `users`: history

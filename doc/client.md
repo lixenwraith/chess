@@ -119,14 +119,18 @@ chess > computer
 ```
 
 #### `undo` / `u`
-Undo one or more moves.
+Undo one or more moves. Refused when another user claimed a side (players
+cannot take back each other's moves) and after a resignation or agreed draw
+between two humans. Against the computer a resignation can be undone; the
+client notes that it stays on record.
 ```
 chess > undo       # Undo last move
 chess > undo 3     # Undo last 3 moves
 ```
 
 #### `show` / `h`
-Display board and game state with colored pieces.
+Display board and game state with colored pieces, the result, and any
+pending draw offer.
 ```
 chess > show
 ```
@@ -145,7 +149,10 @@ chess > delete <gameId>      # Unload specific live game
 ```
 
 #### `poll` / `p`
-Long-poll for game updates (waits up to 30 seconds).
+Long-poll for game updates (waits up to 30 seconds). Returns on a move, an
+undo, a result (a resignation or an accepted draw), or a draw offer, and
+prints the outcome or offer. In a two-player game, `poll` is how you learn
+that the opponent moved, offered a draw, or resigned.
 ```
 chess > poll
 ```

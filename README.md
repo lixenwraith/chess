@@ -22,6 +22,9 @@ Go backend server providing a RESTful API for chess gameplay with user authentic
 - Human vs human, human vs computer, computer vs computer modes
 - Resignation, draw offers (the computer answers from its evaluation), and
   automatic draws: dead material, threefold repetition, fifty-move rule
+- Claimed sides protect players: no takebacks between two players, and a
+  resignation or agreed draw between humans is final; against the computer it
+  can be undone and stays on record
 - Custom FEN position support
 - Asynchronous engine move calculation
 - Configurable engine strength and thinking time
