@@ -95,16 +95,22 @@ Authorization: Bearer <token>
 ### Health Check
 `GET /health`
 
-Returns server and storage status.
+Returns server and storage status, and the build the server runs.
 
 **Response (200):**
 ```json
 {
   "status": "healthy",
   "time": 1699123456,
-  "storage": "ok"
+  "storage": "ok",
+  "version": "v0.14.0-3-g1a2b3c4"
 }
 ```
+
+`version` is `git describe` of the source the binary was built from (`make`
+sets it), or `dev` for a plain `go build`. Compare it after a deployment: a
+client newer than the server gets 404 `NOT_FOUND` for endpoints the server
+predates.
 
 Storage states:
 - `"disabled"` - No database configured (`-dsn` or `CHESS_DSN`)
@@ -225,6 +231,11 @@ carries its SAN, derived on read from the stored position before it.
 }
 ```
 
+`concession` (present only when there was one) is the game's first
+resignation or agreed draw, in stored-result form (`"result": "black_wins"`);
+see [Continuing after a resignation or agreed
+draw](#continuing-after-a-resignation-or-agreed-draw).
+
 `result` is omitted while a game is ongoing. Persisted terminal values are
 `white_wins`, `black_wins`, `draw`, and `stalemate`. `pgnResult` is the PGN
 token for the same outcome (`1-0`, `0-1`, `1/2-1/2`, or `*` while ongoing),
@@ -235,7 +246,7 @@ rules core cannot notate, which the server logs. A claimed player's `name` is
 their username when the claim was recorded; it survives later renames and
 account deletion, and is omitted for anonymous and computer players.
 
-Undo stays available after a result (a finished game can be rewound and
+Undo stays available after most results (a finished game can be rewound and
 played on), so a stored game is never final. Responses carry a strong `ETag`
 and `Cache-Control: private, no-cache`: send `If-None-Match` to get 304 while
 nothing changed.
@@ -366,6 +377,7 @@ A live game (`GET /games/{gameId}` and every game response) carries:
 | `termination` | How a finished game ended: `checkmate`, `resignation`, `stalemate`, `insufficient_material`, `threefold_repetition`, `fifty_move_rule`, or `agreement`; omitted while unfinished |
 | `drawOffer` | `w` or `b`: that side's draw offer awaits an answer; omitted when none |
 | `drawOutcome` | Only on responses to `POST .../draw`: `offered`, `accepted`, or `declined` |
+| `concession` | The game's first resignation or agreed draw: `{"result": "black wins", "termination": "resignation", "ply": 24}`, `ply` being the moves played when it was made; kept when an undo continues play |
 
 **Automatic draws.** After every move the game is drawn, without a claim, as
 on most online servers, when:
@@ -421,16 +433,53 @@ Other errors are 400: `GAME_OVER` for a finished game, `INVALID_REQUEST` for
 an ambiguous or computer side, a missing offer, or a game that is not
 ongoing. Both return the game.
 
+#### Continuing after a resignation or agreed draw
+
+A resignation or agreed draw is a *concession*: a result the players chose.
+
+- **Both sides human:** it is final. `undo` returns 400 `GAME_OVER`, for a
+  hot-seat game too.
+- **Against the computer:** the claimant may `undo` it and play on. The live
+  `state` and `termination` (and the stored `result` and `termination`)
+  follow the game; `concession` keeps the first one, in memory and in the
+  database (`concession_*` columns), through later undos, moves, and results.
+  History reports it, and the full PGN notes it in the final comment, such as
+  `{ White resigned at ply 24; play continued. }`.
+
+### Claims and control
+
+Anyone holding the game ID may move for, undo, reconfigure, or unload an
+unclaimed side; a claim is what protects a player. Moves, resignation, and
+draws act for one side and need that side's claim (or none). The requests
+below affect both sides, so:
+
+| Request | Allowed when |
+|---|---|
+| undo, configure players | no side is claimed by another user: the caller holds every claim, or nothing is claimed |
+| delete (unload) | the caller holds a claim, or nothing is claimed |
+
+Otherwise they return 403 `UNAUTHORIZED`. Two players who each claimed a
+side therefore cannot take back each other's moves or swap the opponent for
+the computer: takebacks between players are not supported. Send the bearer
+token (optional authentication) with these requests.
+
 ### Undo Moves
 `POST /games/{gameId}/undo`
 
-Reverts moves from history. Undo stays available after a result, including a
-resignation or an agreed draw: it rewinds the result and any draw offer.
+```json
+{"count": 2}
+```
+
+Reverts `count` plies (default 1). Allowed after a result: it rewinds the
+result and clears draw offers. Refused while the computer is thinking, after
+a resignation or agreed draw between two humans (400 `GAME_OVER`), and by
+another user's claim (403, see [Claims and control](#claims-and-control)).
 
 ### Configure Players
 `PUT /games/{gameId}/players`
 
-Changes player configuration mid-game.
+Changes player configuration mid-game; subject to [Claims and
+control](#claims-and-control).
 
 ### Get Board
 `GET /games/{gameId}/board`
@@ -441,7 +490,8 @@ Returns ASCII board visualization.
 `DELETE /games/{gameId}`
 
 Unloads the live game from memory. Its persisted game and move history remain
-available through the history endpoint. Returns 204 on success.
+available through the history endpoint. Returns 204 on success, 403 to a
+caller holding none of the game's claims.
 
 ## Error Format
 ```json
@@ -453,7 +503,9 @@ available through the history endpoint. Returns 204 on success.
 ```
 
 Error codes:
-- `GAME_NOT_FOUND` - Invalid game ID
+- `GAME_NOT_FOUND` - No live game with that ID
+- `NOT_FOUND` - No such endpoint (for example a server older than the client)
+- `UNAUTHORIZED` - A side or the game is claimed by another user
 - `INVALID_MOVE` - Illegal chess move
 - `NOT_HUMAN_TURN` - Wrong player type for turn
 - `GAME_OVER` - Game already ended

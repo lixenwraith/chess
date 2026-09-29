@@ -137,12 +137,14 @@ systemctl status chessd
 journalctl -u chessd -f                       # server log
 sudo chess-db user add -username <name>       # accounts; see database.md
 sudo chess-db verify                          # check stored games; run after upgrades
-curl -s http://127.0.0.1:8080/health          # "storage":"ok"
+curl -s http://127.0.0.1:8080/health          # "storage":"ok", "version" = the build
 systemctl list-timers chess-backup.timer      # with ENABLE_BACKUP=yes
 ```
 
 **Upgrade:** build, then rerun `setup.sh` with the new `CHESS_BINARY`.
-Schema migrations run before the service starts.
+Schema migrations run before the service starts. `/health` reports the
+running build as `version` (`git describe` of the source); check it matches,
+and upgrade the server before or with a web client served from elsewhere.
 
 **Rollback:** until you delete it, the previous binary is kept:
 

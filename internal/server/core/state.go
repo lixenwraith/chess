@@ -91,6 +91,13 @@ func (t Termination) ValidFor(s State) bool {
 	}
 }
 
+// IsConcession reports whether the players chose the result: a resignation or
+// a draw by agreement. A concession is final when both sides are human; against
+// the computer play may continue, and the first concession stays on record.
+func (t Termination) IsConcession() bool {
+	return t == TermResignation || t == TermAgreement
+}
+
 // ParseColor accepts "w", "b", "white", or "black"; anything else is zero.
 func ParseColor(s string) Color {
 	switch s {

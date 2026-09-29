@@ -82,7 +82,7 @@ curl -X POST http://localhost:8080/api/games \
 | Long-Polling | `test-longpoll.sh` | Real-time updates, wait behavior, timeouts |
 | End States | `test-endstate.sh` | Checkmate, stalemate, terminal custom positions |
 | Replay | `test-replay.sh` | SAN history, PGN export, ETag/304, promotion, FEN validation, cursor-paged listing |
-| Draws & Resignation | `test-draw.sh` | Automatic draws, offers (human and computer), resignation and authorization, long-poll wake-up, hand-deleted game row |
+| Draws & Resignation | `test-draw.sh` | Automatic draws, offers (human and computer), resignation and authorization, long-poll wake-up, concessions and claim control, server version, hand-deleted game row |
 | Test Server | `run-test-server.sh` | Pre-populated test environment |
 
 ## 1. API Functionality Tests (`test-api.sh`)
@@ -195,7 +195,7 @@ the dev-mode rate limit.
 
 Plays short human-vs-human lines, switching a side to the computer where the
 computer's answer to a draw offer is tested, so the only engine work is two
-short evaluations. Each run registers a fresh account and can be repeated
+short evaluations. Each run registers two fresh accounts and can be repeated
 against the same server.
 
 ```bash
@@ -208,6 +208,11 @@ undo after a draw, resignation (side inference, hot-seat ambiguity, a side
 claimed by another user), draw offers between humans (standing offer,
 decline, one offer per move, acceptance waking a long-poll, lapse on the
 opponent's move), the computer declining early, accepting in a level
-position and declining when a queen up, and a game whose row is deleted with
+position and declining when a queen up, concessions (an agreed draw final in
+a hot-seat game; between two players no takeback, no anonymous undo, no
+reconfiguration, a final resignation, unload only by a player; against the
+computer the claimant undoes a resignation and history and PGN keep it), an
+unknown route answered with `NOT_FOUND`, `/health` reporting the build, and a
+game whose row is deleted with
 psql (needs `CHESS_TEST_DSN` and `psql`; the server unloads the game and
 stays healthy).

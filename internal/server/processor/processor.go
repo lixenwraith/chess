@@ -224,7 +224,8 @@ func (p *Processor) handleCreateGame(cmd Command) ProcessorResponse {
 	}
 }
 
-// handleConfigurePlayers updates player configuration mid-game
+// handleConfigurePlayers updates player configuration mid-game; another
+// user's claim refuses it.
 func (p *Processor) handleConfigurePlayers(cmd Command) ProcessorResponse {
 	args, ok := cmd.Args.(core.ConfigurePlayersRequest)
 	if !ok {
@@ -253,7 +254,13 @@ func (p *Processor) handleConfigurePlayers(cmd Command) ProcessorResponse {
 	blackPlayer := core.NewPlayer(args.Black, core.ColorBlack)
 
 	// Update players in service
-	if err = p.svc.UpdatePlayers(cmd.GameID, whitePlayer, blackPlayer); err != nil {
+	if err = p.svc.UpdatePlayers(cmd.GameID, whitePlayer, blackPlayer, cmd.UserID); err != nil {
+		switch {
+		case errors.Is(err, service.ErrGameNotFound):
+			return p.endGameError(err)
+		case errors.Is(err, service.ErrSlotOwner):
+			return p.errorResponse("another player has claimed a side of this game; players cannot be changed", core.ErrUnauthorized)
+		}
 		return p.errorResponse(fmt.Sprintf("failed to update players: %v", err), core.ErrInternalError)
 	}
 
@@ -427,8 +434,10 @@ func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 
 // handleUndoMove reverts game state. StateStuck is deliberately permitted:
 // undo -> StateOngoing is the recovery path for engine failures. Terminal
-// states are also permitted so a finished game can be rewound. Any reverted-to
-// snapshot had legal moves made from it, so resetting to Ongoing is sound
+// states are also permitted so a finished game can be rewound, except a
+// resignation or agreed draw between two humans; another user's claim refuses
+// an undo. Any reverted-to snapshot had legal moves made from it, so resetting
+// to Ongoing is sound
 // without re-classification.
 func (p *Processor) handleUndoMove(cmd Command) ProcessorResponse {
 	g, err := p.svc.GetGameView(cmd.GameID)
@@ -447,9 +456,12 @@ func (p *Processor) handleUndoMove(cmd Command) ProcessorResponse {
 		}
 	}
 
-	if err = p.svc.UndoMoves(cmd.GameID, args.Count); err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			return p.errorResponse("game not found", core.ErrGameNotFound)
+	if err = p.svc.UndoMoves(cmd.GameID, args.Count, cmd.UserID); err != nil {
+		switch {
+		case errors.Is(err, service.ErrGameNotFound), errors.Is(err, service.ErrConcessionFinal):
+			return p.endGameError(err)
+		case errors.Is(err, service.ErrSlotOwner):
+			return p.errorResponse("another player has claimed a side of this game; moves cannot be taken back", core.ErrUnauthorized)
 		}
 		return p.errorResponse(err.Error(), core.ErrInvalidRequest)
 	}
@@ -461,7 +473,8 @@ func (p *Processor) handleUndoMove(cmd Command) ProcessorResponse {
 	}
 }
 
-// handleDeleteGame unloads a game from live memory.
+// handleDeleteGame unloads a game from live memory for one of its claimants,
+// or anyone when it is unclaimed.
 func (p *Processor) handleDeleteGame(cmd Command) ProcessorResponse {
 	g, err := p.svc.GetGameView(cmd.GameID)
 	if err != nil {
@@ -473,8 +486,14 @@ func (p *Processor) handleDeleteGame(cmd Command) ProcessorResponse {
 		return p.errorResponse("cannot delete game while computer move is in progress", core.ErrInvalidRequest)
 	}
 
-	if err = p.svc.DeleteGame(cmd.GameID); err != nil {
-		return p.errorResponse("game not found", core.ErrGameNotFound)
+	if err = p.svc.UnloadGame(cmd.GameID, cmd.UserID); err != nil {
+		switch {
+		case errors.Is(err, service.ErrGameNotFound):
+			return p.endGameError(err)
+		case errors.Is(err, service.ErrSlotOwner):
+			return p.errorResponse("only a player who claimed a side can unload this game", core.ErrUnauthorized)
+		}
+		return p.errorResponse(err.Error(), core.ErrInvalidRequest)
 	}
 
 	return ProcessorResponse{
@@ -662,6 +681,11 @@ func (p *Processor) buildGameResponse(gameID string, g game.View) core.GameRespo
 	}
 	if g.DrawOffer != 0 {
 		resp.DrawOffer = g.DrawOffer.String()
+	}
+	if c := g.Concession; c != nil {
+		resp.Concession = &core.Concession{
+			Result: c.State.String(), Termination: string(c.Termination), Ply: c.Ply,
+		}
 	}
 
 	// Include last move if available
@@ -957,6 +981,8 @@ func (p *Processor) endGameError(err error) ProcessorResponse {
 		return p.errorResponse(err.Error(), core.ErrConflict)
 	case errors.Is(err, service.ErrGameChanged):
 		return p.errorResponse("game changed; refresh and retry", core.ErrConflict)
+	case errors.Is(err, service.ErrConcessionFinal):
+		return p.errorResponse(err.Error(), core.ErrGameOver)
 	}
 	return p.errorResponse(fmt.Sprintf("failed to update game: %v", err), core.ErrInternalError)
 }

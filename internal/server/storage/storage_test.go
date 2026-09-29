@@ -945,6 +945,81 @@ func TestMigrationV2BackfillsTermination(t *testing.T) {
 	}
 }
 
+func TestMigrationV3BackfillsConcessions(t *testing.T) {
+	dsn := pgtest.DSN(t)
+	store, err := NewStore(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	// A version 2 database: a resignation after two moves, an agreed draw at
+	// the start, and a checkmate.
+	for _, migration := range migrations[:2] {
+		if _, err := store.db.Exec(migration); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.db.Exec(`INSERT INTO schema_version (version) VALUES (2)`); err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]string{}
+	for _, row := range [][2]string{
+		{"black_wins", "resignation"}, {"draw", "agreement"}, {"white_wins", "checkmate"},
+	} {
+		id := uuid.NewString()
+		ids[row[1]] = id
+		if _, err := store.db.Exec(`INSERT INTO games (game_id, initial_fen, white_player_id, white_type,
+			black_player_id, black_type, result, termination, end_time_utc)
+			VALUES ($1, 'initial', $2, 1, $3, 2, $4, $5, now())`,
+			id, uuid.NewString(), uuid.NewString(), row[0], row[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, uci := range []string{"e2e4", "e7e5"} {
+		if _, err := store.db.Exec(`INSERT INTO moves (game_id, move_number, move_uci, fen_after_move,
+			player_color) VALUES ($1, $2, $3, 'fen', $4)`,
+			ids["resignation"], i+1, uci, []string{"w", "b"}[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := store.InitDB(); err != nil {
+		t.Fatal(err)
+	}
+	for termination, want := range map[string]GameRecord{
+		"resignation": {ConcessionResult: "black_wins", ConcessionTermination: "resignation", ConcessionPly: 2},
+		"agreement":   {ConcessionResult: "draw", ConcessionTermination: "agreement", ConcessionPly: 0},
+		"checkmate":   {},
+	} {
+		records, err := store.QueryGames(ids[termination], "")
+		if err != nil || len(records) != 1 {
+			t.Fatalf("%s: %v, %d records", termination, err, len(records))
+		}
+		got := records[0]
+		if got.ConcessionResult != want.ConcessionResult ||
+			got.ConcessionTermination != want.ConcessionTermination ||
+			got.ConcessionPly != want.ConcessionPly ||
+			(want.ConcessionResult != "") != (got.ConcessionTimeUTC != nil) {
+			t.Errorf("%s: concession %q %q %d %v", termination, got.ConcessionResult,
+				got.ConcessionTermination, got.ConcessionPly, got.ConcessionTimeUTC)
+		}
+	}
+
+	// Only a resignation or an agreed draw is a concession, and its columns
+	// are set together.
+	for name, query := range map[string]string{
+		"checkmate concession": `UPDATE games SET concession_result = 'white_wins',
+			concession_termination = 'checkmate', concession_ply = 1, concession_time_utc = now()
+			WHERE game_id = $1`,
+		"partial concession": `UPDATE games SET concession_result = 'draw' WHERE game_id = $1`,
+	} {
+		if _, err := store.db.Exec(query, ids["checkmate"]); err == nil {
+			t.Errorf("games_concession_check accepted a %s", name)
+		}
+	}
+}
+
 func TestWriteForDeletedGameIsDroppedWithoutDegrading(t *testing.T) {
 	store := openStore(t, pgtest.DSN(t))
 	missing := make(chan string, 4)
