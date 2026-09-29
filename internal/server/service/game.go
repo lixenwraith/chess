@@ -17,6 +17,10 @@ var (
 	ErrGameNotFound = errors.New("game not found")
 	ErrGameChanged  = errors.New("game changed while move was being validated")
 	ErrSlotOwner    = errors.New("player slot is owned by another user")
+	ErrGameOver     = errors.New("game is over")
+	ErrNotHuman     = errors.New("that side is played by the computer")
+	ErrNoDrawOffer  = errors.New("no draw offer from the opponent")
+	ErrOfferLimit   = errors.New("one draw offer per move: make a move before offering again")
 )
 
 type MoveCommit struct {
@@ -27,8 +31,22 @@ type MoveCommit struct {
 	MoveUCI       string
 	NewFEN        string
 	State         core.State
+	Termination   core.Termination // how State was reached when terminal
 	Result        *game.MoveResult
 	At            time.Time
+}
+
+// EndCommit ends a game without a move: a resignation or a draw by
+// agreement. Color is the side acting (resigning or accepting); an
+// authenticated actor claims it if unclaimed, as a first move would.
+type EndCommit struct {
+	ExpectedFEN string
+	Color       core.Color
+	ActorUserID string
+	State       core.State
+	Termination core.Termination
+	// OfferFrom, when set, requires that side's draw offer to still stand.
+	OfferFrom core.Color
 }
 
 // CreateGame registers a new game with pre-constructed players
@@ -38,6 +56,7 @@ func (s *Service) CreateGame(
 	initialFEN string,
 	startingTurn core.Color,
 	initialState core.State,
+	termination core.Termination,
 ) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -48,16 +67,15 @@ func (s *Service) CreateGame(
 
 	// Check computer game limit
 	hasComputer := whitePlayer.Type == core.PlayerComputer || blackPlayer.Type == core.PlayerComputer
-	if hasComputer {
-		if s.computerGames.Load() >= MaxComputerGames {
-			return fmt.Errorf("computer game limit reached (%d/%d)", s.computerGames.Load(), MaxComputerGames)
+	if hasComputer && !initialState.IsTerminal() {
+		if active := s.activeComputerGamesLocked(); active >= MaxComputerGames {
+			return fmt.Errorf("computer game limit reached (%d/%d)", active, MaxComputerGames)
 		}
-		s.computerGames.Add(1)
 	}
 
 	now := time.Now().UTC()
 	g := game.New(initialFEN, whitePlayer, blackPlayer, startingTurn)
-	g.SetStateAt(initialState, now)
+	g.SetOutcome(initialState, termination, now)
 	s.games[id] = g
 
 	// Persist if storage enabled
@@ -77,6 +95,7 @@ func (s *Service) CreateGame(
 			BlackSearchTime: blackPlayer.SearchTime,
 			BlackClaimedBy:  blackPlayer.ClaimedBy,
 			Result:          result,
+			Termination:     string(g.Termination()),
 			StartTimeUTC:    now,
 			EndTimeUTC:      g.EndTimeUTC(),
 		}
@@ -106,8 +125,10 @@ func (s *Service) UpdatePlayers(gameID string, whitePlayer, blackPlayer *core.Pl
 	oldBlack := g.GetPlayer(core.ColorBlack)
 	oldHasComputer := g.HasComputerPlayer()
 	newHasComputer := whitePlayer.Type == core.PlayerComputer || blackPlayer.Type == core.PlayerComputer
-	if !oldHasComputer && newHasComputer && s.computerGames.Load() >= MaxComputerGames {
-		return fmt.Errorf("computer game limit reached (%d/%d)", s.computerGames.Load(), MaxComputerGames)
+	if !oldHasComputer && newHasComputer && !g.State().IsTerminal() {
+		if active := s.activeComputerGamesLocked(); active >= MaxComputerGames {
+			return fmt.Errorf("computer game limit reached (%d/%d)", active, MaxComputerGames)
+		}
 	}
 
 	// Player configuration is mutable, but historical user association is not.
@@ -127,14 +148,8 @@ func (s *Service) UpdatePlayers(gameID string, whitePlayer, blackPlayer *core.Pl
 	}
 
 	g.UpdatePlayers(whitePlayer, blackPlayer)
+	g.ClearDrawOffers() // an offer made to the previous opponent lapses
 	g.Touch(time.Now().UTC())
-	if oldHasComputer != newHasComputer {
-		if newHasComputer {
-			s.computerGames.Add(1)
-		} else {
-			s.computerGames.Add(-1)
-		}
-	}
 	if s.store != nil {
 		err := s.store.RecordPlayers(gameID, playerRecord(whitePlayer), playerRecord(blackPlayer))
 		if err != nil {
@@ -239,8 +254,11 @@ func (s *Service) ApplyMoveWithState(gameID string, commit MoveCommit) error {
 			return err
 		}
 	}
+	if commit.State.IsTerminal() && !commit.Termination.ValidFor(commit.State) {
+		return fmt.Errorf("termination %q cannot produce %s", commit.Termination, commit.State)
+	}
 	g.AddSnapshot(commit.NewFEN, commit.MoveUCI, core.OppositeColor(currentTurn))
-	g.SetStateAt(commit.State, at)
+	g.SetOutcome(commit.State, commit.Termination, at)
 	if commit.Result != nil {
 		g.SetLastResult(commit.Result)
 	}
@@ -252,10 +270,11 @@ func (s *Service) ApplyMoveWithState(gameID string, commit MoveCommit) error {
 				GameID: gameID, MoveNumber: len(g.Moves()), MoveUCI: commit.MoveUCI,
 				FENAfterMove: commit.NewFEN, PlayerColor: currentTurn.String(), MoveTimeUTC: at,
 			},
-			ClaimColor: currentTurn.String(),
-			ClaimedBy:  claimUserID,
-			Result:     result,
-			EndTimeUTC: g.EndTimeUTC(),
+			ClaimColor:  currentTurn.String(),
+			ClaimedBy:   claimUserID,
+			Result:      result,
+			Termination: string(g.Termination()),
+			EndTimeUTC:  g.EndTimeUTC(),
 		}
 		if claimUserID == "" {
 			persistence.ClaimColor = ""
@@ -277,8 +296,9 @@ func (s *Service) ApplyMoveWithState(gameID string, commit MoveCommit) error {
 	return nil
 }
 
-// UpdateGameState sets the game's end state (checkmate, stalemate, etc)
-func (s *Service) UpdateGameState(gameID string, state core.State) error {
+// UpdateGameState sets an operational state (pending, stuck) or a terminal
+// state found without a move, such as an engine reporting no legal move.
+func (s *Service) UpdateGameState(gameID string, state core.State, termination core.Termination) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -286,13 +306,18 @@ func (s *Service) UpdateGameState(gameID string, state core.State) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrGameNotFound, gameID)
 	}
+	if state.IsTerminal() && !termination.ValidFor(state) {
+		return fmt.Errorf("termination %q cannot produce %s", termination, state)
+	}
 
 	previousState := g.State()
 	now := time.Now().UTC()
-	g.SetStateAt(state, now)
+	g.SetOutcome(state, termination, now)
 	if s.store != nil && state.IsTerminal() && !previousState.IsTerminal() {
 		result, _ := state.Result()
-		if err := s.store.RecordGameResult(gameID, result, now); err != nil {
+		if err := s.store.RecordGameEnd(storage.GameEnd{
+			GameID: gameID, Result: result, Termination: string(termination), EndTimeUTC: now,
+		}); err != nil {
 			slog.Error("failed to queue game result persistence", "game_id", gameID, "error", err)
 		}
 	}
@@ -300,6 +325,168 @@ func (s *Service) UpdateGameState(gameID string, state core.State) error {
 	s.waiter.NotifyGame(gameID, len(g.Moves()), state)
 	slog.Debug("game state updated", "game_id", gameID, "from", previousState.String(), "to", state.String())
 
+	return nil
+}
+
+// EndGame applies a resignation or an agreed draw. It re-checks, under the
+// service lock, everything the processor validated: the game is unfinished
+// and unchanged, the acting side is human and the actor may play it, and an
+// accepted offer still stands.
+func (s *Service) EndGame(gameID string, commit EndCommit) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	g, ok := s.games[gameID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrGameNotFound, gameID)
+	}
+	if g.State().IsTerminal() {
+		return ErrGameOver
+	}
+	if !commit.State.IsTerminal() || !commit.Termination.ValidFor(commit.State) {
+		return fmt.Errorf("termination %q cannot produce %s", commit.Termination, commit.State)
+	}
+	if g.CurrentFEN() != commit.ExpectedFEN {
+		return ErrGameChanged
+	}
+	if commit.OfferFrom != 0 && g.DrawOffer() != commit.OfferFrom {
+		return ErrNoDrawOffer
+	}
+	claimUserID, err := actorClaim(g, commit.Color, commit.ActorUserID)
+	if err != nil {
+		return err
+	}
+
+	now := time.Now().UTC()
+	if claimUserID != "" {
+		if err := g.ClaimSlot(commit.Color, claimUserID); err != nil {
+			return err
+		}
+	}
+	g.SetOutcome(commit.State, commit.Termination, now)
+
+	if s.store != nil {
+		result, _ := commit.State.Result()
+		end := storage.GameEnd{
+			GameID: gameID, Result: result, Termination: string(commit.Termination), EndTimeUTC: now,
+		}
+		if claimUserID != "" {
+			end.ClaimColor, end.ClaimedBy = commit.Color.String(), claimUserID
+		}
+		if err := s.store.RecordGameEnd(end); err != nil {
+			slog.Error("failed to queue game end persistence", "game_id", gameID, "error", err)
+		}
+	}
+	s.waiter.NotifyGame(gameID, len(g.Moves()), commit.State)
+	slog.Debug("game ended without a move", "game_id", gameID,
+		"state", commit.State.String(), "termination", commit.Termination, "side", commit.Color.String())
+	return nil
+}
+
+// actorClaim authorizes actor to act for color and returns the user ID to
+// record as the slot's claim, empty when nothing is to be claimed.
+func actorClaim(g *game.Game, color core.Color, actor string) (string, error) {
+	player := g.GetPlayer(color)
+	if player == nil {
+		return "", errors.New("invalid color")
+	}
+	if player.Type != core.PlayerHuman {
+		return "", ErrNotHuman
+	}
+	owner := g.GetSlotOwner(color)
+	switch {
+	case owner != "" && owner != actor:
+		return "", ErrSlotOwner
+	case owner == "" && actor != "":
+		return actor, nil
+	}
+	return "", nil
+}
+
+// OfferDraw records color's offer for a human opponent to answer. Repeating
+// a standing offer is a no-op; a new offer needs a move since the last one.
+func (s *Service) OfferDraw(gameID string, color core.Color, actor, expectedFEN string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	g, err := s.drawTarget(gameID, color, actor, expectedFEN)
+	if err != nil {
+		return err
+	}
+	if g.DrawOffer() == color {
+		return nil
+	}
+	if err := offerAllowed(g, color); err != nil {
+		return err
+	}
+	g.OfferDraw(color)
+	g.Touch(time.Now().UTC())
+	s.waiter.NotifyAll(gameID)
+	slog.Debug("draw offered", "game_id", gameID, "side", color.String())
+	return nil
+}
+
+// RecordDeclinedOffer counts an offer the computer answered at once against
+// color's one-offer-per-move allowance.
+func (s *Service) RecordDeclinedOffer(gameID string, color core.Color, actor, expectedFEN string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	g, err := s.drawTarget(gameID, color, actor, expectedFEN)
+	if err != nil {
+		return err
+	}
+	if err := offerAllowed(g, color); err != nil {
+		return err
+	}
+	g.RecordDeclinedOffer(color)
+	g.Touch(time.Now().UTC())
+	slog.Debug("draw offer declined by the computer", "game_id", gameID, "side", color.String())
+	return nil
+}
+
+// DeclineDraw lets color turn down the opponent's standing offer.
+func (s *Service) DeclineDraw(gameID string, color core.Color, actor string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	g, err := s.drawTarget(gameID, color, actor, "")
+	if err != nil {
+		return err
+	}
+	if g.DrawOffer() != core.OppositeColor(color) {
+		return ErrNoDrawOffer
+	}
+	g.DeclineDraw()
+	g.Touch(time.Now().UTC())
+	s.waiter.NotifyAll(gameID)
+	slog.Debug("draw declined", "game_id", gameID, "side", color.String())
+	return nil
+}
+
+// drawTarget returns an unfinished game whose side color the actor may play,
+// optionally still at expectedFEN. Caller holds s.mu.
+func (s *Service) drawTarget(gameID string, color core.Color, actor, expectedFEN string) (*game.Game, error) {
+	g, ok := s.games[gameID]
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrGameNotFound, gameID)
+	}
+	if g.State().IsTerminal() {
+		return nil, ErrGameOver
+	}
+	if g.State() != core.StateOngoing || (expectedFEN != "" && g.CurrentFEN() != expectedFEN) {
+		return nil, ErrGameChanged
+	}
+	if _, err := actorClaim(g, color, actor); err != nil {
+		return nil, err
+	}
+	return g, nil
+}
+
+func offerAllowed(g *game.Game, color core.Color) error {
+	if last := g.LastOfferPly(color); last >= 0 && g.Plies() < last+2 {
+		return ErrOfferLimit
+	}
 	return nil
 }
 
@@ -349,11 +536,6 @@ func (s *Service) DeleteGame(gameID string) error {
 	}
 	if g.State() == core.StatePending {
 		return errors.New("cannot delete game while computer move is in progress")
-	}
-
-	// Decrement computer game count if applicable
-	if g.HasComputerPlayer() {
-		s.computerGames.Add(-1)
 	}
 
 	// Remove from wait registry

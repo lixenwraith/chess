@@ -78,7 +78,7 @@ yes_no() {
 [ "$(id -u)" -eq 0 ] || die "run as root"
 [ "$(uname -s)" = FreeBSD ] || die "this script targets FreeBSD"
 [ -f "$CHESS_BINARY" ] || die "CHESS_BINARY not found: $CHESS_BINARY"
-for f in "$repo/deploy/postgresql/setup.sql" "$here/rc.d/chessd" "$here/chess-backup.sh"; do
+for f in "$repo/deploy/postgresql/setup.sql" "$here/rc.d/chessd" "$repo/deploy/postgresql/chess-backup.sh"; do
 	[ -f "$f" ] || die "missing $f; run from a complete repository copy"
 done
 yes_no SPLIT_PRIVILEGES "$SPLIT_PRIVILEGES"
@@ -182,12 +182,20 @@ fi
 
 bindir=$(dirname "$bin")
 [ -d "$bindir" ] || install -d -o root -g wheel -m 0755 "$bindir"
-if [ -f "$bin" ] && ! cmp -s "$CHESS_BINARY" "$bin"; then
-	log "keeping the previous binary as $bin.prev"
-	cp -p "$bin" "$bin.prev"
-fi
 # Root-owned: the service account cannot replace its own executable file.
-install -o root -g wheel -m 0555 "$CHESS_BINARY" "$bin"
+if [ -f "$bin" ] && cmp -s "$CHESS_BINARY" "$bin"; then
+	# Same content, possibly the installed file itself (a rerun with
+	# CHESS_BINARY pointing at it): install(1) refuses to copy a file onto
+	# itself, so only normalize ownership and mode.
+	chown root:wheel "$bin"
+	chmod 0555 "$bin"
+else
+	if [ -f "$bin" ]; then
+		log "keeping the previous binary as $bin.prev"
+		cp -p "$bin" "$bin.prev"
+	fi
+	install -o root -g wheel -m 0555 "$CHESS_BINARY" "$bin"
+fi
 
 [ -d "$RC_DIR" ] || install -d "$RC_DIR"
 if [ -f "$RC_DIR/chessd" ] && ! cmp -s "$here/rc.d/chessd" "$RC_DIR/chessd"; then
@@ -247,7 +255,7 @@ fi
 if [ "$ENABLE_BACKUP" = yes ]; then
 	# Nightly pg_dump at 03:30 as postgres, keeping 14 days.
 	[ -d "$SBIN_DIR" ] || install -d "$SBIN_DIR"
-	install -o root -g wheel -m 0555 "$here/chess-backup.sh" "$SBIN_DIR/chess-backup"
+	install -o root -g wheel -m 0555 "$repo/deploy/postgresql/chess-backup.sh" "$SBIN_DIR/chess-backup"
 	[ -d "$BACKUP_DIR" ] || install -d -o postgres -g postgres -m 0700 "$BACKUP_DIR"
 	[ -d "$CRON_DIR" ] || install -d "$CRON_DIR"
 	printf '%s\n' \

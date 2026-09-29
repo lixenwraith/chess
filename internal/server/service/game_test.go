@@ -19,7 +19,7 @@ func TestMoveCommitClaimsSlotPersistsResultAndRejectsStalePosition(t *testing.T)
 	white := core.NewPlayer(core.PlayerConfig{Type: core.PlayerHuman}, core.ColorWhite)
 	black := core.NewPlayer(core.PlayerConfig{Type: core.PlayerHuman}, core.ColorBlack)
 	if err := svc.CreateGame(
-		gameID, white, black, "initial", core.ColorWhite, core.StateOngoing,
+		gameID, white, black, "initial", core.ColorWhite, core.StateOngoing, core.TermNone,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +27,7 @@ func TestMoveCommitClaimsSlotPersistsResultAndRejectsStalePosition(t *testing.T)
 	ended := time.Date(2026, 9, 7, 2, 3, 4, 0, time.UTC)
 	commit := MoveCommit{
 		ExpectedFEN: "initial", ExpectedState: core.StateOngoing, ExpectedTurn: core.ColorWhite,
-		ActorUserID: userID, MoveUCI: "e2e4", NewFEN: "after", State: core.StateWhiteWins, At: ended,
+		ActorUserID: userID, MoveUCI: "e2e4", NewFEN: "after", State: core.StateWhiteWins, Termination: core.TermCheckmate, At: ended,
 		Result: &game.MoveResult{Move: "e2e4", PlayerColor: core.ColorWhite, GameState: core.StateWhiteWins},
 	}
 	if err := svc.ApplyMoveWithState(gameID, commit); err != nil {
@@ -60,13 +60,13 @@ func TestUndoClearsDurableTerminalResult(t *testing.T) {
 	white := core.NewPlayer(core.PlayerConfig{Type: core.PlayerHuman}, core.ColorWhite)
 	black := core.NewPlayer(core.PlayerConfig{Type: core.PlayerHuman}, core.ColorBlack)
 	if err := svc.CreateGame(
-		gameID, white, black, "initial", core.ColorWhite, core.StateOngoing,
+		gameID, white, black, "initial", core.ColorWhite, core.StateOngoing, core.TermNone,
 	); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.ApplyMoveWithState(gameID, MoveCommit{
 		ExpectedFEN: "initial", ExpectedState: core.StateOngoing, ExpectedTurn: core.ColorWhite,
-		MoveUCI: "e2e4", NewFEN: "after", State: core.StateStalemate,
+		MoveUCI: "e2e4", NewFEN: "after", State: core.StateStalemate, Termination: core.TermStalemate,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestPlayerReconfigurationPreservesClaimAndPersistsConfiguration(t *testing.
 	white.ClaimedBy = userID
 	black := core.NewPlayer(core.PlayerConfig{Type: core.PlayerHuman}, core.ColorBlack)
 	if err := svc.CreateGame(
-		gameID, white, black, "initial", core.ColorWhite, core.StateOngoing,
+		gameID, white, black, "initial", core.ColorWhite, core.StateOngoing, core.TermNone,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestCleanupEvictsOnlyMemoryCopyOfTerminalGame(t *testing.T) {
 	white := core.NewPlayer(core.PlayerConfig{Type: core.PlayerHuman}, core.ColorWhite)
 	black := core.NewPlayer(core.PlayerConfig{Type: core.PlayerHuman}, core.ColorBlack)
 	if err := svc.CreateGame(
-		gameID, white, black, "terminal", core.ColorWhite, core.StateStalemate,
+		gameID, white, black, "terminal", core.ColorWhite, core.StateStalemate, core.TermStalemate,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestCleanupRemovesIdleAnonymousGamesButKeepsClaimedOnes(t *testing.T) {
 			white.ID, white.ClaimedBy = claimant, claimant
 		}
 		black := core.NewPlayer(core.PlayerConfig{Type: core.PlayerHuman}, core.ColorBlack)
-		if err := svc.CreateGame(gameID, white, black, "initial", core.ColorWhite, core.StateOngoing); err != nil {
+		if err := svc.CreateGame(gameID, white, black, "initial", core.ColorWhite, core.StateOngoing, core.TermNone); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -202,7 +202,16 @@ func TestCleanupRemovesIdleAnonymousGamesButKeepsClaimedOnes(t *testing.T) {
 
 func newPersistentTestService(t *testing.T) *Service {
 	t.Helper()
-	store, err := storage.NewStore(pgtest.DSN(t))
+	svc, _ := newPersistentTestServiceDSN(t)
+	return svc
+}
+
+// newPersistentTestServiceDSN also returns the DSN of the test schema, for
+// tests that change rows behind the service's back.
+func newPersistentTestServiceDSN(t *testing.T) (*Service, string) {
+	t.Helper()
+	dsn := pgtest.DSN(t)
+	store, err := storage.NewStore(dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,5 +227,5 @@ func newPersistentTestService(t *testing.T) *Service {
 			t.Errorf("shutdown: %v", err)
 		}
 	})
-	return svc
+	return svc, dsn
 }

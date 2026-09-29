@@ -1,0 +1,12 @@
+# Runs chess-backup.service nightly; a missed run (machine off) runs at boot.
+
+[Unit]
+Description=Nightly chess database backup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

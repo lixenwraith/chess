@@ -57,7 +57,14 @@ schema is current, which lets a DML-only runtime role start the server.
 ### Supporting Modules
 - **Engine** (`internal/engine`): UCI protocol wrapper for Stockfish process communication
 - **Game** (`internal/game`): Game state with snapshot history and player associations
-- **Board** (`internal/board`): FEN parsing and ASCII generation
+- **Rules core** (`internal/server/chess`): dependency-free position model,
+  legal move generation, SAN, PGN, ASCII board, dead-material and repetition
+  detection. It validates custom starting FENs, applies the automatic draw
+  rules, and shadows the engine on every live move; Stockfish stays the
+  authority for move legality, mate, and stalemate
+- **Replay** (`internal/server/replay`): works on stored game records: SAN
+  for every ply, PGN assembly with the termination comment, and verification
+  against the rules (used by `db verify`, `db pgn`, and the integrity sweep)
 - **Core** (`internal/core`): Shared types, API models, error constants
 - **CLI** (`cmd/chess-server/cli`): Database and user management commands
 - **Client** (`cmd/chess-client-cli`, `internal/client`): Interactive debugging client with command registry, session management, and colored terminal output
@@ -84,19 +91,41 @@ schema is current, which lets a DML-only runtime role start the server.
 1. HTTP handler receives `POST /games/{id}/moves` with move
 2. Optional JWT validation for user verification
 3. Creates MakeMoveCommand, calls `processor.Execute()`
-4. Processor validates move via locked validation engine
-5. If legal, gets new FEN from engine
-6. Calls `service.ApplyMoveWithState()` with the FEN, turn, and state that were validated
-7. Service rejects a stale concurrent commit or atomically updates the move, optional slot claim, and terminal result
-8. The same logical mutation is queued as one database transaction
-9. Returns GameResponse
+4. The rules core checks the move first only to name a missing promotion
+   piece; the processor then validates it via the locked validation engine
+5. If legal, gets new FEN from engine, and logs a warning if the rules core
+   disagrees on legality or the resulting position
+6. If neither mate nor stalemate, the processor applies the automatic draw
+   rules to the new position and the game's position history: dead material,
+   threefold repetition, fifty-move rule
+7. Calls `service.ApplyMoveWithState()` with the FEN, turn, state, and
+   termination that were decided
+8. Service rejects a stale concurrent commit or atomically updates the move,
+   optional slot claim, terminal result, and termination; a move by the
+   recipient of a draw offer declines it
+9. The same logical mutation is queued as one database transaction
+10. Returns GameResponse
+
+### Resignation and Draw Agreement
+1. `POST /games/{id}/resign` or `/draw` with an optional side
+2. The processor resolves the acting side (requested, else the caller's one
+   claimed side, else the only human side) and checks slot ownership
+3. A draw offer to a human is recorded on the game and wakes long-polls; an
+   offer to a computer is answered at once from a short full-strength search
+   on the validation engine (after twenty plies; accept when level or worse
+   for the computer); one offer per own move
+4. `service.EndGame()` re-checks under its lock that the game is unfinished,
+   unchanged, and the accepted offer still stands, then sets result and
+   termination, claims an empty acting side for an authenticated caller, and
+   queues one transaction
 
 ### Computer Move
 1. HTTP handler receives `POST /games/{id}/moves` with `{"move": "cccc"}`
 2. Processor sets game state to `pending`
 3. Submits task to EngineQueue, returns immediately
 4. Worker goroutine calculates move with dedicated Stockfish instance
-5. Callback updates game state via service
+5. Callback re-validates the move on the validation engine, applies the
+   automatic draw rules, and commits via the service
 6. Client polls for completion
 7. Returns GameResponse
 
@@ -115,8 +144,10 @@ schema is current, which lets a DML-only runtime role start the server.
 2. Storage queues a barrier after all previously accepted gameplay writes
 3. The writer reaches the barrier only after those transactions finish
 4. Storage reads the game row and ordered moves in one REPEATABLE READ transaction
-5. The API returns the initial FEN plus every UCI move and resulting FEN
-6. This path works after terminal-memory eviction or a server restart
+5. The replay package derives SAN for each ply from the stored FEN before it
+6. The API returns the initial FEN plus every UCI move, its SAN, and the
+   resulting FEN, with a strong ETag; `/pgn` renders the same read as PGN
+7. This path works after terminal-memory eviction or a server restart
 
 ## Persistence Flow
 
@@ -206,7 +237,7 @@ Commands encapsulate operations with type, arguments, and optional user ID for a
 ### Player Configuration
 Players identified by UUID (authenticated users) or generated IDs (anonymous), configured with type (human/computer), skill level, and search time.
 
-### Storage Schema (version 1)
+### Storage Schema (version 2)
 ```sql
 users (
     user_id uuid PRIMARY KEY,
@@ -236,6 +267,9 @@ games (
     black_... (same columns),
     start_time_utc timestamptz NOT NULL,
     result text,                            -- white_wins, black_wins, draw, stalemate
+    termination text,                       -- how: checkmate, resignation, stalemate,
+                                            -- insufficient_material, threefold_repetition,
+                                            -- fifty_move_rule, agreement
     end_time_utc timestamptz,               -- set exactly when result is set
 )
 
@@ -250,7 +284,9 @@ moves (
 )
 ```
 
-`schema_version` records the applied version. Indexes cover session expiry,
+`schema_version` records the applied version; version 2 added
+`termination`, constrained to be set exactly with `result` and to fit it
+(wins by checkmate or resignation, draws by a draw rule or agreement). Indexes cover session expiry,
 each claim column ordered by `(start_time_utc DESC, game_id DESC)` for the game
 listing, and the start time of unclaimed games for the anonymous-game purge.
 Claims and player IDs deliberately have no foreign key to `users`: history
@@ -264,9 +300,18 @@ outlives deleted accounts, and the name snapshot keeps it readable.
   hourly cleanup evicts idle games first, then queues the delete through the
   ordered writer while excluding every game still loaded, so no live game can
   lose its row.
+- A write whose game row was deleted by hand fails only that game: the
+  writer drops it and the service unloads the game, instead of degrading
+  storage for everyone.
+- With `-db-cleanup report|delete`, the hourly cleanup also runs an integrity
+  sweep: loaded games without a row, games with missing plies, stored games
+  failing verification (200 per run, resuming in ID order), games whose
+  registered players were all deleted, and accounts with unusable password
+  hashes. `report` only logs; `delete` unloads and removes them.
 
-See [`deploy/postgresql`](../deploy/postgresql) for provisioning and
-[deployment.md](./deployment.md) for the jail service.
+See [`deploy/postgresql`](../deploy/postgresql) for provisioning,
+[deployment.md](./deployment.md) for the jail service, and
+[deployment-linux.md](./deployment-linux.md) for systemd.
 
 ## Security Architecture
 

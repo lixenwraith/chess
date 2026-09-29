@@ -11,6 +11,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"chess/internal/server/replay"
 	"chess/internal/server/storage"
 
 	"github.com/google/uuid"
@@ -23,7 +24,7 @@ const dsnEnv = "CHESS_DSN"
 // Run is the entry point for the CLI mini-app
 func Run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("subcommand required: init, delete, query, user")
+		return fmt.Errorf("subcommand required: init, delete, query, pgn, verify, user")
 	}
 
 	switch args[0] {
@@ -33,6 +34,10 @@ func Run(args []string) error {
 		return runDelete(args[1:])
 	case "query":
 		return runQuery(args[1:])
+	case "pgn":
+		return runPGN(args[1:])
+	case "verify":
+		return runVerify(args[1:])
 	case "user":
 		if len(args) < 2 {
 			return fmt.Errorf("user subcommand required: add, delete, set-password, set-hash, set-email, set-username, list")
@@ -173,6 +178,100 @@ func runQuery(args []string) error {
 
 	fmt.Printf("\nFound %d game(s)\n", len(games))
 	return nil
+}
+
+// runPGN prints a stored game as PGN. The game may be named by the 8-digit
+// prefix that `db query` prints.
+func runPGN(args []string) error {
+	fs, dsn := newFlagSet("pgn")
+	gameID := fs.String("gameId", "", "Game ID or unique prefix of at least 8 hex digits (required)")
+	ply := fs.Int("ply", -1, "Export only the first N plies (default: all)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *gameID == "" {
+		return errors.New("-gameId is required")
+	}
+
+	store, err := openStore(*dsn, true)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	id, err := resolveGameID(store, *gameID)
+	if err != nil {
+		return err
+	}
+	record, moves, err := store.GetGameHistory(id)
+	if err != nil {
+		return fmt.Errorf("load game %s: %w", id, err)
+	}
+	pgn, err := replay.BuildPGN(record, moves, *ply)
+	if err != nil {
+		return err
+	}
+	fmt.Print(pgn.Text)
+	return nil
+}
+
+// runVerify checks stored games against the rules (see replay.Verify) and
+// fails when any problem is found.
+func runVerify(args []string) error {
+	fs, dsn := newFlagSet("verify")
+	gameID := fs.String("gameId", "", "Verify one game (ID or unique prefix); default all")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	store, err := openStore(*dsn, true)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	var ids []string
+	if *gameID != "" {
+		id, err := resolveGameID(store, *gameID)
+		if err != nil {
+			return err
+		}
+		ids = []string{id}
+	} else {
+		games, err := store.QueryGames("", "")
+		if err != nil {
+			return fmt.Errorf("list games: %w", err)
+		}
+		for _, g := range games {
+			ids = append(ids, g.GameID)
+		}
+	}
+
+	plies, problems := 0, 0
+	for _, id := range ids {
+		record, moves, err := store.GetGameHistory(id)
+		if err != nil {
+			return fmt.Errorf("load game %s: %w", id, err)
+		}
+		plies += len(moves)
+		for _, problem := range replay.Verify(record, moves) {
+			fmt.Printf("%s: %s\n", id, problem)
+			problems++
+		}
+	}
+	fmt.Printf("Verified %d game(s), %d plies: %d problem(s)\n", len(ids), plies, problems)
+	if problems > 0 {
+		return fmt.Errorf("%d problem(s) found", problems)
+	}
+	return nil
+}
+
+func resolveGameID(store *storage.Store, prefix string) (string, error) {
+	id, err := store.ResolveGameID(prefix)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("no game matches %q", prefix)
+	}
+	return id, err
 }
 
 func formatStoredPlayer(playerID, claimedBy string, playerType int) string {

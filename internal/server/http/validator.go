@@ -36,6 +36,10 @@ func validationMiddleware(c *fiber.Ctx) error {
 		requestType = &core.MoveRequest{}
 	case strings.HasSuffix(path, "/undo") && method == fiber.MethodPost:
 		requestType = &core.UndoRequest{}
+	case strings.HasSuffix(path, "/resign") && method == fiber.MethodPost:
+		requestType = &core.ResignRequest{}
+	case strings.HasSuffix(path, "/draw") && method == fiber.MethodPost:
+		requestType = &core.DrawRequest{}
 	default:
 		return c.Next() // No validation for unknown endpoints
 	}
