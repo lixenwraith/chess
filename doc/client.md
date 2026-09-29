@@ -14,11 +14,11 @@ The chess client is an interactive command-line debugging tool for the chess ser
 
 ## Replay Foundation
 
-The Go API client exposes `GetGameHistory(gameID)` and
-`GetMyGames(limit, offset)`, including durable result, timestamps, player
-claims, move count, ordered UCI moves, and FEN after every move. Interactive
-`games`/`replay` commands and terminal playback controls are intentionally
-deferred to the dedicated replay iteration; see [Replay Implementation Tasks](./todo.md).
+The Go API client exposes `GetGameHistory(gameID)`, `GetGamePGN(gameID, ply)`,
+and `GetMyGames(limit, cursor)`, including durable result, timestamps, player
+claims, move count, ordered UCI and SAN moves, and FEN after every move. The
+`games` and `pgn` commands use them; step-by-step `replay` controls are still
+planned, see [Replay Implementation Tasks](./todo.md).
 
 ## Building
 ```bash
@@ -104,10 +104,12 @@ chess > join a1b2c3d4-e5f6-7890-1234-567890abcdef
 ```
 
 #### `move` / `m`
-Make chess move in UCI notation.
+Make chess move in UCI notation. Castling is the king's move (`e1g1`); a
+promotion appends the piece letter (`q`, `r`, `b`, or `n`).
 ```
 chess > move e2e4
 chess > move e7e5
+chess > move g7g8q
 ```
 
 #### `computer` / `c`
@@ -146,6 +148,44 @@ chess > delete <gameId>      # Unload specific live game
 Long-poll for game updates (waits up to 30 seconds).
 ```
 chess > poll
+```
+
+#### `resign`
+Resign the current game. The side may be omitted when you play one human side
+(or claimed one); name it in a hot-seat game.
+```
+chess > resign
+chess > resign b
+```
+
+#### `draw`
+Offer (the default), accept, or decline a draw. A computer answers an offer
+at once; a human opponent sees the offer in their next response, and it
+lapses if they move instead of answering.
+```
+chess > draw              # offer
+chess > draw accept b
+chess > draw decline w
+```
+
+Game outcomes print with how they were reached, e.g. `DRAW by threefold
+repetition.` or `Black wins by resignation.`; a pending offer is shown as
+`White offers a draw`.
+
+#### `games` / `g`
+List your stored games, newest first, 20 per page (requires login). The
+result column is the PGN token (`1-0`, `0-1`, `1/2-1/2`, `*`).
+```
+chess > games        # Newest games
+chess > games more   # Next page
+```
+
+#### `pgn`
+Print a stored game as PGN (SAN movetext, standard tags).
+```
+chess > pgn                  # Current game, every ply
+chess > pgn 10               # Current game, first 10 plies
+chess > pgn <gameId> [ply]   # Another game
 ```
 
 ### Debug Commands

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"chess/internal/server/board"
+	"chess/internal/server/chess"
 	"chess/internal/server/core"
 )
 
@@ -29,9 +29,13 @@ type Game struct {
 	snapshots    []Snapshot
 	players      map[core.Color]*core.Player
 	state        core.State
+	termination  core.Termination
 	lastResult   *MoveResult
 	endTimeUTC   *time.Time
 	lastActivity time.Time // last create, move, undo, reconfiguration, or state change
+	drawOffer    core.Color
+	// offerPly[c] is the ply count when color c last offered a draw, or -1.
+	offerPly map[core.Color]int
 }
 
 // View is an immutable copy of the state needed by processors and transports.
@@ -42,11 +46,16 @@ type View struct {
 	InitialFEN    string
 	NextTurnColor core.Color
 	Moves         []string
-	WhitePlayer   *core.Player
-	BlackPlayer   *core.Player
-	State         core.State
-	LastResult    *MoveResult
-	EndTimeUTC    *time.Time
+	// FENs holds the position before the first move and after every move.
+	FENs        []string
+	WhitePlayer *core.Player
+	BlackPlayer *core.Player
+	State       core.State
+	Termination core.Termination
+	DrawOffer   core.Color // color whose offer awaits an answer; 0 when none
+	OfferPly    map[core.Color]int
+	LastResult  *MoveResult
+	EndTimeUTC  *time.Time
 }
 
 func New(initialFEN string, whitePlayer, blackPlayer *core.Player, startingTurnColor core.Color) *Game {
@@ -77,7 +86,8 @@ func New(initialFEN string, whitePlayer, blackPlayer *core.Player, startingTurnC
 			core.ColorWhite: &whiteCopy,
 			core.ColorBlack: &blackCopy,
 		},
-		state: core.StateOngoing,
+		state:    core.StateOngoing,
+		offerPly: map[core.Color]int{core.ColorWhite: -1, core.ColorBlack: -1},
 	}
 }
 
@@ -87,7 +97,17 @@ func (g *Game) View() View {
 		InitialFEN:    g.InitialFEN(),
 		NextTurnColor: g.NextTurnColor(),
 		Moves:         g.Moves(),
+		FENs:          make([]string, len(g.snapshots)),
 		State:         g.state,
+		Termination:   g.termination,
+		DrawOffer:     g.drawOffer,
+		OfferPly: map[core.Color]int{
+			core.ColorWhite: g.offerPly[core.ColorWhite],
+			core.ColorBlack: g.offerPly[core.ColorBlack],
+		},
+	}
+	for i, snapshot := range g.snapshots {
+		view.FENs[i] = snapshot.FEN
 	}
 	if player := g.players[core.ColorWhite]; player != nil {
 		copy := *player
@@ -156,7 +176,13 @@ func (g *Game) GetPlayer(color core.Color) *core.Player {
 	return g.players[color]
 }
 
+// AddSnapshot appends a move. It answers a draw offer made by the other
+// side: moving instead of accepting declines it. An offer from the mover
+// stands.
 func (g *Game) AddSnapshot(fen string, move string, nextTurnColor core.Color) {
+	if g.drawOffer == nextTurnColor {
+		g.drawOffer = 0
+	}
 	// Get the player ID for the next turn
 	nextPlayer := g.players[nextTurnColor]
 	g.snapshots = append(g.snapshots, Snapshot{
@@ -195,9 +221,56 @@ func (g *Game) UndoMoves(count int) error {
 
 	g.snapshots = g.snapshots[:len(g.snapshots)-count]
 	g.state = core.StateOngoing // Reset game state when undoing
-	g.lastResult = nil          // Clear last result
+	g.termination = core.TermNone
+	g.lastResult = nil // Clear last result
 	g.endTimeUTC = nil
+	g.ClearDrawOffers()
 	return nil
+}
+
+// Plies returns the number of moves played.
+func (g *Game) Plies() int {
+	return len(g.snapshots) - 1
+}
+
+// DrawOffer returns the color whose draw offer is pending, or 0.
+func (g *Game) DrawOffer() core.Color {
+	return g.drawOffer
+}
+
+// OfferDraw records a pending offer from color and the ply it was made at.
+func (g *Game) OfferDraw(color core.Color) {
+	g.drawOffer = color
+	g.offerPly[color] = g.Plies()
+}
+
+// LastOfferPly returns the ply count at color's last draw offer, or -1.
+func (g *Game) LastOfferPly(color core.Color) int {
+	return g.offerPly[color]
+}
+
+// RecordDeclinedOffer counts an offer that was answered at once (by a
+// computer) against its maker's one-offer-per-move allowance.
+func (g *Game) RecordDeclinedOffer(color core.Color) {
+	g.offerPly[color] = g.Plies()
+}
+
+// DeclineDraw withdraws a pending offer.
+func (g *Game) DeclineDraw() {
+	g.drawOffer = 0
+}
+
+// ClearDrawOffers forgets the pending offer and the per-move allowance, as
+// after an undo or a player change.
+func (g *Game) ClearDrawOffers() {
+	g.drawOffer = 0
+	g.offerPly[core.ColorWhite] = -1
+	g.offerPly[core.ColorBlack] = -1
+}
+
+// Termination returns how a finished game ended.
+func (g *Game) Termination() core.Termination {
+	return g.termination
 }
 
 func (g *Game) Moves() []string {
@@ -212,6 +285,18 @@ func (g *Game) Moves() []string {
 
 func (g *Game) State() core.State {
 	return g.state
+}
+
+// SetOutcome sets the state and how it was reached; a non-terminal state
+// clears the termination.
+func (g *Game) SetOutcome(s core.State, termination core.Termination, at time.Time) {
+	g.SetStateAt(s, at)
+	if s.IsTerminal() {
+		g.termination = termination
+		g.drawOffer = 0
+	} else {
+		g.termination = core.TermNone
+	}
 }
 
 func (g *Game) SetStateAt(s core.State, at time.Time) {
@@ -261,7 +346,7 @@ func (g *Game) InitialFEN() string {
 	if len(g.snapshots) > 0 {
 		return g.snapshots[0].FEN
 	}
-	return board.StartingFEN
+	return chess.StartFEN
 }
 
 // ClaimSlot claims a player slot for a user

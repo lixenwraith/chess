@@ -33,7 +33,7 @@ func (r *Registry) registerGameCommands() {
 		Name:        "move",
 		ShortName:   "m",
 		Description: "Make a move",
-		Usage:       "move <uci-move>",
+		Usage:       "move <uci-move>  (e2e4; castling e1g1; promotion e7e8q, e7e8n)",
 		Handler:     moveHandler,
 	})
 
@@ -75,6 +75,38 @@ func (r *Registry) registerGameCommands() {
 		Description: "Unload a live game (history retained)",
 		Usage:       "delete [gameId]",
 		Handler:     deleteGameHandler,
+	})
+
+	r.Register(&Command{
+		Name:        "resign",
+		ShortName:   "",
+		Description: "Resign the current game",
+		Usage:       "resign [w|b]  (side optional when you play one human side)",
+		Handler:     resignHandler,
+	})
+
+	r.Register(&Command{
+		Name:        "draw",
+		ShortName:   "",
+		Description: "Offer, accept, or decline a draw",
+		Usage:       "draw [offer|accept|decline] [w|b]  (default: offer)",
+		Handler:     drawHandler,
+	})
+
+	r.Register(&Command{
+		Name:        "games",
+		ShortName:   "g",
+		Description: "List your stored games, newest first (login required)",
+		Usage:       "games [more]",
+		Handler:     gamesHandler,
+	})
+
+	r.Register(&Command{
+		Name:        "pgn",
+		ShortName:   "",
+		Description: "Print a stored game as PGN",
+		Usage:       "pgn [gameId] [ply]  (default: current game, all plies)",
+		Handler:     pgnHandler,
 	})
 
 	r.Register(&Command{
@@ -238,7 +270,7 @@ func joinGameHandler(s *session.Session, args []string) error {
 // hint stays local since it only applies after a successful human move.
 func moveHandler(s *session.Session, args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: move <uci-move>")
+		return fmt.Errorf("usage: move <uci-move> (promotion appends q, r, b, or n: e7e8q)")
 	}
 
 	gameID := s.CurrentGame
@@ -345,21 +377,101 @@ func computerMoveHandler(s *session.Session, args []string) error {
 	return nil
 }
 
-// printOutcome reports terminal or error states using the server's actual
-// State.String() values ("white wins"/"black wins", not "checkmate").
+// printOutcome reports terminal or error states using the server's State
+// ("white wins", "draw", ...) and Termination ("checkmate", "resignation",
+// "threefold_repetition", ...) values, and a pending draw offer.
 func printOutcome(resp *api.GameResponse) {
 	switch resp.State {
-	case "white wins":
-		display.Println(display.Green, "\nCHECKMATE! White wins!")
-	case "black wins":
-		display.Println(display.Green, "\nCHECKMATE! Black wins!")
+	case "white wins", "black wins":
+		winner := "White"
+		if resp.State == "black wins" {
+			winner = "Black"
+		}
+		if resp.Termination == "resignation" {
+			display.Println(display.Green, "\n%s wins by resignation.", winner)
+		} else {
+			display.Println(display.Green, "\nCHECKMATE! %s wins!", winner)
+		}
 	case "stalemate":
 		display.Println(display.Yellow, "\nSTALEMATE! Game drawn.")
 	case "draw":
-		display.Println(display.Yellow, "\nDRAW! Game drawn.")
+		display.Println(display.Yellow, "\nDRAW %s.", drawReason(resp.Termination))
 	case "stuck":
 		display.Println(display.Yellow, "\nEngine error — 'undo' to recover, or 'new'/'delete'.")
 	}
+	if resp.DrawOffer != "" {
+		offerer := "White"
+		if resp.DrawOffer == "b" {
+			offerer = "Black"
+		}
+		display.Println(display.Magenta, "%s offers a draw: 'draw accept' or 'draw decline'.", offerer)
+	}
+}
+
+func drawReason(termination string) string {
+	switch termination {
+	case "insufficient_material":
+		return "by insufficient material"
+	case "threefold_repetition":
+		return "by threefold repetition"
+	case "fifty_move_rule":
+		return "by the fifty-move rule"
+	case "agreement":
+		return "by agreement"
+	}
+	return ""
+}
+
+// resignHandler resigns the current game for the given side, or the side the
+// server infers (the one human side, or the one the user claimed).
+func resignHandler(s *session.Session, args []string) error {
+	gameID := s.CurrentGame
+	if gameID == "" {
+		return fmt.Errorf("no current game, use 'new' or 'join <gameId>'")
+	}
+	color := ""
+	if len(args) > 0 {
+		color = args[0]
+	}
+	resp, err := s.Client.Resign(gameID, color)
+	if err != nil {
+		return err
+	}
+	s.LastMoveCount = len(resp.Moves)
+	s.CurrentGameState = resp
+	printOutcome(resp)
+	return nil
+}
+
+// drawHandler offers (default), accepts, or declines a draw.
+func drawHandler(s *session.Session, args []string) error {
+	gameID := s.CurrentGame
+	if gameID == "" {
+		return fmt.Errorf("no current game, use 'new' or 'join <gameId>'")
+	}
+	action, color := "offer", ""
+	for _, arg := range args {
+		switch arg {
+		case "offer", "accept", "decline":
+			action = arg
+		default:
+			color = arg
+		}
+	}
+	resp, err := s.Client.Draw(gameID, action, color)
+	if err != nil {
+		return err
+	}
+	s.LastMoveCount = len(resp.Moves)
+	s.CurrentGameState = resp
+	switch resp.DrawOutcome {
+	case "offered":
+		display.Println(display.Green, "Draw offered; it stands until answered or the opponent moves.")
+	case "declined":
+		display.Println(display.Yellow, "Draw declined.")
+	}
+	printOutcome(resp)
+	return nil
 }
 
 func undoHandler(s *session.Session, args []string) error {
@@ -528,5 +640,74 @@ func pollHandler(s *session.Session, args []string) error {
 		display.Println(display.Yellow, "No updates (timeout)")
 	}
 
+	return nil
+}
+
+// gamesHandler lists the stored games of the signed-in user, 20 at a time;
+// "games more" continues from the previous page.
+func gamesHandler(s *session.Session, args []string) error {
+	if s.AuthToken == "" {
+		return fmt.Errorf("login required")
+	}
+	cursor := ""
+	if len(args) > 0 && args[0] == "more" {
+		if s.GamesCursor == "" {
+			return fmt.Errorf("no further games; run 'games' to list from the newest")
+		}
+		cursor = s.GamesCursor
+	}
+
+	resp, err := s.Client.GetMyGames(20, cursor)
+	if err != nil {
+		return err
+	}
+	s.GamesCursor = resp.NextCursor
+	if len(resp.Games) == 0 {
+		display.Println(display.Yellow, "No stored games")
+		return nil
+	}
+
+	fmt.Printf("\n%-36s  %-20s  %-20s  %-7s  %5s  %s\n", "Game ID", "White", "Black", "Result", "Plies", "Started (UTC)")
+	for _, g := range resp.Games {
+		fmt.Printf("%-36s  %-20s  %-20s  %-7s  %5d  %s\n", g.GameID,
+			playerLabel(g.Players.White), playerLabel(g.Players.Black), g.PGNResult, g.MoveCount,
+			g.StartTimeUTC.UTC().Format("2006-01-02 15:04"))
+	}
+	if resp.NextCursor != "" {
+		display.Println(display.Cyan, "\nMore games: games more")
+	}
+	return nil
+}
+
+func playerLabel(p api.PlayerInfo) string {
+	switch {
+	case p.Type == 2:
+		return fmt.Sprintf("Stockfish L%d", p.Level)
+	case p.Name != "":
+		return p.Name
+	}
+	return "anonymous"
+}
+
+// pgnHandler prints the stored game as PGN: the current game unless an ID is
+// given, and every ply unless a count is given.
+func pgnHandler(s *session.Session, args []string) error {
+	gameID, ply := s.CurrentGame, -1
+	for _, arg := range args {
+		if n, err := strconv.Atoi(arg); err == nil && n >= 0 {
+			ply = n
+		} else {
+			gameID = arg
+		}
+	}
+	if gameID == "" {
+		return fmt.Errorf("no current game, use 'join <gameId>' or 'pgn <gameId>'")
+	}
+	text, err := s.Client.GetGamePGN(gameID, ply)
+	if err != nil {
+		return err
+	}
+	fmt.Println()
+	fmt.Print(text)
 	return nil
 }

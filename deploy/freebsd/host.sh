@@ -9,7 +9,7 @@
 # restart stops every service in the jail, including a running chess-server.
 #
 # After setup-jail.sh has run inside the jail, add the location block from
-# deploy/freebsd/nginx-chess.conf to the host nginx configuration, then
+# deploy/nginx-chess.conf to the host nginx configuration, then
 #   nginx -t && service nginx reload
 set -eu
 PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin

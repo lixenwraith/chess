@@ -116,7 +116,7 @@ func TestReplayPersistenceIsAtomicAndReadAfterWriteConsistent(t *testing.T) {
 			FENAfterMove: "after-e2e4", PlayerColor: "w", MoveTimeUTC: ended,
 		},
 		ClaimColor: "w", ClaimedBy: user,
-		Result: "white_wins", EndTimeUTC: &ended,
+		Result: "white_wins", Termination: "checkmate", EndTimeUTC: &ended,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestReplayPersistenceIsAtomicAndReadAfterWriteConsistent(t *testing.T) {
 		t.Fatalf("moves = %+v", moves)
 	}
 
-	owned, err := store.QueryGamesForUser(user, 10, 0)
+	owned, err := store.QueryGamesForUser(user, UserGamesQuery{Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestReplayPersistenceIsAtomicAndReadAfterWriteConsistent(t *testing.T) {
 	if record.Result != "" || record.EndTimeUTC != nil || len(moves) != 0 {
 		t.Fatalf("rewind left stale replay data: game=%+v moves=%+v", record, moves)
 	}
-	owned, err = store.QueryGamesForUser(user, 10, 0)
+	owned, err = store.QueryGamesForUser(user, UserGamesQuery{Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,6 +188,8 @@ func TestUserGamesArePagedNewestFirstWithoutDuplicates(t *testing.T) {
 			record.WhiteClaimedBy = user
 		case 1:
 			record.BlackClaimedBy = user
+			end := record.StartTimeUTC.Add(time.Minute)
+			record.Result, record.Termination, record.EndTimeUTC = "white_wins", "resignation", &end
 		case 2:
 			record.WhiteClaimedBy, record.BlackClaimedBy = user, user // self-play
 		case 3:
@@ -205,7 +207,7 @@ func TestUserGamesArePagedNewestFirstWithoutDuplicates(t *testing.T) {
 
 	var got []string
 	for offset := 0; ; offset += 2 {
-		page, err := store.QueryGamesForUser(user, 2, offset)
+		page, err := store.QueryGamesForUser(user, UserGamesQuery{Limit: 2, Offset: offset})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -219,8 +221,87 @@ func TestUserGamesArePagedNewestFirstWithoutDuplicates(t *testing.T) {
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("user games = %v, want %v", got, want)
 	}
-	if games, err := store.QueryGamesForUser("not-a-uuid", 10, 0); err != nil || len(games) != 0 {
+	if games, err := store.QueryGamesForUser("not-a-uuid", UserGamesQuery{Limit: 10}); err != nil || len(games) != 0 {
 		t.Fatalf("malformed user ID = %v, %v; want empty", games, err)
+	}
+
+	// Keyset pages match offset pages, and a game inserted at the head
+	// between pages does not shift the next page.
+	got = nil
+	var after *GameCursor
+	for page := 0; ; page++ {
+		games, err := store.QueryGamesForUser(user, UserGamesQuery{Limit: 2, After: after})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, game := range games {
+			got = append(got, game.GameID)
+		}
+		if len(games) < 2 {
+			break
+		}
+		last := games[len(games)-1]
+		after = &GameCursor{StartTimeUTC: last.StartTimeUTC, GameID: last.GameID}
+		if page == 0 {
+			newer := GameRecord{
+				GameID: uuid.NewString(), InitialFEN: "initial",
+				WhitePlayerID: user, WhiteType: 1, WhiteClaimedBy: user,
+				BlackPlayerID: uuid.NewString(), BlackType: 1,
+				StartTimeUTC: base.Add(time.Hour),
+			}
+			if err := store.RecordNewGame(newer); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("keyset pages = %v, want %v", got, want)
+	}
+
+	count := func(q UserGamesQuery) int {
+		t.Helper()
+		q.Limit = 50
+		games, err := store.QueryGamesForUser(user, q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(games)
+	}
+	// Five games claimed by user: indexes 0, 1, 2, 4 and the newer one.
+	for _, tc := range []struct {
+		q    UserGamesQuery
+		want int
+	}{
+		{UserGamesQuery{}, 5},
+		{UserGamesQuery{Color: "w"}, 3},
+		{UserGamesQuery{Color: "b"}, 3},
+		{UserGamesQuery{Status: "finished"}, 1},
+		{UserGamesQuery{Status: "ongoing"}, 4},
+		{UserGamesQuery{Color: "b", Status: "finished"}, 1},
+	} {
+		if got := count(tc.q); got != tc.want {
+			t.Errorf("QueryGamesForUser(%+v) = %d games, want %d", tc.q, got, tc.want)
+		}
+	}
+	for _, bad := range []UserGamesQuery{
+		{Limit: 1, Color: "x"}, {Limit: 1, Status: "x"},
+		{Limit: 1, Offset: 1, After: &GameCursor{GameID: user}},
+		{Limit: 1, After: &GameCursor{GameID: "x"}},
+	} {
+		if _, err := store.QueryGamesForUser(user, bad); err == nil {
+			t.Errorf("QueryGamesForUser(%+v) succeeded", bad)
+		}
+	}
+
+	prefix := want[0][:8]
+	if id, err := store.ResolveGameID(prefix); err != nil || id != want[0] {
+		t.Errorf("ResolveGameID(%s) = %q, %v; want %s", prefix, id, err, want[0])
+	}
+	if _, err := store.ResolveGameID("0000000"); err == nil {
+		t.Error("ResolveGameID accepted a 7-digit prefix")
+	}
+	if _, err := store.ResolveGameID("ffffffff-ffff"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("ResolveGameID(unknown) error = %v, want sql.ErrNoRows", err)
 	}
 }
 
@@ -241,6 +322,14 @@ func TestQueryPlansUsePurposeBuiltIndexes(t *testing.T) {
 				ORDER BY g.start_time_utc DESC, g.game_id DESC LIMIT 50`,
 			args: []any{userID},
 			want: []string{"games_white_claimed_idx", "games_black_claimed_idx"},
+		},
+		{
+			name: "keyset page of one color uses its claim index",
+			query: `SELECT game_id FROM games g
+				WHERE g.white_claimed_by = $1 AND (g.start_time_utc, g.game_id) < ($2, $3)
+				ORDER BY g.start_time_utc DESC, g.game_id DESC LIMIT 50`,
+			args: []any{userID, time.Now(), userID},
+			want: []string{"games_white_claimed_idx"},
 		},
 		{
 			name: "last move probe uses the moves primary key",
@@ -621,6 +710,12 @@ func TestAnonymousGamesArePurgedAfterInactivity(t *testing.T) {
 			BlackPlayerID: uuid.NewString(), BlackType: 2, BlackLevel: 5, BlackSearchTime: 100,
 			StartTimeUTC: started, Result: result, EndTimeUTC: ended,
 		}
+		switch result {
+		case "stalemate":
+			record.Termination = "stalemate"
+		case "white_wins", "black_wins":
+			record.Termination = "checkmate"
+		}
 		if err := store.RecordNewGame(record); err != nil {
 			t.Fatal(err)
 		}
@@ -791,4 +886,133 @@ func explain(t *testing.T, db *sql.DB, query string, args ...any) string {
 		t.Fatal(err)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func TestMigrationV2BackfillsTermination(t *testing.T) {
+	dsn := pgtest.DSN(t)
+	store, err := NewStore(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	// A version 1 database with one game of each stored result.
+	if _, err := store.db.Exec(migrations[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`INSERT INTO schema_version (version) VALUES (1)`); err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]string{}
+	for _, result := range []string{"", "white_wins", "black_wins", "stalemate", "draw"} {
+		id := uuid.NewString()
+		ids[result] = id
+		var end any
+		if result != "" {
+			end = time.Now()
+		}
+		if _, err := store.db.Exec(`INSERT INTO games (game_id, initial_fen, white_player_id, white_type,
+			black_player_id, black_type, result, end_time_utc) VALUES ($1, 'initial', $2, 1, $3, 1, $4, $5)`,
+			id, uuid.NewString(), uuid.NewString(), nullableString(result), end); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := store.InitDB(); err != nil {
+		t.Fatal(err)
+	}
+	for result, want := range map[string]string{
+		"": "", "white_wins": "checkmate", "black_wins": "checkmate", "stalemate": "stalemate", "draw": "agreement",
+	} {
+		var termination sql.NullString
+		if err := store.db.QueryRow(`SELECT termination FROM games WHERE game_id = $1`, ids[result]).
+			Scan(&termination); err != nil {
+			t.Fatal(err)
+		}
+		if termination.String != want {
+			t.Errorf("result %q: termination %q, want %q", result, termination.String, want)
+		}
+	}
+
+	// The constraints reject a termination that cannot produce the result.
+	if _, err := store.db.Exec(`UPDATE games SET termination = 'agreement' WHERE game_id = $1`,
+		ids["white_wins"]); err == nil {
+		t.Error("games_termination_check accepted a win by agreement")
+	}
+	if _, err := store.db.Exec(`UPDATE games SET termination = 'resignation' WHERE game_id = $1`,
+		ids[""]); err == nil {
+		t.Error("games_result_termination_check accepted a termination without a result")
+	}
+}
+
+func TestWriteForDeletedGameIsDroppedWithoutDegrading(t *testing.T) {
+	store := openStore(t, pgtest.DSN(t))
+	missing := make(chan string, 4)
+	store.SetGameMissingHandler(func(gameID string) { missing <- gameID })
+
+	gameID := uuid.NewString()
+	if err := store.RecordNewGame(GameRecord{
+		GameID: gameID, InitialFEN: "initial",
+		WhitePlayerID: uuid.NewString(), WhiteType: 1,
+		BlackPlayerID: uuid.NewString(), BlackType: 1,
+		StartTimeUTC: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// An administrator deletes the game while the server still holds it.
+	if _, err := store.db.Exec(`DELETE FROM games WHERE game_id = $1`, gameID); err != nil {
+		t.Fatal(err)
+	}
+
+	ended := time.Now()
+	writes := []func() error{
+		func() error {
+			return store.RecordMove(MovePersistence{Move: MoveRecord{
+				GameID: gameID, MoveNumber: 1, MoveUCI: "e2e4", FENAfterMove: "after",
+				PlayerColor: "w", MoveTimeUTC: ended,
+			}})
+		},
+		func() error {
+			return store.RecordGameEnd(GameEnd{
+				GameID: gameID, Result: "black_wins", Termination: "resignation", EndTimeUTC: ended,
+			})
+		},
+		func() error { return store.RewindGame(gameID, 0) },
+	}
+	for i, write := range writes {
+		if err := write(); err != nil {
+			t.Fatalf("write %d not queued: %v", i, err)
+		}
+		if err := store.Flush(context.Background()); err != nil {
+			t.Fatalf("write %d degraded storage: %v", i, err)
+		}
+		select {
+		case id := <-missing:
+			if id != gameID {
+				t.Fatalf("handler got %s, want %s", id, gameID)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("write %d: missing-game handler not called", i)
+		}
+	}
+	if !store.IsHealthy() {
+		t.Fatal("storage degraded by writes for a deleted game")
+	}
+
+	// Other games are unaffected.
+	other := uuid.NewString()
+	if err := store.RecordNewGame(GameRecord{
+		GameID: other, InitialFEN: "initial",
+		WhitePlayerID: uuid.NewString(), WhiteType: 1,
+		BlackPlayerID: uuid.NewString(), BlackType: 1,
+		StartTimeUTC: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.GetGameHistory(other); err != nil {
+		t.Fatalf("other game: %v", err)
+	}
 }

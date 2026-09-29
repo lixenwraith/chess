@@ -126,6 +126,10 @@ func (r *Registry) helpHandler(s *session.Session, args []string) error {
 		{"state", "s", ""},
 		{"delete", "d", ""},
 		{"poll", "p", ""},
+		{"resign", "", ""},
+		{"draw", "", ""},
+		{"games", "g", ""},
+		{"pgn", "", ""},
 	}
 
 	authCommands := []cmdInfo{

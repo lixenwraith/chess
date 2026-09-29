@@ -52,6 +52,7 @@ func main() {
 		anonTTL     = flag.Duration("anonymous-game-ttl", service.AnonymousGameTTL, "How long games without a registered player survive after their last activity, in memory and in the database (0 keeps them)")
 		maxUsers    = flag.Int("max-users", service.DefaultMaxUsers, "Accounts at which public registration closes (0 = no limit; CLI-created accounts are not limited)")
 		jwtFile     = flag.String("jwt-secret-file", "", "File holding a stable JWT signing key, mode 0600, at least 32 bytes (default $CHESS_JWT_SECRET_FILE)")
+		dbCleanup   = flag.String("db-cleanup", "off", "Hourly integrity sweep of stored games and accounts: off, report (log only), or delete")
 
 		// Web UI server flags
 		serve     = flag.Bool("serve", false, "Enable web UI server")
@@ -151,6 +152,14 @@ func main() {
 	svc.SetFinishedGameTTL(*finishedTTL)
 	svc.SetAnonymousGameTTL(*anonTTL)
 	svc.SetMaxUsers(*maxUsers)
+	integrity, err := service.ParseIntegrityMode(*dbCleanup)
+	if err != nil {
+		log.Fatalf("Invalid -db-cleanup: %v", err)
+	}
+	if integrity != service.IntegrityOff && store == nil {
+		log.Fatalf("-db-cleanup %s requires a database (-dsn)", integrity)
+	}
+	svc.SetIntegrityMode(integrity)
 
 	// Start cleanup job for expired users/sessions
 	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())

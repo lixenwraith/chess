@@ -38,6 +38,7 @@ type GameRecord struct {
 	BlackClaimedBy  string
 	BlackName       string
 	Result          string
+	Termination     string // how Result was reached; empty while unfinished
 	StartTimeUTC    time.Time
 	EndTimeUTC      *time.Time
 }
@@ -63,17 +64,18 @@ type MoveRecord struct {
 // MovePersistence groups changes caused by one accepted move so the move,
 // first-move slot claim, and terminal result commit in one transaction.
 type MovePersistence struct {
-	Move       MoveRecord
-	ClaimColor string
-	ClaimedBy  string
-	Result     string
-	EndTimeUTC *time.Time
+	Move        MoveRecord
+	ClaimColor  string
+	ClaimedBy   string
+	Result      string
+	Termination string
+	EndTimeUTC  *time.Time
 }
 
 // schemaVersion is the newest schema this binary understands. Migrations are
 // applied in order inside one transaction; PostgreSQL DDL is transactional, so
 // a failed upgrade leaves the previous version intact.
-const schemaVersion = 1
+const schemaVersion = 2
 
 // migrations[v-1] upgrades the schema from version v-1 to v. Never edit a
 // released migration; append a new one.
@@ -160,6 +162,25 @@ CREATE INDEX games_white_claimed_idx ON games (white_claimed_by, start_time_utc 
 	WHERE white_claimed_by IS NOT NULL;
 CREATE INDEX games_black_claimed_idx ON games (black_claimed_by, start_time_utc DESC, game_id DESC)
 	WHERE black_claimed_by IS NOT NULL;
+`,
+
+	// v2: how a result was reached. Results before v2 came only from
+	// checkmate and stalemate (the server never produced "draw"), so the
+	// backfill is exact for them; a hand-written draw becomes "agreement".
+	`
+ALTER TABLE games ADD COLUMN termination text;
+UPDATE games SET termination = CASE result
+	WHEN 'stalemate' THEN 'stalemate'
+	WHEN 'draw' THEN 'agreement'
+	ELSE 'checkmate' END
+WHERE result IS NOT NULL;
+ALTER TABLE games
+	ADD CONSTRAINT games_result_termination_check CHECK ((result IS NULL) = (termination IS NULL)),
+	ADD CONSTRAINT games_termination_check CHECK (
+		(result IN ('white_wins', 'black_wins') AND termination IN ('checkmate', 'resignation'))
+		OR (result = 'stalemate' AND termination = 'stalemate')
+		OR (result = 'draw' AND termination IN
+			('insufficient_material', 'threefold_repetition', 'fifty_move_rule', 'agreement')));
 `,
 }
 

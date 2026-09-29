@@ -17,6 +17,8 @@ let gameState = {
     username: null,
     authBusy: false,
     newGameBusy: false,
+    termination: '',
+    actionBusy: false, // a draw or resign request is in flight
 };
 
 // Chess piece Unicode: all black pieces for better fill, white pawn due to inability to override emoji variant display
@@ -55,6 +57,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     document.getElementById('new-game-btn').addEventListener('click', showNewGameModal);
     document.getElementById('undo-btn').addEventListener('click', undoMoves);
+    document.getElementById('draw-btn').addEventListener('click', offerDraw);
+    document.getElementById('resign-btn').addEventListener('click', showResignModal);
+    document.getElementById('resign-confirm-btn').addEventListener('click', resignGame);
+    document.getElementById('resign-cancel-btn').addEventListener('click', hideResignModal);
     document.getElementById('start-game-btn').addEventListener('click', startNewGame);
     document.getElementById('cancel-btn').addEventListener('click', hideNewGameModal);
     document.getElementById('copy-history').addEventListener('click', copyHistory);
@@ -79,6 +85,13 @@ document.getElementById('login-submit-btn').addEventListener('click', handleLogi
 document.getElementById('register-submit-btn').addEventListener('click', handleRegister);
 document.getElementById('auth-cancel-btn').addEventListener('click', hideAuthModal);
 document.getElementById('auth-cancel-btn-2').addEventListener('click', hideAuthModal);
+document.querySelectorAll('.promotion-choice').forEach(btn => {
+    btn.addEventListener('click', () => closePromotion(btn.dataset.piece));
+});
+document.getElementById('promotion-cancel-btn').addEventListener('click', () => closePromotion(null));
+document.getElementById('promotion-overlay').addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) closePromotion(null);
+});
 
 
 // Auth functions
@@ -435,24 +448,20 @@ function updateTurnIndicator(state, turn) {
         switch(state) {
             case 'white wins':
                 status = 'white-wins';
-                tooltipText = 'White Wins';
                 break;
             case 'black wins':
                 status = 'black-wins';
-                tooltipText = 'Black Wins';
                 break;
             case 'stalemate':
                 status = 'stalemate';
-                tooltipText = 'Stalemate';
                 break;
             case 'draw':
                 status = 'draw';
-                tooltipText = 'Draw';
                 break;
             default:
                 status = 'unknown';
-                tooltipText = 'Game Over';
         }
+        tooltipText = describeResult(state, gameState.termination);
     } else if (state === 'stuck') {
         status = 'degraded';
         tooltipText = 'Engine Error';
@@ -705,6 +714,7 @@ function renderBoardFromFEN(fen) {
         s.textContent = '';
         s.classList.remove('white-piece', 'black-piece', 'mated-king');
         delete s.dataset.pieceColor;
+        delete s.dataset.pieceType;
     });
 
     let rank = 7, file = 0;
@@ -765,10 +775,63 @@ function flashSquare(element, success = true) {
     setTimeout(() => element.classList.remove(className), 400);
 }
 
+// A pawn stepping or capturing onto its last rank needs a promotion piece; UCI
+// requires the suffix (e7e8q), and the server rejects the bare move. Other
+// moves go to the server as-is, which remains the only legality check.
+function isPromotionMove(from, to) {
+    const fromEl = document.querySelector(`[data-square="${from}"]`);
+    if (!fromEl || fromEl.dataset.pieceType !== 'p') return false;
+    const fileDelta = Math.abs(from.charCodeAt(0) - to.charCodeAt(0));
+    if (fileDelta > 1) return false;
+    const color = fromEl.dataset.pieceColor;
+    return (color === 'w' && from[1] === '7' && to[1] === '8') ||
+        (color === 'b' && from[1] === '2' && to[1] === '1');
+}
+
+// Resolves with 'q', 'r', 'b' or 'n', or null when cancelled. Keyboard: Q/R/B/N
+// pick, Escape cancels, Tab/Enter work on the focused button.
+let promotionResolve = null;
+
+function choosePromotion(color) {
+    const overlay = document.getElementById('promotion-overlay');
+    const choices = overlay.querySelector('.promotion-choices');
+    choices.classList.toggle('white', color === 'w');
+    choices.classList.toggle('black', color !== 'w');
+    overlay.classList.add('show');
+    document.addEventListener('keydown', handlePromotionKeydown);
+    overlay.querySelector('.promotion-choice[data-piece="q"]').focus();
+    return new Promise(resolve => { promotionResolve = resolve; });
+}
+
+function closePromotion(piece) {
+    document.getElementById('promotion-overlay').classList.remove('show');
+    document.removeEventListener('keydown', handlePromotionKeydown);
+    const resolve = promotionResolve;
+    promotionResolve = null;
+    if (resolve) resolve(piece);
+}
+
+function handlePromotionKeydown(e) {
+    const key = e.key.toLowerCase();
+    if (key === 'q' || key === 'r' || key === 'b' || key === 'n') {
+        e.preventDefault();
+        closePromotion(key);
+    } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closePromotion(null);
+    }
+}
+
 async function handleHumanMove(from, to) {
-    const move = from + to;
+    let move = from + to;
     const fromEl = document.querySelector(`[data-square="${from}"]`);
     const toEl = document.querySelector(`[data-square="${to}"]`);
+
+    if (isPromotionMove(from, to)) {
+        const piece = await choosePromotion(fromEl.dataset.pieceColor);
+        if (!piece) return;
+        move += piece;
+    }
 
     try {
         const response = await authFetch(`${gameState.apiUrl}/api/games/${gameState.gameId}/moves`, {
@@ -892,11 +955,13 @@ async function pollOnce() {
 function lockBoard() {
     gameState.isLocked = true;
     updateTurnIndicator('pending', gameState.turn);
+    updateGameControls();
 }
 
 function unlockBoard() {
     gameState.isLocked = false;
-    updateTurnIndicator('', gameState.turn);
+    updateTurnIndicator(gameState.state, gameState.turn);
+    updateGameControls();
 }
 
 async function undoMoves() {
@@ -993,9 +1058,11 @@ function renderMoveHistory(moves) {
 }
 
 function updateGameDisplay(game) {
+    const wasOver = isGameOver(gameState.state);
     gameState.fen = game.fen;
     gameState.turn = game.turn;
     gameState.state = game.state;
+    gameState.termination = game.termination || '';
     gameState.moveList = game.moves || [];
 
     renderBoardFromFEN(game.fen);
@@ -1026,9 +1093,130 @@ function updateGameDisplay(game) {
     // Update undo button
     document.getElementById('undo-btn').disabled = !game.moves || game.moves.length < 2;
 
-    // Handle checkmate visually
-    if (game.state === 'white wins' || game.state === 'black wins') {
+    // Mark the mated king; a resignation leaves the board as it was
+    if ((game.state === 'white wins' || game.state === 'black wins') &&
+        (game.termination || 'checkmate') === 'checkmate') {
         markMatedKing(game);
+    }
+
+    updateGameControls();
+    if (!wasOver && isGameOver(game.state)) {
+        flashMessage(describeResult(game.state, game.termination), 'info', 4000);
+    }
+}
+
+// describeResult names a finished game's outcome and how it was reached.
+function describeResult(state, termination) {
+    const winner = state === 'white wins' ? 'White' : 'Black';
+    const loser = state === 'white wins' ? 'Black' : 'White';
+    switch (termination) {
+        case 'resignation': return `${loser} resigned — ${winner} wins`;
+        case 'stalemate': return 'Stalemate — draw';
+        case 'insufficient_material': return 'Draw — insufficient material';
+        case 'threefold_repetition': return 'Draw — threefold repetition';
+        case 'fifty_move_rule': return 'Draw — fifty-move rule';
+        case 'agreement': return 'Draw agreed';
+    }
+    switch (state) {
+        case 'white wins':
+        case 'black wins': return `Checkmate — ${winner} wins`;
+        case 'stalemate': return 'Stalemate — draw';
+        case 'draw': return 'Draw';
+    }
+    return 'Game over';
+}
+
+// Draw needs a game in progress with the board free; resigning only needs
+// an unfinished game (also while the computer thinks or the engine is stuck).
+function updateGameControls() {
+    const hasGame = !!gameState.gameId;
+    const idle = !gameState.isLocked && !gameState.actionBusy;
+    document.getElementById('draw-btn').disabled =
+        !hasGame || !idle || gameState.state !== 'ongoing';
+    document.getElementById('resign-btn').disabled =
+        !hasGame || gameState.actionBusy || isGameOver(gameState.state);
+}
+
+function playerColor() {
+    return gameState.isPlayerWhite ? 'w' : 'b';
+}
+
+async function offerDraw() {
+    if (gameState.actionBusy || !gameState.gameId) return;
+    gameState.actionBusy = true;
+    updateGameControls();
+    try {
+        const response = await authFetch(`${gameState.apiUrl}/api/games/${gameState.gameId}/draw`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'offer', color: playerColor() })
+        });
+        if (response.status === 409) {
+            flashErrorMessage('Make a move before offering again', 2500);
+            return;
+        }
+        if (!response.ok) {
+            handleApiError('offer draw', null, response);
+            return;
+        }
+        const game = await response.json();
+        if (game.drawOutcome === 'declined') {
+            flashMessage('Draw declined', 'info', 2500);
+        }
+        gameState.actionBusy = false;
+        updateGameDisplay(game);
+    } catch (error) {
+        handleApiError('offer draw', error);
+    } finally {
+        gameState.actionBusy = false;
+        updateGameControls();
+    }
+}
+
+function showResignModal() {
+    if (!gameState.gameId || isGameOver(gameState.state)) return;
+    document.getElementById('resign-overlay').classList.add('show');
+    document.addEventListener('keydown', handleResignKeydown);
+    document.getElementById('resign-cancel-btn').focus();
+}
+
+function hideResignModal() {
+    document.getElementById('resign-overlay').classList.remove('show');
+    document.removeEventListener('keydown', handleResignKeydown);
+}
+
+function handleResignKeydown(e) {
+    if (e.key === 'Escape') {
+        e.preventDefault();
+        hideResignModal();
+    }
+}
+
+async function resignGame() {
+    hideResignModal();
+    if (gameState.actionBusy || !gameState.gameId) return;
+    gameState.actionBusy = true;
+    updateGameControls();
+    try {
+        const response = await authFetch(`${gameState.apiUrl}/api/games/${gameState.gameId}/resign`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ color: playerColor() })
+        });
+        if (!response.ok) {
+            handleApiError('resign', null, response);
+            return;
+        }
+        const game = await response.json();
+        stopPolling(); // a computer move in flight is discarded by the server
+        gameState.isLocked = false;
+        gameState.actionBusy = false;
+        updateGameDisplay(game);
+    } catch (error) {
+        handleApiError('resign', error);
+    } finally {
+        gameState.actionBusy = false;
+        updateGameControls();
     }
 }
 
@@ -1135,10 +1323,17 @@ function handleApiError(action, error, response = null) {
 }
 
 function flashErrorMessage(message, duration = 1500) {
+    flashMessage(message, 'error', duration);
+}
+
+// Shows a short message over the status indicators; 'info' for results and
+// answers to draw offers, 'error' for failures.
+function flashMessage(message, type = 'error', duration = 1500) {
     const overlay = document.getElementById('error-flash-overlay');
     const messageEl = document.getElementById('error-flash-message');
 
     messageEl.textContent = message;
+    messageEl.classList.toggle('info', type === 'info');
     overlay.classList.add('show');
 
     // Clear any pending timeout to avoid premature hide on rapid calls

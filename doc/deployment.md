@@ -16,6 +16,9 @@ browser ──TLS──▶ host nginx ──HTTP──▶ jail: chessd (chess-se
 
 `host#` runs on the Bastille host as root; `jail#` runs inside the jail as root
 (`bastille console <jail>`). Addresses in this document are placeholders.
+For a native Linux install with systemd, see
+[deployment-linux.md](deployment-linux.md); database recipes are in
+[database.md](database.md).
 
 ## Scripted Installation and Upgrade
 
@@ -56,7 +59,7 @@ Their header comments list every input.
    unless `/health` reports `"storage":"ok"`.
 
 5. **Host:** point nginx at the jail
-   ([`deploy/freebsd/nginx-chess.conf`](../deploy/freebsd/nginx-chess.conf))
+   ([`deploy/nginx-chess.conf`](../deploy/nginx-chess.conf))
    and publish the web client (below).
 
 `setup-jail.sh` inputs:
@@ -105,6 +108,21 @@ rerun, and a fresh split-privilege install.
 
 ## Accounts and Data Retention
 
+A new database has no accounts. Create the first one (for example your own)
+with the CLI; without `-password` it prompts, so the password stays out of
+the shell history and the process list:
+
+```sh
+jail# su -m chess -c '/home/chess/bin/chess-server db user add -username <name> -dsn "postgres:///chess?host=/tmp"'
+```
+
+The row lands in `chess.users` with an Argon2id hash in `password_hash`; the
+password itself is stored nowhere and cannot be read back, only replaced
+(`db user set-password`). The tables are in schema `chess`, not `public`:
+as `postgres`, list them with `\dt chess.*` and name them as `chess.games`.
+[database.md](database.md) explains the layout and has the psql recipes
+(inspecting and deleting games, sessions, starting fresh).
+
 - Accounts created by registration on the site and by `chess-server db user
   add` are identical and never expire. Public registration closes at
   `-max-users` accounts (default 100; `0` removes the limit); the CLI is not
@@ -116,6 +134,10 @@ rerun, and a fresh split-privilege install.
   activity**, from memory and from the database, by the hourly cleanup.
   `-anonymous-game-ttl` changes the window; `0` keeps them.
 - Deleting a user removes their sessions; their games keep the claim and name.
+  With `-db-cleanup delete`, games left without any registered player are
+  deleted like anonymous ones.
+- A game row deleted by hand while the server still plays it no longer
+  degrades storage: the server unloads that game and carries on.
 
 ## Service (`rc.d/chessd`)
 
@@ -132,7 +154,7 @@ rerun, and a fresh split-privilege install.
 | `chessd_dsn` | `postgres:///chess?host=/tmp` | Database `chess` over the socket as the OS user |
 | `chessd_jwt_key` | `${chessd_home}/jwt.key` | JWT signing key; created (0600) on first start if missing |
 | `chessd_trusted_proxies` | empty | Proxy address(es) whose `X-Real-IP` is trusted |
-| `chessd_flags` | empty | Extra flags, e.g. `-max-users 500` |
+| `chessd_flags` | empty | Extra flags, e.g. `-max-users 500 -db-cleanup report` |
 
 The script runs `daemon(8)` as root, which writes the supervisor pidfile
 (`/var/run/chessd.pid`), drops to `chess`, restarts the server 5 seconds after
@@ -151,6 +173,7 @@ Server flags:
 | `-max-users` | | Registration cap (default 100, `0` = none) |
 | `-anonymous-game-ttl` | | Retention of games without a registered player (default `24h`) |
 | `-finished-game-ttl` | | Memory retention of finished games (default `1h`) |
+| `-db-cleanup` | | Hourly integrity sweep: `off` (default), `report` (log findings), or `delete` ([database.md](database.md#integrity-sweep)) |
 
 Administrative CLI commands run as `chess` so peer authentication selects the
 right role; root may use `su -m` although the account has no shell:
@@ -159,11 +182,19 @@ right role; root may use `su -m` although the account has no shell:
 jail# su -m chess -c '/home/chess/bin/chess-server db user list -dsn "postgres:///chess?host=/tmp"'
 ```
 
+`db` subcommands: `init`, `delete -confirm` (drops the tables), `query`
+(games, with 8-digit ID prefixes), `pgn -gameId <id|prefix> [-ply N]`,
+`verify [-gameId <id|prefix>]` (replays stored games against the rules and
+exits non-zero on a mismatch; run it after an upgrade), and `user add|delete|
+set-password|set-hash|set-email|set-username|list`.
+
 ## Host nginx and Web Clients
 
 The API has no version segment: routes are `/api/...` and `/health`. With the
-layout in [`nginx-chess.conf`](../deploy/freebsd/nginx-chess.conf), browsers
-call `<origin>/chess/api/...` and nginx maps `/chess/api/` to `/api/`.
+layout in [`nginx-chess.conf`](../deploy/nginx-chess.conf), browsers
+call `<origin>/chess/api/...` and nginx maps `/chess/api/` to `/api/`. The
+bare `/chess` and `/chess/` redirect (302) to the page that embeds the
+client, as a short link.
 
 - `X-Real-IP` must carry the real client address (`$remote_addr`, after
   `real_ip` processing when PROXY protocol is in front of nginx). The server
@@ -181,10 +212,14 @@ server's API paths:
   embedded `/config` endpoint, it uses the `/chess` API prefix.
 - **WASM terminal client (if published):** `make wasm` (xterm.js is committed
   under `lib/`), then copy `web/chess-client-wasm/`. It derives its API base
-  as `<origin>/chess`.
+  as `<origin>/chess`. Its API paths are compiled into `chess-client.wasm`,
+  so rebuild it whenever `internal/client/api` changes; publish it together
+  with the `wasm_exec.js` that `make wasm` copies from the same Go toolchain.
 
-Publish the clients in the same change as the server: a client built for
-`/api/v1` gets 404 from this release.
+`web/chess-client-web` is a symlink to the embedded web client; copy with
+`cp -RL` or `rsync -L` so the files, not the link, reach the site. Publish the
+clients in the same change as the server, and expect browsers to hold cached
+copies until a hard refresh.
 
 ## Reference
 
@@ -253,8 +288,9 @@ Restore the previous web client files on the host as well.
 
 ### Backups and restores
 
-- `chess-backup` writes `pg_dump --format=custom` files nightly and removes
-  those older than 14 days. Copy them off the jail.
+- `chess-backup` ([`deploy/postgresql/chess-backup.sh`](../deploy/postgresql/chess-backup.sh),
+  shared with Linux) writes `pg_dump --format=custom` files nightly and
+  removes those older than 14 days. Copy them off the jail.
 - Restore into a freshly provisioned database:
   `su -m postgres -c 'pg_restore --no-owner --role=chess -d chess <dump>'`
   (`--role=chess_owner` in split mode).

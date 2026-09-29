@@ -59,3 +59,45 @@ func (s State) Result() (string, bool) {
 		return "", false
 	}
 }
+
+// Termination names how a game reached its result.
+type Termination string
+
+const (
+	TermNone                 Termination = ""
+	TermCheckmate            Termination = "checkmate"
+	TermStalemate            Termination = "stalemate"
+	TermInsufficientMaterial Termination = "insufficient_material"
+	TermThreefoldRepetition  Termination = "threefold_repetition"
+	TermFiftyMoveRule        Termination = "fifty_move_rule"
+	TermAgreement            Termination = "agreement"
+	TermResignation          Termination = "resignation"
+)
+
+// ValidFor reports whether a termination can produce the terminal state:
+// wins come from checkmate or resignation, stalemate from stalemate, and
+// draws from the draw rules or agreement.
+func (t Termination) ValidFor(s State) bool {
+	switch s {
+	case StateWhiteWins, StateBlackWins:
+		return t == TermCheckmate || t == TermResignation
+	case StateStalemate:
+		return t == TermStalemate
+	case StateDraw:
+		return t == TermInsufficientMaterial || t == TermThreefoldRepetition ||
+			t == TermFiftyMoveRule || t == TermAgreement
+	default:
+		return t == TermNone
+	}
+}
+
+// ParseColor accepts "w", "b", "white", or "black"; anything else is zero.
+func ParseColor(s string) Color {
+	switch s {
+	case "w", "white":
+		return ColorWhite
+	case "b", "black":
+		return ColorBlack
+	}
+	return 0
+}

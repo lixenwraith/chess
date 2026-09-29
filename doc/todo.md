@@ -28,6 +28,9 @@ into phases that each ship and test on their own.
 - [x] Player-name snapshots on claim, returned in history and listings (D4).
 - [x] Scripted FreeBSD jail deployment (`deploy/`).
 - [x] Go client DTOs (`GetGameHistory`, `GetMyGames`) including `finalFen`.
+- [x] Rules core (`internal/server/chess`, R1) and replay API (R2), below.
+- [x] Pawn promotion in the web client (piece picker) and a specific API error
+  for a promotion without its piece.
 
 ## Decisions
 
@@ -37,53 +40,52 @@ into phases that each ship and test on their own.
 | D2 | History visibility | **Decided: shareable by game ID.** The history endpoint stays public to holders of the 122-bit random ID; IDs are never listed publicly and the list endpoint stays authenticated. |
 | D3 | Where SAN/PGN is produced | **Decided: server-side Go** (R1), derived on read from the initial FEN and the UCI line: no schema change, one implementation for web and CLI, no third-party script under the CSP. |
 | D4 | Player names | **Done.** `white_name`/`black_name` snapshot the claimant's username in the claim transaction and survive renames and deletions; exposed as `players.*.name`. |
-| D5 | Draw rules | Open. Recommendation: detect insufficient material, threefold repetition, and the 50/75-move rules in the R1 core; add resign/draw offers later. PGN `Result` is `*` for unterminated games. |
+| D5 | Draw rules | **Done.** Draws apply automatically after every move, as on most online servers: dead material, threefold repetition, and the fifty-move rule (FIDE's claimable draws, and so also its 75-move and fivefold rules). Draw offers (a computer answers from its evaluation) and resignation exist; the stored `termination` says how a game ended. |
 | D6 | Undo after a result | **Decided: keep allowed**, so a player can step back from a finished game and play a line again. Consequence: a finished game's stored history, result, and end time are rewritten by undo; replay shows the line as it stands now. |
-| D7 | List pagination | Open. Recommendation: keyset cursor on `(start_time_utc, game_id)`, keeping offset during v1; the claim indexes are already ordered for it. |
+| D7 | List pagination | **Done.** Opaque keyset `cursor` on `(start_time_utc, game_id)`; `offset` kept for existing clients and exclusive with `cursor`. |
 
-## Phase R1 — Notation Core (server, no API change)
+## Phase R1 — Notation Core (server) — done
 
-A small, dependency-free chess core in Go (`internal/server/chess`), used by
-replay only; Stockfish remains the move validator for live play.
+A dependency-free rules core in Go (`internal/server/chess`). Stockfish
+remains the move validator for live play; the core notates stored games and
+shadows the engine on every live move, logging any disagreement.
 
-- [ ] Board model with FEN parse/serialize (extend `internal/server/board`).
-- [ ] Legal move generation: pseudo-legal moves plus king-safety filtering,
-  castling rights and paths, en passant, promotion.
-- [ ] SAN encode (disambiguation by file, rank, or both; `+`/`#`; `O-O`,
-  `O-O-O`; `=Q`) and SAN decode for later PGN import.
-- [ ] PGN writer: Seven Tag Roster (White/Black from the name snapshots, else
-  "Anonymous" or "Stockfish level N"), `SetUp`/`FEN` tags for custom starts,
-  `Termination`, 80-column movetext, `Result` from the stored outcome.
-- [ ] Draw-rule helpers (D5) and an integrity check that replays the stored UCI
-  line and compares each generated FEN with the stored `fenAfterMove`.
+- [x] Position with strict FEN parse (one king per side, no pawns on the back
+  ranks, side not to move not in check; castling rights without their rook
+  dropped) and canonical serialization (en-passant square only when a capture
+  is legal, so Stockfish's pseudo-legal convention normalizes away).
+- [x] Legal move generation with castling paths, en passant, promotion, pins.
+- [x] SAN encode (file/rank/square disambiguation, `+`/`#`, `O-O`, `=Q`) and
+  lenient decode (`0-0`, `e8Q`, annotations, over-disambiguation).
+- [x] PGN writer: Seven Tag Roster, supplemental tags, `SetUp`/`FEN` for custom
+  starts with correct move numbering, 80-column movetext, escaped tag values.
+- [x] Draw-rule helpers (D5) and `chess-server db verify`, which replays every
+  stored game against the stored FENs and results.
+- [x] Custom starting FENs validated by the core before the engine sees them.
 
 Test gate:
 
-- [ ] Perft node counts for the standard CPW positions (start, Kiwipete, and
-  positions 3–6) to depth 4, which exercises castling, en passant, promotion,
-  and pins.
-- [ ] Property tests over random legal games: SAN decode(encode(m)) == m; the
-  generated FEN sequence is identical to one produced by Stockfish's `d`
-  command for the same line.
-- [ ] Fuzz targets for FEN parsing, SAN decoding, and PGN writing (no panics,
-  bounded output).
-- [ ] Integrity check run over every stored game in a production-shaped copy.
+- [x] Perft for the CPW start, Kiwipete, and positions 3–6 (depth 4; position
+  3 to depth 5).
+- [x] Engine cross-check: random games from all six positions, comparing the
+  legal move set with Stockfish `go perft 1` and the FEN with Stockfish `d` at
+  every ply (about 6,000 positions per run; skipped without Stockfish).
+- [x] Fuzz targets: FEN parse round trip with SAN/UCI round trip of every
+  legal move, SAN decoding, PGN tag escaping.
+- [ ] `db verify` over a copy of the production database once it holds games.
 
-## Phase R2 — Replay API
+## Phase R2 — Replay API — done
 
-- [ ] Implement D7 (keyset cursor) once decided.
-- [ ] Additive history fields: `san` per move, `outcome`/`termination`, and
-  `pgnResult`; keep existing fields unchanged.
-- [ ] `GET /api/games/{id}/pgn?ply=N`: `application/x-chess-pgn`,
-  `Content-Disposition: attachment; filename="chess-<date>-<id8>.pgn"`,
-  moves 1..N (default all). The FEN at any ply is already in the history.
-- [ ] `ETag` and `Cache-Control: private, max-age` for terminal games;
-  `If-None-Match` returns 304.
-- [ ] Filters on the list endpoint: result, color, ongoing/finished.
-- [ ] Tests: handler tests against PostgreSQL (pgtest), golden PGN files for
-  mate, stalemate, promotion, castling, en passant, custom FEN, and an ongoing
-  game; shell-suite coverage for authorization (another user's list, expired
-  session) and cursor stability under concurrent inserts.
+- [x] D7 keyset cursor, plus `status` and `color` filters on the list.
+- [x] Additive history fields: `san` per move, `pgnResult`, `termination`.
+- [x] `GET /api/games/{id}/pgn?ply=N` as an attachment; `db pgn` in the CLI.
+- [x] Strong `ETag` with `Cache-Control: private, no-cache` on history and PGN
+  (revalidate every time: D6 lets finished games change); `If-None-Match`
+  returns 304.
+- [x] Tests: rules-core unit, fuzz, and engine cross-check; service and
+  handler tests against PostgreSQL; `test/test-replay.sh` over HTTP (SAN,
+  PGN, ETag, promotion, FEN validation, cursor paging and filters).
+- [x] Terminal client: `games` (cursor paging) and `pgn` commands.
 
 ## Phase R3 — Web Replay UI
 
@@ -101,7 +103,11 @@ Plain JavaScript in the embedded client, no framework.
 - [ ] Position rendering assigns the stored FEN for the ply; the browser never
   computes moves.
 - [ ] Export at the current ply: copy FEN, copy PGN, and download PGN (fetched
-  from R2 as a `Blob`, saved through a temporary `<a download>`).
+  from R2 as a `Blob`, saved through a temporary `<a download>`). The live
+  view's "Copy PGN" button copies UCI moves today; point it at the PGN
+  endpoint too.
+- [ ] Show SAN in the live move list (from the history, or a `san` field on
+  the live game response).
 - [ ] While replaying: stop live long-polling, disable move, undo, new-game,
   and player-configuration controls; **Back to live game** restores them.
 
@@ -129,8 +135,9 @@ Test gate:
 
 ## Phase R4 — CLI and WASM Replay (optional)
 
-- [ ] `games` (list with pagination), `replay <gameId|index>`, `next`, `prev`,
-  `first`, `last`, `goto <ply>`, `auto <ms>`, `fen`, `pgn save <path>`.
+- [x] `games` (list with cursor paging) and `pgn [gameId] [ply]`.
+- [ ] `replay <gameId|index>`, `next`, `prev`, `first`, `last`, `goto <ply>`,
+  `auto <ms>`, `fen`, `pgn save <path>`.
 - [ ] Replay state is separate from the live session: no polling, moves, undo,
   or configuration while replaying.
 
@@ -156,4 +163,9 @@ Test gate:
 - [ ] Retention and user-initiated deletion or anonymization of games.
 - [ ] Thread request contexts from HTTP handlers into storage calls; today each
   call carries its own deadline.
-- [ ] Draw and resign flows (D5) for live play, independent of replay.
+- [x] Draw and resign flows (D5) for live play.
+- [x] A game row deleted by hand no longer degrades storage; optional
+  integrity sweep (`-db-cleanup`) for broken or orphaned data.
+- [ ] Once `db verify` and the live shadow check stay clean in production,
+  consider validating human moves with the core instead of the engine: no
+  engine round trip or lock per move, and Stockfish only for computer play.

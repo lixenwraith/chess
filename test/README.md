@@ -80,6 +80,9 @@ curl -X POST http://localhost:8080/api/games \
 | API Functionality | `test-api.sh` | Game operations, moves, undo, rate limiting |
 | Database & Auth | `test-db.sh` | User registration, login, JWT tokens, persistence |
 | Long-Polling | `test-longpoll.sh` | Real-time updates, wait behavior, timeouts |
+| End States | `test-endstate.sh` | Checkmate, stalemate, terminal custom positions |
+| Replay | `test-replay.sh` | SAN history, PGN export, ETag/304, promotion, FEN validation, cursor-paged listing |
+| Draws & Resignation | `test-draw.sh` | Automatic draws, offers (human and computer), resignation and authorization, long-poll wake-up, hand-deleted game row |
 | Test Server | `run-test-server.sh` | Pre-populated test environment |
 
 ## 1. API Functionality Tests (`test-api.sh`)
@@ -167,3 +170,44 @@ test/test-longpoll.sh
 3. **Timeout**: Verify 25-second timeout with valid response
 4. **Skip Wait**: Immediate return when moveCount outdated
 5. **Disconnection**: Proper cleanup on client disconnect
+
+## Replay Tests (`test-replay.sh`)
+
+Exercises the replay API over HTTP with human-vs-human games, so no engine
+search is involved. Each run registers a fresh account, so it can be repeated
+against the same server.
+
+```bash
+# Terminal 1
+test/run-test-server.sh bin/chess-server
+# Terminal 2
+test/test-replay.sh
+```
+
+Covers SAN and results in the history, the PGN attachment (tag order,
+movetext, `?ply=`), `ETag`/`If-None-Match`, castling and en passant notation,
+promotion (a missing piece is rejected, `g8=N` from the custom position that
+reported the web-client bug), rejected starting FENs, and cursor paging with
+`status`/`color` filters. `API_DELAY` (seconds, default `0.06`) keeps it under
+the dev-mode rate limit.
+
+## Draw and Resignation Tests (`test-draw.sh`)
+
+Plays short human-vs-human lines, switching a side to the computer where the
+computer's answer to a draw offer is tested, so the only engine work is two
+short evaluations. Each run registers a fresh account and can be repeated
+against the same server.
+
+```bash
+test/test-draw.sh
+```
+
+Covers the automatic draws (K+B v K after a capture, a knight shuffle
+repeated three times, the hundredth quiet ply, a drawn starting position),
+undo after a draw, resignation (side inference, hot-seat ambiguity, a side
+claimed by another user), draw offers between humans (standing offer,
+decline, one offer per move, acceptance waking a long-poll, lapse on the
+opponent's move), the computer declining early, accepting in a level
+position and declining when a queen up, and a game whose row is deleted with
+psql (needs `CHESS_TEST_DSN` and `psql`; the server unloads the game and
+stays healthy).
