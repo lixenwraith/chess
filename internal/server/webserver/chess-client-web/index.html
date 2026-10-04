@@ -117,14 +117,40 @@
     </div>
 </div>
 
+<!-- Account Modal: shown instead of the login modal while signed in -->
+<div id="account-overlay" class="modal-overlay">
+    <div class="modal account-modal" role="dialog" aria-modal="true" aria-labelledby="account-title">
+        <h2 id="account-title">Account</h2>
+        <div id="account-modal-message" class="modal-message" role="status" aria-live="polite"></div>
+        <p class="account-name">Signed in as <strong id="account-username"></strong></p>
+        <div class="modal-buttons">
+            <button id="logout-btn" class="btn btn-primary">Log out</button>
+            <button id="account-cancel-btn" class="btn btn-secondary">Close</button>
+        </div>
+        <details class="danger-zone" id="delete-account">
+            <summary>Delete account</summary>
+            <p>Deletes the account and signs you out. Your name and claim are removed
+            from every stored game; games nobody else plays are deleted 24 hours
+            after their last move. This cannot be undone.</p>
+            <div class="form-group account-form">
+                <label for="delete-password">Password</label>
+                <input type="password" id="delete-password" autocomplete="current-password">
+            </div>
+            <div class="modal-buttons">
+                <button id="delete-account-btn" class="btn btn-danger">Delete account</button>
+            </div>
+        </details>
+    </div>
+</div>
+
 <!-- Overlay Modal -->
 <div id="modal-overlay" class="modal-overlay">
     <div class="modal">
         <h2>New Game</h2>
-        <div id="new-game-modal-message" class="modal-message"></div>
-        <div class="form-group">
-            <label class="group-label">Your Color</label>
-            <div class="radio-group">
+        <div id="new-game-modal-message" class="modal-message" role="status" aria-live="polite"></div>
+        <div class="form-group form-row">
+            <span class="group-label" id="player-color-label">Your Color</span>
+            <div class="radio-group" role="radiogroup" aria-labelledby="player-color-label">
                 <label><input type="radio" name="player-color" value="white" checked><span>White</span></label>
                 <label><input type="radio" name="player-color" value="black"><span>Black</span></label>
             </div>
