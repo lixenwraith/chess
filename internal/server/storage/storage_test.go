@@ -837,6 +837,75 @@ func TestClaimsSnapshotPlayerNames(t *testing.T) {
 	}
 }
 
+func TestDeleteAccountClearsClaimsAndNames(t *testing.T) {
+	store := openStore(t, pgtest.DSN(t))
+	now := time.Now().UTC()
+	alice, bob := uuid.NewString(), uuid.NewString()
+	for id, name := range map[string]string{alice: "alice", bob: "bob"} {
+		if err := store.CreateUser(UserRecord{UserID: id, Username: name, PasswordHash: "hash", CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.CreateSession(SessionRecord{
+		SessionID: uuid.NewString(), UserID: alice, CreatedAt: now, ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Alice against Bob, and Alice alone against the computer.
+	shared, solo := uuid.NewString(), uuid.NewString()
+	for _, record := range []GameRecord{
+		{GameID: shared, InitialFEN: "initial",
+			WhitePlayerID: alice, WhiteType: 1, WhiteClaimedBy: alice,
+			BlackPlayerID: bob, BlackType: 1, BlackClaimedBy: bob, StartTimeUTC: now},
+		{GameID: solo, InitialFEN: "initial",
+			WhitePlayerID: uuid.NewString(), WhiteType: 2,
+			BlackPlayerID: alice, BlackType: 1, BlackClaimedBy: alice, StartTimeUTC: now},
+	} {
+		if err := store.RecordNewGame(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := store.DeleteAccount(alice); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetUserByID(alice); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("account still present: %v", err)
+	}
+	var sessions int
+	if err := store.db.QueryRow(`SELECT count(*) FROM sessions WHERE user_id = $1`, alice).Scan(&sessions); err != nil || sessions != 0 {
+		t.Fatalf("sessions left: %d, %v", sessions, err)
+	}
+
+	record, _, err := store.GetGameHistory(shared)
+	if err != nil || record.WhiteClaimedBy != "" || record.WhiteName != "" ||
+		record.BlackClaimedBy != bob || record.BlackName != "bob" {
+		t.Fatalf("shared game after deletion: white %q/%q black %q/%q, %v",
+			record.WhiteClaimedBy, record.WhiteName, record.BlackClaimedBy, record.BlackName, err)
+	}
+	// Nobody claims the solo game now, so the inactivity purge takes it.
+	if err := store.DeleteAnonymousGames(now.Add(time.Minute), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.GetGameHistory(solo); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("solo game survived the anonymous purge: %v", err)
+	}
+	if _, _, err := store.GetGameHistory(shared); err != nil {
+		t.Fatalf("a game another user claims must stay: %v", err)
+	}
+
+	if err := store.DeleteAccount(alice); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("second deletion: %v, want sql.ErrNoRows", err)
+	}
+	if !store.IsHealthy() {
+		t.Fatal("deleting a missing account degraded the writer")
+	}
+}
+
 func timePointer(value time.Time) *time.Time {
 	return &value
 }

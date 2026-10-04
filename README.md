@@ -30,6 +30,7 @@ Go backend server providing a RESTful API for chess gameplay with user authentic
 - Authenticated stored-game listing with cursor pagination and filters
 - Configurable structured debug logs for persistence, cleanup, and engine work
 - User management with secure Argon2id password storage and scoped JWTs
+- Self-service account deletion: claims and names are cleared from stored games
 - Static, CGO-free binaries (cross-compiles for FreeBSD)
 - Scripted deployment: FreeBSD jail (rc.d) or Linux (sandboxed systemd unit)
 - Optional hourly integrity sweep of stored games and accounts

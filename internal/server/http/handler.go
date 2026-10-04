@@ -145,6 +145,22 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 	// Logout
 	auth.Post("/logout", AuthRequired(validateToken), h.LogoutHandler)
 
+	// Delete own account: 5 req/min per IP. It takes a password, so it is
+	// limited like login; authentication runs first, so only a signed-in
+	// caller reaches the password check.
+	auth.Delete("/me", AuthRequired(validateToken), limiter.New(limiter.Config{
+		Max:          5,
+		Expiration:   1 * time.Minute,
+		KeyGenerator: clientIP,
+		LimitReached: func(c *fiber.Ctx) error {
+			return c.Status(fiber.StatusTooManyRequests).JSON(core.ErrorResponse{
+				Error:   "rate limit exceeded",
+				Code:    core.ErrRateLimitExceeded,
+				Details: "5 account deletion attempts per minute allowed",
+			})
+		},
+	}), h.DeleteAccountHandler)
+
 	// Game routes with standard rate limiting
 	maxReq := rateLimitRate
 	if devMode {
