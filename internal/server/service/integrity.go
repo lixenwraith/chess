@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"chess/internal/server/replay"
+	"github.com/lixenwraith/chess/internal/server/replay"
 
 	"github.com/lixenwraith/auth"
 )

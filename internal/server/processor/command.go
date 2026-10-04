@@ -1,7 +1,7 @@
 package processor
 
 import (
-	"chess/internal/server/core"
+	"github.com/lixenwraith/chess/internal/server/core"
 )
 
 // CommandType defines the type of command being executed

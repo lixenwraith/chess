@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"chess/internal/server/chess"
-	"chess/internal/server/core"
-	"chess/internal/server/replay"
-	"chess/internal/server/storage"
+	"github.com/lixenwraith/chess/internal/server/chess"
+	"github.com/lixenwraith/chess/internal/server/core"
+	"github.com/lixenwraith/chess/internal/server/replay"
+	"github.com/lixenwraith/chess/internal/server/storage"
 
 	"github.com/google/uuid"
 )

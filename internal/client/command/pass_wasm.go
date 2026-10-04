@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"chess/internal/client/display"
+	"github.com/lixenwraith/chess/internal/client/display"
 )
 
 func readPassword(prompt string) (string, error) {

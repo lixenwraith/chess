@@ -3,7 +3,7 @@
 package main
 
 import (
-	"chess/internal/client/display"
+	"github.com/lixenwraith/chess/internal/client/display"
 )
 
 func handleExit() (restart bool) {

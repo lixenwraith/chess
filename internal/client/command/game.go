@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"strings"
 
-	"chess/internal/client/api"
-	"chess/internal/client/display"
-	"chess/internal/client/session"
+	"github.com/lixenwraith/chess/internal/client/api"
+	"github.com/lixenwraith/chess/internal/client/display"
+	"github.com/lixenwraith/chess/internal/client/session"
 )
 
 func (r *Registry) registerGameCommands() {

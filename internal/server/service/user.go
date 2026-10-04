@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"chess/internal/server/storage"
+	"github.com/lixenwraith/chess/internal/server/storage"
 
 	"github.com/google/uuid"
 	"github.com/lixenwraith/auth"

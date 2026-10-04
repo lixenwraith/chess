@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"chess/internal/server/core"
+	"github.com/lixenwraith/chess/internal/server/core"
 )
 
 func TestWaitRegistryDeliversNotificationToCallerAndRemovesWaiter(t *testing.T) {

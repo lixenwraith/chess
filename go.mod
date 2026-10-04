@@ -1,4 +1,4 @@
-module chess
+module github.com/lixenwraith/chess
 
 go 1.27.1
 
@@ -7,7 +7,7 @@ require (
 	github.com/gofiber/fiber/v2 v2.52.15
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.11.0
-	github.com/lixenwraith/auth v0.0.0-20260927004242-3b8d4a2946f1
+	github.com/lixenwraith/auth v0.5.1
 	golang.org/x/term v0.46.0
 )
 

@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"chess/internal/server/core"
-	"chess/internal/server/engine"
+	"github.com/lixenwraith/chess/internal/server/core"
+	"github.com/lixenwraith/chess/internal/server/engine"
 )
 
 // EngineTask contains computer move calculation request and response channel

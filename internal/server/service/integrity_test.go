@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"chess/internal/server/chess"
-	"chess/internal/server/storage"
+	"github.com/lixenwraith/chess/internal/server/chess"
+	"github.com/lixenwraith/chess/internal/server/storage"
 
 	"github.com/google/uuid"
 	"github.com/lixenwraith/auth"

@@ -10,11 +10,11 @@ import (
 	"time"
 	"unicode"
 
-	"chess/internal/server/chess"
-	"chess/internal/server/core"
-	"chess/internal/server/engine"
-	"chess/internal/server/game"
-	"chess/internal/server/service"
+	"github.com/lixenwraith/chess/internal/server/chess"
+	"github.com/lixenwraith/chess/internal/server/core"
+	"github.com/lixenwraith/chess/internal/server/engine"
+	"github.com/lixenwraith/chess/internal/server/game"
+	"github.com/lixenwraith/chess/internal/server/service"
 )
 
 const (

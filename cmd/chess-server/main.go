@@ -14,12 +14,12 @@ import (
 	"syscall"
 	"time"
 
-	"chess/cmd/chess-server/cli"
-	"chess/internal/server/http"
-	"chess/internal/server/processor"
-	"chess/internal/server/service"
-	"chess/internal/server/storage"
-	"chess/internal/server/webserver"
+	"github.com/lixenwraith/chess/cmd/chess-server/cli"
+	"github.com/lixenwraith/chess/internal/server/http"
+	"github.com/lixenwraith/chess/internal/server/processor"
+	"github.com/lixenwraith/chess/internal/server/service"
+	"github.com/lixenwraith/chess/internal/server/storage"
+	"github.com/lixenwraith/chess/internal/server/webserver"
 )
 
 const (

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"chess/internal/server/chess"
-	"chess/internal/server/core"
+	"github.com/lixenwraith/chess/internal/server/chess"
+	"github.com/lixenwraith/chess/internal/server/core"
 
 	"github.com/google/uuid"
 )

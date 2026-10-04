@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"chess/internal/server/chess"
-	"chess/internal/server/core"
-	"chess/internal/server/service"
-	"chess/internal/server/storage"
-	"chess/internal/server/storage/pgtest"
+	"github.com/lixenwraith/chess/internal/server/chess"
+	"github.com/lixenwraith/chess/internal/server/core"
+	"github.com/lixenwraith/chess/internal/server/service"
+	"github.com/lixenwraith/chess/internal/server/storage"
+	"github.com/lixenwraith/chess/internal/server/storage/pgtest"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"

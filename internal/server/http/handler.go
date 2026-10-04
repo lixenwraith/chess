@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"chess/internal/server/core"
-	"chess/internal/server/processor"
-	"chess/internal/server/service"
+	"github.com/lixenwraith/chess/internal/server/core"
+	"github.com/lixenwraith/chess/internal/server/processor"
+	"github.com/lixenwraith/chess/internal/server/service"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"

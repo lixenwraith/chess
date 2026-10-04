@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"chess/internal/server/service"
+	"github.com/lixenwraith/chess/internal/server/service"
 
 	"github.com/gofiber/fiber/v2"
 )

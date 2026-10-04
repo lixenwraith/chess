@@ -3,9 +3,9 @@ package replay
 import (
 	"fmt"
 
-	"chess/internal/server/chess"
-	"chess/internal/server/core"
-	"chess/internal/server/storage"
+	"github.com/lixenwraith/chess/internal/server/chess"
+	"github.com/lixenwraith/chess/internal/server/core"
+	"github.com/lixenwraith/chess/internal/server/storage"
 )
 
 // Verify checks a stored game against the rules and returns one line per

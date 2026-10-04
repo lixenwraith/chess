@@ -3,8 +3,8 @@ package http
 import (
 	"errors"
 
-	"chess/internal/server/core"
-	"chess/internal/server/service"
+	"github.com/lixenwraith/chess/internal/server/core"
+	"github.com/lixenwraith/chess/internal/server/service"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/lixenwraith/auth"

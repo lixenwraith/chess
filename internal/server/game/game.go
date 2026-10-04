@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"chess/internal/server/chess"
-	"chess/internal/server/core"
+	"github.com/lixenwraith/chess/internal/server/chess"
+	"github.com/lixenwraith/chess/internal/server/core"
 )
 
 type Snapshot struct {

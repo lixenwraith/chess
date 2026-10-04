@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"chess/internal/server/core"
-	"chess/internal/server/game"
-	"chess/internal/server/storage"
-	"chess/internal/server/storage/pgtest"
+	"github.com/lixenwraith/chess/internal/server/core"
+	"github.com/lixenwraith/chess/internal/server/game"
+	"github.com/lixenwraith/chess/internal/server/storage"
+	"github.com/lixenwraith/chess/internal/server/storage/pgtest"
 
 	"github.com/google/uuid"
 )

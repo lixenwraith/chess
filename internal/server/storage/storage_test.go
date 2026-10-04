@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"chess/internal/server/storage/pgtest"
+	"github.com/lixenwraith/chess/internal/server/storage/pgtest"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"

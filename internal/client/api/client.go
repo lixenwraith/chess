@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"chess/internal/client/display"
+	"github.com/lixenwraith/chess/internal/client/display"
 )
 
 const HttpTimeout = 30 * time.Second

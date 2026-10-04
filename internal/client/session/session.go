@@ -1,7 +1,7 @@
 package session
 
 import (
-	"chess/internal/client/api"
+	"github.com/lixenwraith/chess/internal/client/api"
 )
 
 // Session maintains client state and configuration

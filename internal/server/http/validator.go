@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"strings"
 
-	"chess/internal/server/core"
+	"github.com/lixenwraith/chess/internal/server/core"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/gofiber/fiber/v2"

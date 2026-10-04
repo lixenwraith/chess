@@ -1,14 +1,8 @@
-<table>
-  <tr>
-    <td>
-      <h1>♚♛♜♝♞</h1>
-      <p>
-        <a href="https://golang.org"><img src="https://img.shields.io/badge/Go-1.27-00ADD8?style=flat&logo=go" alt="Go 1.27"></a>
-        <a href="https://opensource.org/licenses/BSD-3-Clause"><img src="https://img.shields.io/badge/License-BSD_3--Clause-blue.svg" alt="License BSD-3"></a>
-      </p>
-    </td>
-  </tr>
-</table>
+<h1 align="center">♚♛♜♝♞</h1>
+<p align="center">
+  <a href="https://golang.org"><img src="https://img.shields.io/badge/Go-1.27-00ADD8?style=flat&logo=go" alt="Go 1.27"></a>
+  <a href="https://opensource.org/licenses/BSD-3-Clause"><img src="https://img.shields.io/badge/License-BSD_3--Clause-blue.svg" alt="License BSD-3"></a>
+</p>
 
 # Chess
 
@@ -169,8 +163,9 @@ The chess server includes an embedded web UI for playing games through a browser
 ```
 
 ### Features
-- Visual chess board with drag-and-drop moves
-- Human vs Computer gameplay
+
+- Visual chess board with click-to-move and a promotion picker
+- Human vs Computer gameplay, with undo, draw offers and resignation
 - Configurable engine strength (0-20)
 - UCI move history with move numbers
 - FEN display and custom starting positions

@@ -1,7 +1,7 @@
 package service
 
 import (
-	"chess/internal/server/core"
+	"github.com/lixenwraith/chess/internal/server/core"
 	"context"
 	"fmt"
 	"sync"
