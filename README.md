@@ -169,8 +169,8 @@ The chess server includes an embedded web UI for playing games through a browser
 ```
 
 ### Features
-- Visual chess board with drag-and-drop moves
-- Human vs Computer gameplay
+- Visual chess board with click-to-move and a promotion picker
+- Human vs Computer gameplay, with undo, draw offers and resignation
 - Configurable engine strength (0-20)
 - UCI move history with move numbers
 - FEN display and custom starting positions
