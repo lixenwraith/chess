@@ -30,6 +30,11 @@ type LoginRequest struct {
 	Password   string `json:"password" validate:"required"`
 }
 
+// DeleteAccountRequest re-confirms the password before an account is deleted.
+type DeleteAccountRequest struct {
+	Password string `json:"password" validate:"required"`
+}
+
 // AuthResponse contains JWT token and user information
 type AuthResponse struct {
 	Token     string    `json:"token"`
@@ -268,4 +273,52 @@ func (h *HTTPHandler) LogoutHandler(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{"message": "logged out"})
+}
+
+// DeleteAccountHandler deletes the caller's account after re-checking the
+// password. The caller's games lose the claim and the name; see
+// Service.DeleteAccount.
+func (h *HTTPHandler) DeleteAccountHandler(c *fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	sessionID, _ := c.Locals("sessionID").(string)
+	if userID == "" || sessionID == "" {
+		return c.Status(fiber.StatusUnauthorized).JSON(core.ErrorResponse{
+			Error: "unauthorized",
+			Code:  core.ErrInvalidRequest,
+		})
+	}
+
+	var req DeleteAccountRequest
+	if err := c.BodyParser(&req); err != nil || req.Password == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
+			Error:   "invalid request body",
+			Code:    core.ErrInvalidRequest,
+			Details: "password is required to delete the account",
+		})
+	}
+
+	if err := h.svc.DeleteAccount(userID, sessionID, req.Password); err != nil {
+		switch {
+		case errors.Is(err, service.ErrInvalidCredentials):
+			return c.Status(fiber.StatusUnauthorized).JSON(core.ErrorResponse{
+				Error: "invalid credentials",
+				Code:  core.ErrInvalidRequest,
+			})
+		case errors.Is(err, service.ErrAuthBusy):
+			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+				Error: "authentication temporarily unavailable", Code: core.ErrResourceLimit,
+			})
+		case errors.Is(err, service.ErrStorageDisabled) || errors.Is(err, service.ErrStorageUnavailable):
+			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+				Error: "account storage unavailable", Code: core.ErrStorageUnavailable,
+			})
+		default:
+			return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
+				Error: "failed to delete account",
+				Code:  core.ErrInternalError,
+			})
+		}
+	}
+
+	return c.SendStatus(fiber.StatusNoContent)
 }

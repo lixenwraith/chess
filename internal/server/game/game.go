@@ -406,6 +406,20 @@ func (g *Game) ClaimSlot(color core.Color, userID string) error {
 	return nil
 }
 
+// ReleaseUser clears userID's claims and name snapshots, leaving those slots
+// anonymous, and reports whether any slot changed. Player IDs stay: once the
+// account is gone they identify nobody. Caller must hold the lock.
+func (g *Game) ReleaseUser(userID string) bool {
+	changed := false
+	for _, player := range g.players {
+		if player != nil && player.ClaimedBy == userID {
+			player.ClaimedBy, player.Name = "", ""
+			changed = true
+		}
+	}
+	return changed
+}
+
 // GetSlotOwner returns the userID that claimed the slot, empty if unclaimed
 // Caller must hold the lock
 func (g *Game) GetSlotOwner(color core.Color) string {

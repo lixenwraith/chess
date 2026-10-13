@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lixenwraith/chess/internal/server/chess"
+	"github.com/lixenwraith/chess/internal/server/core"
 	"github.com/lixenwraith/chess/internal/server/storage"
 
 	"github.com/google/uuid"
@@ -144,5 +146,46 @@ func TestPasswordHashingIsBounded(t *testing.T) {
 func TestNewRejectsShortJWTSecret(t *testing.T) {
 	if _, err := New((*storage.Store)(nil), make([]byte, 31)); err == nil {
 		t.Fatal("31-byte JWT secret accepted")
+	}
+}
+
+func TestDeleteAccountReleasesLiveClaims(t *testing.T) {
+	svc := newPersistentTestService(t)
+	user, sessionID, err := svc.RegisterUser("alice", "", "Password1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := svc.GenerateUserToken(user.UserID, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gameID := uuid.NewString()
+	white := core.NewPlayer(core.PlayerConfig{Type: core.PlayerHuman}, core.ColorWhite)
+	white.ID, white.ClaimedBy = user.UserID, user.UserID
+	black := core.NewPlayer(core.PlayerConfig{Type: core.PlayerComputer, Level: 1, SearchTime: 100}, core.ColorBlack)
+	if err := svc.CreateGame(gameID, white, black, chess.StartFEN, core.ColorWhite, core.StateOngoing, core.TermNone); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.DeleteAccount(user.UserID, sessionID, "Password2"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("wrong password: %v, want ErrInvalidCredentials", err)
+	}
+	if _, _, err := svc.ValidateToken(token); err != nil {
+		t.Fatalf("a refused deletion ended the session: %v", err)
+	}
+
+	if err := svc.DeleteAccount(user.UserID, sessionID, "Password1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.ValidateToken(token); err == nil {
+		t.Error("token still valid after deletion")
+	}
+	view, err := svc.GetGameView(gameID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owner := view.WhitePlayer.ClaimedBy; owner != "" {
+		t.Errorf("live game still claimed by the deleted account: %q", owner)
 	}
 }

@@ -90,6 +90,32 @@ Authorization: Bearer <token>
 }
 ```
 
+### Delete Account
+`DELETE /auth/me`
+
+Deletes the caller's own account. Requires authentication and the account
+password again, so a token left on an unattended device is not enough.
+
+**Request:**
+```json
+{"password": "SecurePass123"}
+```
+
+**Response (204):** no body.
+
+What happens, in order: the session ends, so the token stops working at
+once; the account's claims are released on every game in memory; then, behind
+any gameplay write already queued, the account's claims and name snapshots are
+cleared from every stored game and the account is deleted. A game no other
+user claims is anonymous from then on and is purged 24 hours after its last
+activity; a game another user claims stays with that user, with this side
+unnamed. (The administrative `db user delete` keeps claims and names for the
+record instead.)
+
+Errors: 400 `INVALID_REQUEST` without a password, 401 for a wrong password or
+token, 429 past 5 attempts a minute per IP, 503 `RESOURCE_LIMIT` when password
+hashing is saturated or `STORAGE_UNAVAILABLE` when storage is down.
+
 ## Game Endpoints
 
 ### Health Check
@@ -523,13 +549,15 @@ Error codes:
 - Development (`-dev`): 20 requests/second/IP
 - Registration: 5 requests/minute/IP
 - Login: 10 requests/minute/IP
+- Account deletion: 5 requests/minute/IP
 
 Exceeding limit returns 429 status. Behind a reverse proxy the client IP is the
 proxy's `X-Real-IP` header, trusted only from addresses listed in
 `-trusted-proxies`.
 
 Password hashing is bounded to four concurrent operations. When all are busy
-for five seconds, registration and login return 503 with `RESOURCE_LIMIT`.
+for five seconds, registration, login and account deletion return 503 with
+`RESOURCE_LIMIT`.
 
 ## JWT Token Format
 

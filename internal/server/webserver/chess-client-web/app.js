@@ -17,6 +17,7 @@ let gameState = {
     username: null,
     authBusy: false,
     newGameBusy: false,
+    accountBusy: false, // logout or account deletion in flight
     termination: '',
     actionBusy: false, // a draw or resign request is in flight
 };
@@ -85,6 +86,9 @@ document.getElementById('login-submit-btn').addEventListener('click', handleLogi
 document.getElementById('register-submit-btn').addEventListener('click', handleRegister);
 document.getElementById('auth-cancel-btn').addEventListener('click', hideAuthModal);
 document.getElementById('auth-cancel-btn-2').addEventListener('click', hideAuthModal);
+document.getElementById('logout-btn').addEventListener('click', handleLogoutClick);
+document.getElementById('account-cancel-btn').addEventListener('click', hideAccountModal);
+document.getElementById('delete-account-btn').addEventListener('click', deleteAccount);
 document.querySelectorAll('.promotion-choice').forEach(btn => {
     btn.addEventListener('click', () => closePromotion(btn.dataset.piece));
 });
@@ -143,13 +147,111 @@ function updateAuthIndicator(authenticated) {
 
 function handleAuthClick() {
     if (gameState.authToken) {
-        // Logged in - confirm logout
-        if (confirm(`Logout ${gameState.username}?`)) {
-            handleLogout();
-        }
+        showAccountModal();
     } else {
         showAuthModal();
     }
+}
+
+// Account dialog, for a signed-in user: log out, or delete the account. It
+// replaces a native confirm(), which a sandboxed embed may not be allowed.
+function showAccountModal() {
+    document.getElementById('account-username').textContent = gameState.username || '';
+    document.getElementById('delete-account').open = false;
+    document.getElementById('delete-password').value = '';
+    clearModalMessage('account-modal-message');
+    document.getElementById('account-overlay').classList.add('show');
+    document.removeEventListener('keydown', handleAccountKeydown);
+    document.addEventListener('keydown', handleAccountKeydown);
+    document.getElementById('account-cancel-btn').focus();
+}
+
+function hideAccountModal() {
+    if (gameState.accountBusy) return;
+    document.getElementById('account-overlay').classList.remove('show');
+    document.getElementById('delete-password').value = '';
+    document.removeEventListener('keydown', handleAccountKeydown);
+}
+
+function setAccountBusy(busy) {
+    gameState.accountBusy = busy;
+    for (const id of ['logout-btn', 'account-cancel-btn', 'delete-account-btn', 'delete-password']) {
+        document.getElementById(id).disabled = busy;
+    }
+}
+
+function handleAccountKeydown(e) {
+    if (gameState.accountBusy) {
+        if (e.key === 'Enter' || e.key === 'Escape') e.preventDefault();
+        return;
+    }
+    if (e.key === 'Escape') {
+        e.preventDefault();
+        hideAccountModal();
+    } else if (e.key === 'Enter' && document.activeElement?.id === 'delete-password') {
+        e.preventDefault();
+        deleteAccount();
+    }
+}
+
+async function handleLogoutClick() {
+    setAccountBusy(true);
+    await handleLogout();
+    setAccountBusy(false);
+    hideAccountModal();
+}
+
+// The server re-checks the password, ends the session, clears the account's
+// claims and names from its games, then deletes it (DELETE /api/auth/me).
+async function deleteAccount() {
+    if (gameState.accountBusy) return;
+    const password = document.getElementById('delete-password').value;
+    if (!password) {
+        setModalMessage('account-modal-message', 'Enter your password to delete the account', 'error');
+        return;
+    }
+
+    setAccountBusy(true);
+    clearModalMessage('account-modal-message');
+    let response;
+    try {
+        response = await authFetch(`${gameState.apiUrl}/api/auth/me`, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password }),
+        });
+    } catch {
+        setAccountBusy(false);
+        setModalMessage('account-modal-message', 'Network error: the account was not deleted', 'error');
+        return;
+    }
+
+    if (response.status === 204) {
+        const name = gameState.username;
+        clearAuthState();
+        setModalMessage('account-modal-message', `Account ${name} deleted`, 'success');
+        setTimeout(() => {
+            setAccountBusy(false);
+            hideAccountModal();
+        }, MODAL_SUCCESS_DISPLAY_MS * 2);
+        return;
+    }
+
+    setAccountBusy(false);
+    const data = await parseErrorResponse(response);
+    let message;
+    if (response.status === 401 && data.error === 'invalid credentials') {
+        message = 'Wrong password';
+    } else if (response.status === 401) {
+        // The token itself was refused: the session is already gone.
+        clearAuthState();
+        message = 'Your session has ended. Log in again to delete the account.';
+    } else if (response.status === 429) {
+        message = 'Too many attempts. Wait a minute and try again.';
+    } else {
+        message = data.error ? `Not deleted: ${data.error}` : `Server error (${response.status})`;
+    }
+    setModalMessage('account-modal-message', message, 'error');
 }
 
 // Disables/enables every interactive control in the auth modal at once, and tracks
