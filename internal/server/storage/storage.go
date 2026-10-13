@@ -284,6 +284,37 @@ func (s *Store) enqueue(operation, gameID string, fn func(context.Context, *sql.
 	}
 }
 
+// enqueueWait queues fn on the ordered writer and waits for its own outcome,
+// for a write that must be ordered after queued gameplay writes and must also
+// report success only once it is durable.
+func (s *Store) enqueueWait(ctx context.Context, operation string, fn func(context.Context, *sql.Tx) error) error {
+	s.enqueueMu.RLock()
+	if s.closed.Load() {
+		s.enqueueMu.RUnlock()
+		return ErrStoreClosed
+	}
+	if !s.healthStatus.Load() {
+		s.enqueueMu.RUnlock()
+		return ErrStorageDegraded
+	}
+
+	done := make(chan error, 1)
+	select {
+	case s.writeChan <- writeRequest{operation: operation, run: fn, barrier: done}:
+		s.enqueueMu.RUnlock()
+	case <-ctx.Done():
+		s.enqueueMu.RUnlock()
+		return ctx.Err()
+	}
+
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // Flush waits until every write queued before this call has completed. Replay
 // reads use this barrier to provide read-after-write consistency while normal
 // gameplay retains the low-latency async write path.

@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -121,6 +122,52 @@ func (s *Store) DeleteUser(userID string) error {
 		return err
 	}
 	slog.Debug("storage user deleted", "user_id", userID)
+	return nil
+}
+
+// DeleteAccount removes an account at its owner's request. Unlike DeleteUser,
+// which keeps the claim IDs and name snapshots for the record, it first clears
+// the user's claims and names from every stored game, so nothing in the
+// database still names the person, and a game nobody else claimed becomes
+// anonymous and falls to the inactivity purge. Sessions cascade.
+//
+// It runs on the ordered game writer, behind every gameplay write already
+// queued, so a queued claim cannot land on a game after it was cleared. It
+// returns sql.ErrNoRows when no such user exists.
+func (s *Store) DeleteAccount(userID string) error {
+	if !validUUID(userID) {
+		return sql.ErrNoRows
+	}
+	// Set inside the transaction, read after the writer reports back: the
+	// barrier channel orders the two. A missing row is an answer, not a
+	// failed write, so it must not degrade the writer.
+	var deleted int64
+	// Behind the queue, then its own transaction.
+	ctx, cancel := context.WithTimeout(context.Background(), flushTimeout+writeTimeout)
+	defer cancel()
+	err := s.enqueueWait(ctx, "delete_account", func(ctx context.Context, tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE games SET
+				white_claimed_by = CASE WHEN white_claimed_by = $1 THEN NULL ELSE white_claimed_by END,
+				white_name       = CASE WHEN white_claimed_by = $1 THEN NULL ELSE white_name END,
+				black_claimed_by = CASE WHEN black_claimed_by = $1 THEN NULL ELSE black_claimed_by END,
+				black_name       = CASE WHEN black_claimed_by = $1 THEN NULL ELSE black_name END
+			WHERE white_claimed_by = $1 OR black_claimed_by = $1`, userID); err != nil {
+			return err
+		}
+		result, err := tx.ExecContext(ctx, `DELETE FROM users WHERE user_id = $1`, userID)
+		if err != nil {
+			return err
+		}
+		deleted, err = result.RowsAffected()
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	if deleted == 0 {
+		return sql.ErrNoRows
+	}
+	slog.Debug("storage account deleted", "user_id", userID)
 	return nil
 }
 

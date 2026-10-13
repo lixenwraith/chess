@@ -88,6 +88,7 @@ func TestAPIRoutes(t *testing.T) {
 		"POST /api/auth/login",
 		"GET /api/auth/me",
 		"POST /api/auth/logout",
+		"DELETE /api/auth/me",
 		"POST /api/games",
 		"GET /api/games/:gameId",
 		"GET /api/games/:gameId/history",
@@ -210,5 +211,76 @@ func TestStoredGameEndpoints(t *testing.T) {
 		if response, body := get(path); response.StatusCode != want {
 			t.Errorf("GET %s = %d %s, want %d", path, response.StatusCode, body, want)
 		}
+	}
+}
+
+func TestDeleteAccountRequiresPasswordAndEndsTheSession(t *testing.T) {
+	store, err := storage.NewStore(pgtest.DSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InitDB(); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := service.New(store, []byte("test-secret-test-secret-test-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { svc.Shutdown(time.Second) })
+	app := NewFiberApp(nil, svc, Options{DevMode: true})
+
+	send := func(method, path, token, body string) int {
+		t.Helper()
+		var reader io.Reader
+		if body != "" {
+			reader = strings.NewReader(body)
+		}
+		request := httptest.NewRequest(method, path, reader)
+		if body != "" {
+			request.Header.Set("Content-Type", "application/json")
+		}
+		if token != "" {
+			request.Header.Set("Authorization", "Bearer "+token)
+		}
+		response, err := app.Test(request, 10_000)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response.StatusCode
+	}
+
+	user, sessionID, err := svc.RegisterUser("alice", "", "Password1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := svc.GenerateUserToken(user.UserID, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for name, test := range map[string]struct {
+		token, body string
+		want        int
+	}{
+		"no token":       {"", `{"password":"Password1"}`, 401},
+		"no password":    {token, `{}`, 400},
+		"wrong password": {token, `{"password":"Password2"}`, 401},
+	} {
+		if got := send("DELETE", "/api/auth/me", test.token, test.body); got != test.want {
+			t.Errorf("%s: status %d, want %d", name, got, test.want)
+		}
+	}
+	if got := send("GET", "/api/auth/me", token, ""); got != 200 {
+		t.Fatalf("a refused deletion must leave the account working: /auth/me = %d", got)
+	}
+
+	if got := send("DELETE", "/api/auth/me", token, `{"password":"Password1"}`); got != 204 {
+		t.Fatalf("delete: status %d, want 204", got)
+	}
+	if got := send("GET", "/api/auth/me", token, ""); got != 401 {
+		t.Errorf("token still accepted after deletion: /auth/me = %d", got)
+	}
+	if _, _, err := svc.AuthenticateUser("alice", "Password1"); err == nil {
+		t.Error("deleted account can still sign in")
 	}
 }

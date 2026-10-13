@@ -203,6 +203,56 @@ func (s *Service) InvalidateSession(sessionID string) error {
 	return nil
 }
 
+// DeleteAccount deletes the caller's own account after re-checking the
+// password, so a token left on an unattended device is not enough. The
+// session goes first, so no new request can act for the account; then the
+// account's claims are released on every game in memory, then the store
+// clears them from stored games and deletes the account, behind any gameplay
+// write already queued. Games nobody else claimed are anonymous from then on
+// and are purged after the usual inactivity window.
+func (s *Service) DeleteAccount(userID, sessionID, password string) error {
+	if s.store == nil {
+		return ErrStorageDisabled
+	}
+	record, err := s.store.GetUserByID(userID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrInvalidCredentials
+		}
+		return fmt.Errorf("%w: look up user: %v", ErrStorageUnavailable, err)
+	}
+	if err := s.verifyPassword(password, record.PasswordHash); err != nil {
+		if errors.Is(err, ErrAuthBusy) {
+			return err
+		}
+		return ErrInvalidCredentials
+	}
+
+	if err := s.store.DeleteSession(sessionID); err != nil {
+		return fmt.Errorf("%w: end session: %v", ErrStorageUnavailable, err)
+	}
+	released := s.releaseClaims(userID)
+	if err := s.store.DeleteAccount(userID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: delete account: %v", ErrStorageUnavailable, err)
+	}
+	slog.Info("account deleted by its owner", "user_id", userID, "live_games_released", released)
+	return nil
+}
+
+// releaseClaims makes userID's slots anonymous in every game in memory and
+// returns how many games changed.
+func (s *Service) releaseClaims(userID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	released := 0
+	for _, g := range s.games {
+		if g.ReleaseUser(userID) {
+			released++
+		}
+	}
+	return released
+}
+
 // GetUserByID retrieves user information by user ID
 func (s *Service) GetUserByID(userID string) (*User, error) {
 	if s.store == nil {
