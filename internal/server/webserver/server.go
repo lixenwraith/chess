@@ -3,6 +3,7 @@ package webserver
 import (
 	"embed"
 	"fmt"
+	"html"
 	"io/fs"
 	"strings"
 	"time"
@@ -39,36 +40,30 @@ func Start(host string, port int, apiURL string, logRequests bool) error {
 		return fmt.Errorf("failed to create web sub-filesystem: %w", err)
 	}
 
-	// API config endpoint, served before the static file handler
-	app.Get("/config", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{
-			"apiUrl": apiURL,
-		})
-	})
+	index, err := indexHTML(webContent, apiURL)
+	if err != nil {
+		return err
+	}
 
 	// Serve static files from the embedded client directory.
 	app.Get("*", func(c *fiber.Ctx) error {
-		path := c.Path()
-
-		// Default to index.html for the root path
-		if path == "/" {
-			path = "/index.html"
-		}
-
 		// The path for the embedded filesystem must not have a leading slash
-		fsPath := strings.TrimPrefix(path, "/")
+		fsPath := strings.TrimPrefix(c.Path(), "/")
+
+		sendIndex := func() error {
+			c.Set("Content-Type", "text/html; charset=utf-8")
+			return c.Send(index)
+		}
+		if fsPath == "" || fsPath == "index.html" {
+			return sendIndex()
+		}
 
 		// Try to read the file
 		data, err := fs.ReadFile(webContent, fsPath)
 		if err != nil {
 			// If the file isn't found, serve index.html for SPA-style routing
 			// This handles client-side routes that don't correspond to a file
-			data, err = fs.ReadFile(webContent, "index.html")
-			if err != nil {
-				return c.Status(fiber.StatusInternalServerError).SendString("index.html not found")
-			}
-			c.Set("Content-Type", "text/html; charset=utf-8")
-			return c.Send(data)
+			return sendIndex()
 		}
 
 		// Set the correct Content-Type based on file extension
@@ -88,4 +83,23 @@ func Start(host string, port int, apiURL string, logRequests bool) error {
 
 	addr := fmt.Sprintf("%s:%d", host, port)
 	return app.Listen(addr)
+}
+
+// boardScript is how index.html loads the board; indexHTML adds the API base.
+const boardScript = `<script src="app.js">`
+
+// indexHTML returns the client's index.html with the browser-visible API base
+// on the board's script element, data-api, which app.js reads as it runs: the
+// same attribute a host that publishes the files itself sets.
+func indexHTML(content fs.FS, apiURL string) ([]byte, error) {
+	data, err := fs.ReadFile(content, "index.html")
+	if err != nil {
+		return nil, fmt.Errorf("embedded index.html: %w", err)
+	}
+	page := string(data)
+	if n := strings.Count(page, boardScript); n != 1 {
+		return nil, fmt.Errorf("embedded index.html has %s %d times, want once", boardScript, n)
+	}
+	tag := fmt.Sprintf(`<script src="app.js" data-api="%s">`, html.EscapeString(apiURL))
+	return []byte(strings.Replace(page, boardScript, tag, 1)), nil
 }

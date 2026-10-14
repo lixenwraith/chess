@@ -208,8 +208,10 @@ Browser clients are static files published by the host, and must match the
 server's API paths:
 
 - **Web client:** copy `internal/server/webserver/chess-client-web/`
-  (`index.html`, `app.js`, `style.css`) to the site directory. Without the
-  embedded `/config` endpoint, it uses the `/chess` API prefix.
+  (`index.html`, `app.js`, `style.css`) to the site directory. It takes its
+  API base from its script element, `<script src="app.js" data-api="…">`,
+  which the embedded server sets from `-web-api-url`; without one, as copied,
+  it uses the `/chess` API prefix.
 - **WASM terminal client (if published):** `make wasm` (xterm.js is committed
   under `lib/`), then copy `web/chess-client-wasm/`. It derives its API base
   as `<origin>/chess`. Its API paths are compiled into `chess-client.wasm`,
