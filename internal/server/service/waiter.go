@@ -1,11 +1,12 @@
 package service
 
 import (
-	"github.com/lixenwraith/chess/internal/server/core"
 	"context"
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/lixenwraith/chess/internal/server/core"
 )
 
 const (
