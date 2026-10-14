@@ -37,7 +37,7 @@ go build ./cmd/chess-client-cli
 - `-finished-game-ttl`: How long terminal games stay in memory (default: `1h`; `0` disables eviction)
 - `-anonymous-game-ttl`: How long games without a registered player survive after their last activity, in memory and in the database (default: `24h`; `0` keeps them)
 - `-max-users`: Accounts at which public registration closes (default: `100`; `0` = no limit; the CLI is not limited)
-- `-web-api-url`: Browser-visible API origin for the embedded web client; useful when its public origin differs from the listen address
+- `-web-api-url`: Browser-visible API origin for the embedded web client, set on its script element as `data-api`; useful when its public origin differs from the listen address
 
 ### Modes
 ```bash

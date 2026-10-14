@@ -120,7 +120,8 @@ Constraints from the host's security headers:
   classes instead of inline style strings.
 - `img-src 'self' data:`: pieces remain Unicode glyphs or `data:` SVG.
 - `connect-src 'self'`: all requests go to the same origin under `/chess/`
-  (the existing `/config` fallback); no CDN or cross-origin API.
+  (the board's default API base, or the host's `data-api`); no CDN or
+  cross-origin API.
 - `frame-ancestors 'self'` and `X-Frame-Options: SAMEORIGIN`: the iframe host
   page must stay on the same origin. Downloads from `blob:` URLs and
   `navigator.clipboard` work in a same-origin frame.

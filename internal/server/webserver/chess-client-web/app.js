@@ -7,7 +7,7 @@ let gameState = {
     isLocked: false,
     polling: false,
     pollController: null,
-    apiUrl: '',
+    apiUrl: apiBase(document.currentScript),
     selectedSquare: null,
     healthCheckInterval: null,
     networkError: false,
@@ -49,10 +49,7 @@ function clearModalMessage(elementId) {
 }
 
 // Initialize on page load
-document.addEventListener('DOMContentLoaded', async () => {
-    const config = await getConfig();
-    gameState.apiUrl = config.apiUrl;
-
+document.addEventListener('DOMContentLoaded', () => {
     // Check for existing session on load
     restoreAuthSession();
 
@@ -471,21 +468,14 @@ function authFetch(url, options = {}) {
     return fetch(url, options);
 }
 
-async function getConfig() {
-    try {
-        const response = await fetch('./config', { cache: 'no-store' });
-        if (!response.ok) throw new Error(`config returned ${response.status}`);
-        const config = await response.json();
-        if (typeof config.apiUrl !== 'string' || !config.apiUrl.trim()) {
-            throw new Error('config is missing apiUrl');
-        }
-        return { apiUrl: config.apiUrl.replace(/\/+$/, '') };
-    } catch (error) {
-        // Static production hosting currently reverse-proxies the API here.
-        // The embedded server supplies /config and does not use this fallback.
-        console.debug('Using default API route:', error.message);
-        return { apiUrl: '/chess' };
-    }
+// The API base, from the page that loads this script: its element's data-api,
+// set by the embedded server from -web-api-url and by a host that publishes
+// the files itself. Without it, /chess, where a static host proxies the API.
+// "/" is the origin's root. Read while the script runs: document.currentScript
+// is null in any callback.
+function apiBase(script) {
+    const api = script?.dataset.api?.trim();
+    return api ? api.replace(/\/+$/, '') : '/chess';
 }
 
 function startHealthCheck() {
