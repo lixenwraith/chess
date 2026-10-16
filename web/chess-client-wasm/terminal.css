@@ -1,6 +1,5 @@
 :root {
     --host-bg: #11111b;
-    --host-surface: #1a1b26;
 }
 
 * {
@@ -16,11 +15,49 @@ html, body {
     background: var(--host-bg);
 }
 
-#terminal {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    overflow: hidden;
+/* terminal.js reads the --term-* properties for xterm's theme. FitAddon sizes
+   the grid from #chess-terminal-screen, so the box needs a definite height. */
+.chess-terminal {
+    --term-bg: #1a1b26;
+    --term-fg: #a9b1d6;
+    --term-cursor: #a9b1d6;
+    --term-selection: rgba(169, 177, 214, 0.35);
+
+    display: grid;
+    height: 100%;
+    background: var(--term-bg);
+}
+
+/* The status line shares the screen's grid cell. */
+.chess-terminal > * {
+    grid-area: 1 / 1;
+    min-width: 0;
+    min-height: 0;
+}
+
+.chess-terminal-status {
+    /* Above xterm's positioned layers, which would otherwise paint over it. */
+    position: relative;
+    z-index: 1;
+
+    place-self: center;
+    margin: 0;
+    padding: 0 1.5rem;
+    text-align: center;
+    color: var(--term-fg);
+    font-family: sans-serif;
+    pointer-events: none;
+}
+
+.chess-terminal-status.is-error {
+    color: #f7768e;
+    pointer-events: auto;
+}
+
+.chess-terminal-progress {
+    font-variant-numeric: tabular-nums;
+}
+
+.chess-terminal-progress:not(:empty)::before {
+    content: " ";
 }

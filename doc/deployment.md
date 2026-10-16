@@ -212,9 +212,12 @@ server's API paths:
   API base from its script element, `<script src="app.js" data-api="…">`,
   which the embedded server sets from `-web-api-url`; without one, as copied,
   it uses the `/chess` API prefix.
-- **WASM terminal client (if published):** `make wasm` (xterm.js is committed
-  under `lib/`), then copy `web/chess-client-wasm/`. It derives its API base
-  as `<origin>/chess`. Its API paths are compiled into `chess-client.wasm`,
+- **WASM terminal client (if published):** `make wasm` (xterm.js and its
+  licence are committed under `lib/`), then copy `web/chess-client-wasm/`.
+  `terminal.js` runs the client in the page's `#chess-terminal`, whose
+  `data-wasm-url` names the binary; a site with a page of its own loads it
+  into the same markup (`index.html`). The client derives its API base as
+  `<origin>/chess`. Its API paths are compiled into `chess-client.wasm`,
   so rebuild it whenever `internal/client/api` changes; publish it together
   with the `wasm_exec.js` that `make wasm` copies from the same Go toolchain.
 
