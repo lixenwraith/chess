@@ -79,18 +79,22 @@ wasm:
 	@echo "Built WASM client: $(WASM_BINARY)"
 	@echo "Size: $$(du -h $(WASM_BINARY) | cut -f1)"
 
-# Download xterm.js and all addons
+# Download xterm.js, its addons and licence. jsDelivr's header comment and the
+# trailing sourceMappingURL, to a map no one ships, are stripped: the files
+# are then the ones vif's web/vendor/ and lixen.com serve.
 .PHONY: wasm-deps
 wasm-deps:
 	@echo "Downloading xterm.js $(XTERM_VERSION) and addons..."
 	@mkdir -p $(WASM_LIB_DIR)
 	@cd $(WASM_LIB_DIR) && \
+		$(DOWNLOAD) https://cdn.jsdelivr.net/npm/@xterm/xterm@$(XTERM_VERSION)/LICENSE && \
 		$(DOWNLOAD) https://cdn.jsdelivr.net/npm/@xterm/xterm@$(XTERM_VERSION)/lib/xterm.min.js && \
 		$(DOWNLOAD) https://cdn.jsdelivr.net/npm/@xterm/xterm@$(XTERM_VERSION)/css/xterm.min.css && \
 		$(DOWNLOAD) https://cdn.jsdelivr.net/npm/@xterm/addon-fit@$(XTERM_FIT_VERSION)/lib/addon-fit.min.js && \
 		$(DOWNLOAD) https://cdn.jsdelivr.net/npm/@xterm/addon-webgl@$(XTERM_WEBGL_VERSION)/lib/addon-webgl.min.js && \
 		$(DOWNLOAD) https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@$(XTERM_LINKS_VERSION)/lib/addon-web-links.min.js && \
-		$(DOWNLOAD) https://cdn.jsdelivr.net/npm/@xterm/addon-unicode11@$(XTERM_UNICODE_VERSION)/lib/addon-unicode11.min.js
+		$(DOWNLOAD) https://cdn.jsdelivr.net/npm/@xterm/addon-unicode11@$(XTERM_UNICODE_VERSION)/lib/addon-unicode11.min.js && \
+		for f in *.min.js *.min.css; do sed -e '1,/^ \*\/$$/d' -e '$$d' "$$f" > "$$f.tmp" && mv "$$f.tmp" "$$f"; done
 	@echo "Downloaded to $(WASM_LIB_DIR)/"
 	@ls -la $(WASM_LIB_DIR)/
 
