@@ -168,6 +168,10 @@
     <div class="modal games-modal" role="dialog" aria-modal="true" aria-labelledby="games-title">
         <div class="modal-head">
             <h2 id="games-title">My games</h2>
+            <button id="games-import-btn" class="btn btn-ghost btn-sm hidden" type="button" title="Store a game from PGN">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 19h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                <span>Import PGN</span>
+            </button>
             <button id="games-close" class="btn btn-icon" type="button" aria-label="Close">
                 <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
             </button>
@@ -225,7 +229,7 @@
                 <button id="login-submit-btn" class="btn btn-primary" type="button">Sign in</button>
                 <button id="auth-cancel-btn" class="btn btn-secondary" type="button">Cancel</button>
             </div>
-            <p class="auth-aside hidden" id="forgot-row"><button id="forgot-btn" class="link-btn" type="button">Forgot password?</button></p>
+            <p class="auth-aside" id="forgot-row"><button id="forgot-btn" class="link-btn" type="button">Forgot password?</button></p>
         </div>
 
         <div id="recover-form" class="auth-form hidden">
@@ -257,6 +261,31 @@
                 <button id="register-submit-btn" class="btn btn-primary" type="button">Register</button>
                 <button id="auth-cancel-btn-2" class="btn btn-secondary" type="button">Cancel</button>
             </div>
+        </div>
+    </div>
+</div>
+
+<!-- Import Modal: a PGN game stored under the account -->
+<div id="import-overlay" class="modal-overlay">
+    <div class="modal import-modal" role="dialog" aria-modal="true" aria-labelledby="import-title">
+        <h2 id="import-title">Import a game</h2>
+        <div id="import-modal-message" class="modal-message" role="status" aria-live="polite"></div>
+        <div class="form-group">
+            <label for="import-pgn">PGN (one game: tags, then the moves)</label>
+            <textarea id="import-pgn" class="fen-input pgn-input" rows="8" spellcheck="false"
+                      placeholder='[White "Spassky, Boris"]
+[Black "Fischer, Robert"]
+[Result "1-0"]
+
+1. d4 Nf6 2. c4 e6 3. Nf3 d5 1-0'></textarea>
+        </div>
+        <div class="form-group form-row">
+            <label for="import-file" class="file-label">Or pick a .pgn file</label>
+            <input type="file" id="import-file" accept=".pgn,text/plain,application/x-chess-pgn">
+        </div>
+        <div class="modal-buttons">
+            <button id="import-submit-btn" class="btn btn-primary" type="button">Import</button>
+            <button id="import-cancel-btn" class="btn btn-secondary" type="button">Cancel</button>
         </div>
     </div>
 </div>

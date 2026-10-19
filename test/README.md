@@ -17,12 +17,22 @@ scripts pass it to both `chess-server` and `psql`. The test server drops every
 chess table in that database on start and exit, so never point it at real data.
 
 ```bash
-# One-time setup as a PostgreSQL superuser
-psql -U postgres -c "CREATE ROLE chess_test LOGIN PASSWORD 'chess_test'"
-psql -U postgres -c "CREATE DATABASE chess_test OWNER chess_test"
+# One-time setup, either way:
 
+# a) your own OS account owns the test database (peer authentication over
+#    the local socket, no password; create the role first if needed:
+#    sudo -u postgres createuser "$USER")
+createdb chess_test
+export CHESS_TEST_DSN='dbname=chess_test'
+
+# b) a dedicated role with a password, over TCP (what CI uses)
+sudo -u postgres psql -c "CREATE ROLE chess_test LOGIN PASSWORD 'chess_test'" \
+                      -c "CREATE DATABASE chess_test OWNER chess_test"
 export CHESS_TEST_DSN='postgres://chess_test:chess_test@localhost:5432/chess_test?sslmode=disable'
 ```
+
+`run-test-server.sh` prints these steps when the variable is unset. The DSN
+is libpq keyword/value or URL form, as for the server's `-dsn`.
 
 The same variable enables the Go database tests (`go test ./...`), which create
 and drop an isolated schema per test and are skipped when it is unset.

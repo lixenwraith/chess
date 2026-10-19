@@ -75,9 +75,18 @@ func BuildPGN(record *storage.GameRecord, moves []storage.MoveRecord, ply int) (
 		}
 	}
 	start := record.StartTimeUTC.UTC()
+	event, site, round := "Casual game", "", ""
+	if record.ImportedBy != "" {
+		event, site, round = record.Event, record.Site, record.Round
+		if event == "" {
+			event = "Imported game"
+		}
+	}
 	tags := []chess.Tag{
-		{Name: "Event", Value: "Casual game"},
+		{Name: "Event", Value: event},
+		{Name: "Site", Value: site},
 		{Name: "Date", Value: start.Format("2006.01.02")},
+		{Name: "Round", Value: round},
 		{Name: "White", Value: playerName(record.WhiteType, record.WhiteLevel, record.WhiteName)},
 		{Name: "Black", Value: playerName(record.BlackType, record.BlackLevel, record.BlackName)},
 		{Name: "GameId", Value: record.GameID},

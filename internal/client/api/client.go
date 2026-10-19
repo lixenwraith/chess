@@ -254,6 +254,21 @@ func (c *Client) GetMyGames(limit int, cursor string) (*GameListResponse, error)
 	return &resp, err
 }
 
+// RemoveMyGame takes a stored game off the caller's list: deleted when the
+// caller alone holds it, released when another player keeps it.
+func (c *Client) RemoveMyGame(gameID string) (*RemoveGameResponse, error) {
+	var resp RemoveGameResponse
+	err := c.doRequest("DELETE", "/api/users/me/games/"+gameID, nil, &resp)
+	return &resp, err
+}
+
+// ImportGame stores a PGN game for the caller.
+func (c *Client) ImportGame(pgn string) (*ImportGameResponse, error) {
+	var resp ImportGameResponse
+	err := c.doRequest("POST", "/api/games/import", &ImportGameRequest{PGN: pgn}, &resp)
+	return &resp, err
+}
+
 func (c *Client) Register(username, password, email string) (*AuthResponse, error) {
 	req := &RegisterRequest{
 		Username: username,

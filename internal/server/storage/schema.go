@@ -47,6 +47,20 @@ type GameRecord struct {
 	ConcessionTermination string
 	ConcessionPly         int
 	ConcessionTimeUTC     *time.Time
+	// ImportedBy is the account that imported the game from PGN; empty for
+	// a game played here. Event, Site and Round come from its tags.
+	ImportedBy string
+	Event      string
+	Site       string
+	Round      string
+}
+
+// Origin names how a game came to be stored.
+func (r GameRecord) Origin() string {
+	if r.ImportedBy != "" {
+		return "imported"
+	}
+	return "played"
 }
 
 // GameSummaryRecord is a game row plus its replay extent. MoveCount and
@@ -81,7 +95,7 @@ type MovePersistence struct {
 // schemaVersion is the newest schema this binary understands. Migrations are
 // applied in order inside one transaction; PostgreSQL DDL is transactional, so
 // a failed upgrade leaves the previous version intact.
-const schemaVersion = 4
+const schemaVersion = 5
 
 // migrations[v-1] upgrades the schema from version v-1 to v. Never edit a
 // released migration; append a new one.
@@ -227,6 +241,23 @@ CREATE TABLE password_resets (
 	CONSTRAINT password_resets_token_hash_check CHECK (octet_length(token_hash) = 32)
 );
 CREATE INDEX password_resets_expires_at_idx ON password_resets (expires_at);
+`,
+
+	// v5: imported games. A game read from PGN belongs to the account that
+	// imported it (imported_by), has no claims, and keeps the PGN's event,
+	// site and round for its export. Imported games are not anonymous, so
+	// the purge index excludes them.
+	`
+ALTER TABLE games
+	ADD COLUMN imported_by uuid,
+	ADD COLUMN event text CHECK (char_length(event) BETWEEN 1 AND 200),
+	ADD COLUMN site text CHECK (char_length(site) BETWEEN 1 AND 200),
+	ADD COLUMN round text CHECK (char_length(round) BETWEEN 1 AND 40);
+DROP INDEX games_anonymous_start_idx;
+CREATE INDEX games_anonymous_start_idx ON games (start_time_utc)
+	WHERE white_claimed_by IS NULL AND black_claimed_by IS NULL AND imported_by IS NULL;
+CREATE INDEX games_imported_by_idx ON games (imported_by, start_time_utc DESC, game_id DESC)
+	WHERE imported_by IS NOT NULL;
 `,
 }
 

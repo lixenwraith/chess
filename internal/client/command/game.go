@@ -98,8 +98,8 @@ func (r *Registry) registerGameCommands() {
 	r.Register(&Command{
 		Name:        "games",
 		ShortName:   "g",
-		Description: "List your stored games, newest first (login required)",
-		Usage:       "games [more]",
+		Description: "List, or delete, your stored games (login required)",
+		Usage:       "games [more] | games delete <#|gameId>",
 		Handler:     gamesHandler,
 		Paged:       true,
 	})
@@ -111,6 +111,14 @@ func (r *Registry) registerGameCommands() {
 		Usage:       "pgn [gameId] [ply] [save <path>]  (default: current or replayed game)",
 		Handler:     pgnHandler,
 		Paged:       true,
+	})
+
+	r.Register(&Command{
+		Name:        "import",
+		ShortName:   "",
+		Description: "Store a PGN file as one of your games (login required)",
+		Usage:       "import <path>",
+		Handler:     importHandler,
 	})
 
 	r.Register(&Command{
@@ -686,6 +694,9 @@ func gamesHandler(s *session.Session, args []string) error {
 	if s.AuthToken == "" {
 		return fmt.Errorf("login required")
 	}
+	if len(args) > 0 && args[0] == "delete" {
+		return gamesDeleteHandler(s, args[1:])
+	}
 	cursor := ""
 	if len(args) > 0 && args[0] == "more" {
 		if s.GamesCursor == "" {
@@ -715,6 +726,62 @@ func gamesHandler(s *session.Session, args []string) error {
 	if resp.NextCursor != "" {
 		display.Println(display.Cyan, "More games: games more")
 	}
+	return nil
+}
+
+// gamesDeleteHandler removes a game from the user's list by its number in
+// the last listing or its ID. A game another player also claims is only
+// released; one the user alone holds is deleted with its moves.
+func gamesDeleteHandler(s *session.Session, args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: games delete <#|gameId>")
+	}
+	gameID := args[0]
+	if index, err := strconv.Atoi(gameID); err == nil {
+		if index < 1 || index > len(s.GamesPage) {
+			return fmt.Errorf("index %d is outside the last listing (1-%d)", index, len(s.GamesPage))
+		}
+		gameID = s.GamesPage[index-1].GameID
+	}
+	resp, err := s.Client.RemoveMyGame(gameID)
+	if err != nil {
+		return err
+	}
+	if resp.Removed == "claim" {
+		display.Println(display.Yellow, "Released your side of %s; the other player keeps the game", gameID)
+	} else {
+		display.Println(display.Green, "Deleted game %s", gameID)
+	}
+	if s.Replay != nil && s.Replay.History.GameID == gameID {
+		s.Replay = nil
+	}
+	if s.CurrentGame == gameID && resp.Removed == "game" {
+		s.CurrentGame = ""
+		s.CurrentGameState = nil
+		s.LastMoveCount = 0
+	}
+	return nil
+}
+
+// importHandler stores a PGN file (one game) under the user's account and
+// makes it the replay.
+func importHandler(s *session.Session, args []string) error {
+	if s.AuthToken == "" {
+		return fmt.Errorf("login required")
+	}
+	if len(args) < 1 {
+		return fmt.Errorf("usage: import <path>")
+	}
+	text, err := readImportFile(args[0])
+	if err != nil {
+		return err
+	}
+	resp, err := s.Client.ImportGame(text)
+	if err != nil {
+		return err
+	}
+	display.Println(display.Green, "Imported game %s (%d plies, %s)", resp.GameID, resp.MoveCount, resp.PGNResult)
+	display.Println(display.Cyan, "Replay it: replay %s", resp.GameID)
 	return nil
 }
 

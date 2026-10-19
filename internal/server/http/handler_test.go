@@ -99,6 +99,8 @@ func TestAPIRoutes(t *testing.T) {
 		"POST /api/games/:gameId/resign",
 		"POST /api/games/:gameId/draw",
 		"GET /api/users/me/games",
+		"DELETE /api/users/me/games/:gameId",
+		"POST /api/games/import",
 	} {
 		if !registered[want] {
 			t.Errorf("route %s is not registered", want)

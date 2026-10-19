@@ -179,6 +179,55 @@ test.describe('web replay', () => {
         await expect(page).toHaveURL(/\/$/);
     });
 
+    test('import a PGN, replay it, delete it', async ({ page, request }) => {
+        const user = await register(page, request);
+        await page.goto('/');
+        await expect(page.locator('#auth-label')).toHaveText(user.username);
+        await page.click('#games-btn');
+        await expect(page.locator('#games-import-btn')).toBeVisible();
+        await page.click('#games-import-btn');
+        await expect(page.locator('#import-overlay')).toHaveClass(/show/);
+        await page.fill('#import-pgn', 'not a game');
+        await page.click('#import-submit-btn');
+        await expect(page.locator('#import-modal-message')).toContainText('Not a valid game');
+        await page.fill('#import-pgn', `[Event "Test event"]
+[White "Spassky, Boris"]
+[Black "Fischer, Robert"]
+[Date "1972.07.11"]
+[Result "1-0"]
+
+1. d4 Nf6 2. c4 e6 3. Nf3 d5 {comment} (3... c5) 1-0
+`);
+        await page.click('#import-submit-btn');
+        await expect(page.locator('#import-overlay')).not.toHaveClass(/show/);
+        // The import opens as a replay with the tags shown.
+        await expect(page.locator('body')).toHaveAttribute('data-mode', 'replay');
+        await expect(page.locator('#replay-players')).toHaveText('Spassky, Boris vs Fischer, Robert');
+        await expect(page.locator('#replay-meta')).toContainText('Test event');
+        await expect(page.locator('#replay-result')).toContainText('1-0');
+        await expect(page.locator('#replay-moves .move')).toHaveCount(6);
+        const gameId = await page.evaluate(() => replay.gameId);
+        const pgn = await (await request.get(`${API}/api/games/${gameId}/pgn`)).text();
+        expect(pgn).toContain('[Event "Test event"]');
+        expect(pgn).toContain('{ White wins by resignation. } 1-0');
+
+        // Listed as imported; delete it from the row.
+        await page.click('#games-btn');
+        const item = page.locator('#games-list .game-item').first();
+        await expect(item.locator('.game-row')).toContainText('Spassky, Boris vs Fischer, Robert');
+        await expect(item.locator('.game-origin')).toContainText('imported · Test event');
+        await item.locator('.game-delete').click();
+        await item.locator('.game-confirm .btn-secondary').click(); // Keep
+        await expect(item.locator('.game-delete')).toBeVisible();
+        await item.locator('.game-delete').click();
+        await item.locator('.game-confirm .btn-danger').click();
+        await expect(page.locator('#games-list .game-item')).toHaveCount(0);
+        await expect(page.locator('#games-status')).toContainText('No stored games');
+        // The replay of the deleted game closed and the game is gone.
+        await expect(page.locator('body')).toHaveAttribute('data-mode', 'live');
+        expect((await request.get(`${API}/api/games/${gameId}/history`)).status()).toBe(404);
+    });
+
     test('a phone fits the board and the controls without scrolling', async ({ browser }) => {
         const context = await browser.newContext({ viewport: { width: 412, height: 780 }, isMobile: true, hasTouch: true });
         const page = await context.newPage();
@@ -203,6 +252,21 @@ test.describe('web replay', () => {
         expect(await fits()).toEqual({ w: true, h: true });
         await expect(page.locator('#replay-exit')).toBeInViewport();
         await expect(page.locator('#replay-link')).toBeInViewport();
+        // A long game scrolls inside its move list, not the page.
+        const username = `phone${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`;
+        const auth = await (await context.request.post(`${API}/api/auth/register`, { data: { username, password: 'Passw0rd123' } })).json();
+        const moves = ['e4 e5', 'Nf3 Nc6', 'Bb5 a6', 'Ba4 Nf6', 'O-O Be7', 'Re1 b5', 'Bb3 d6', 'c3 O-O', 'h3 Nb8', 'd4 Nbd7',
+            'c4 c6', 'cxb5 axb5', 'Nc3 Bb7', 'Bg5 b4', 'Nb1 h6', 'Bh4 c5', 'dxe5 Nxe4', 'Bxe7 Qxe7', 'exd6 Qf6', 'Nbd2 Nxd6'];
+        const pgn = moves.map((m, i) => `${i + 1}. ${m}`).join(' ') + ' *\n';
+        const imported = await (await context.request.post(`${API}/api/games/import`, {
+            headers: { Authorization: `Bearer ${auth.token}` }, data: { pgn } })).json();
+        expect(imported.moveCount).toBe(40);
+        await page.goto(`/?replay=${imported.gameId}&ply=40`);
+        await expect(page.locator('#replay-moves .move')).toHaveCount(40);
+        expect(await fits()).toEqual({ w: true, h: true });
+        await expect(page.locator('#replay-exit')).toBeInViewport();
+        const box = await page.locator('#replay-moves-box').evaluate(el => ({ scrolls: el.scrollHeight > el.clientHeight, atEnd: el.scrollTop > 0 }));
+        expect(box).toEqual({ scrolls: true, atEnd: true });
         await context.close();
     });
 
@@ -217,6 +281,12 @@ test.describe('web replay', () => {
 
         await page.goto('/');
         await expect(page.locator('#storage-dot')).toHaveAttribute('data-status', 'ok');
+        await page.click('#auth-btn');
+        // The message slot carries a hint until a result replaces it; a click
+        // on the backdrop closes the dialog.
+        await expect(page.locator('#auth-modal-message')).toHaveClass(/hint/);
+        await page.mouse.click(5, 5);
+        await expect(page.locator('#auth-modal-overlay')).not.toHaveClass(/show/);
         await page.click('#auth-btn');
         // A wrong password keeps the focus in the password field.
         await page.fill('#login-identifier', username);

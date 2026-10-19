@@ -290,6 +290,7 @@ carries its SAN, derived on read from the stored position before it.
   "termination": "checkmate",
   "startTimeUtc": "2026-09-07T12:00:00Z",
   "endTimeUtc": "2026-09-07T12:15:00Z",
+  "origin": "played",
   "players": {
     "white": {"id": "user-id", "color": 1, "type": 1, "claimedBy": "user-id", "name": "alice"},
     "black": {"id": "player-id", "color": 2, "type": 1}
@@ -312,6 +313,8 @@ resignation or agreed draw, in stored-result form (`"result": "black_wins"`);
 see [Continuing after a resignation or agreed
 draw](#continuing-after-a-resignation-or-agreed-draw).
 
+`origin` is `played` or `imported`; an imported game also carries the
+`event`, `site` and `round` its PGN had.
 `result` is omitted while a game is ongoing. Persisted terminal values are
 `white_wins`, `black_wins`, `draw`, and `stalemate`. `pgnResult` is the PGN
 token for the same outcome (`1-0`, `0-1`, `1/2-1/2`, or `*` while ongoing),
@@ -389,7 +392,8 @@ later first-move slot claim, newest first. Requires
 Each item contains game ID, initial FEN, final FEN (after the last stored move,
 or the initial FEN when there is none), result, its `pgnResult` token and
 `termination` (as in the history; both omitted while ongoing), timestamps,
-players, and move count. `nextCursor` is present only when another
+players, move count, `origin` (`played` or `imported`) and, for an imported
+game, its `event`. `nextCursor` is present only when another
 page exists; `nextOffset` also, on requests without a cursor. A game belongs
 to a user who created it while authenticated or claimed a slot with a first
 move; the association survives later player reconfiguration.
@@ -410,6 +414,7 @@ Returns 400 `INVALID_REQUEST` for a malformed cursor or filter.
       "startTimeUtc": "2026-09-07T12:00:00Z",
       "endTimeUtc": "2026-09-07T12:15:00Z",
       "moveCount": 7,
+      "origin": "played",
       "players": {
         "white": {"id": "user-id", "color": 1, "type": 1, "claimedBy": "user-id", "name": "alice"},
         "black": {"id": "player-id", "color": 2, "type": 1}
@@ -421,6 +426,56 @@ Returns 400 `INVALID_REQUEST` for a malformed cursor or filter.
   "nextCursor": "MTc5MDQ5NjQyMDU4MTg2NS42ODAwN2ZkMS04OTcwLTRkODQtOTUwZC0yZjZlYzYzNzVjMGI"
 }
 ```
+
+### Import a Game from PGN
+`POST /games/import`
+
+Stores one PGN game under the signed-in account, for replay and export.
+Requires `Authorization: Bearer <token>` and persistent storage; 5 requests a
+minute per IP. The PGN is read strictly: well-formed tag pairs, printable
+text, balanced comments and variations (which are dropped, with annotations
+and numeric glyphs), one game, at most 64 KiB and 1000 plies. Every move is
+replayed by the rules core; an illegal move is refused with its ply. The
+result comes from the PGN's result token and must agree with the final
+position (a `1-0` after Black mates is refused); the stored termination is
+checkmate or stalemate when the position says so, a draw rule when one
+applies, otherwise resignation or agreement. `White`, `Black`, `Event`,
+`Site`, `Round` and `Date`/`UTCDate`/`UTCTime` tags are kept; `SetUp`/`FEN`
+set the starting position.
+
+**Request:**
+```json
+{"pgn": "[White \"Spassky, Boris\"]\n[Black \"Fischer, Robert\"]\n[Result \"1-0\"]\n\n1. d4 Nf6 2. c4 e6 3. Nf3 d5 1-0\n"}
+```
+
+**Response (201):**
+```json
+{"gameId": "a1b2c3d4-e5f6-7890-1234-567890abcdef", "moveCount": 6, "result": "white_wins", "pgnResult": "1-0"}
+```
+
+Errors: 400 `INVALID_REQUEST` with `details` saying what is wrong with the
+PGN, 401 without a token, 429 past the limit, 503 `STORAGE_UNAVAILABLE`.
+
+An imported game has no claimed side: it is listed for its importer with
+`"origin": "imported"` and its `event`, is excluded from the `color` filter,
+and is never purged as anonymous. Its history and PGN carry the tags.
+
+### Remove a Stored Game
+`DELETE /users/me/games/{gameId}`
+
+Takes a stored game off the signed-in user's list. A game the user alone
+holds (the only claimant, or its importer) is deleted with its moves, and
+unloaded if it was still in memory; a game another user also claims is kept
+for them, and only the caller's claim and name are cleared from it.
+
+**Response (200):**
+```json
+{"removed": "game"}
+```
+
+`removed` is `game` or `claim`. Errors: 400 for a malformed ID, 404
+`GAME_NOT_FOUND` when the user holds nothing in that game, 503 when storage
+is unavailable.
 
 ### Make Move
 `POST /games/{gameId}/moves`
@@ -603,6 +658,7 @@ Error codes:
 - Login: 10 requests/minute/IP
 - Account deletion: 5 requests/minute/IP
 - Password recovery: 3 requests/minute/IP; reset: 10 requests/minute/IP
+- PGN import: 5 requests/minute/IP
 
 Exceeding limit returns 429 status. Behind a reverse proxy the client IP is the
 proxy's `X-Real-IP` header, trusted only from addresses listed in

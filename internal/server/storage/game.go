@@ -17,7 +17,8 @@ const gameSelectColumns = `
 	g.white_player_id, g.white_type, g.white_level, g.white_search_time, g.white_claimed_by, g.white_name,
 	g.black_player_id, g.black_type, g.black_level, g.black_search_time, g.black_claimed_by, g.black_name,
 	g.result, g.termination, g.start_time_utc, g.end_time_utc,
-	g.concession_result, g.concession_termination, g.concession_ply, g.concession_time_utc`
+	g.concession_result, g.concession_termination, g.concession_ply, g.concession_time_utc,
+	g.imported_by, g.event, g.site, g.round`
 
 // claimantName snapshots a claimant's username inside the writing
 // transaction; NULL when the slot is unclaimed or the account is gone.
@@ -265,7 +266,7 @@ func (s *Store) DeleteAnonymousGames(cutoff time.Time, live []string) error {
 	}
 	return s.enqueue("delete_anonymous_games", "", func(ctx context.Context, tx *sql.Tx) error {
 		result, err := tx.ExecContext(ctx, `DELETE FROM games g
-			WHERE g.white_claimed_by IS NULL AND g.black_claimed_by IS NULL
+			WHERE g.white_claimed_by IS NULL AND g.black_claimed_by IS NULL AND g.imported_by IS NULL
 				AND g.start_time_utc < $1
 				AND (g.end_time_utc IS NULL OR g.end_time_utc < $1)
 				AND NOT EXISTS (
@@ -302,7 +303,7 @@ func (s *Store) QueryGames(gameID, playerID string) ([]GameRecord, error) {
 		}
 		args = append(args, playerID)
 		query += fmt.Sprintf(` AND $%d IN (g.white_player_id, g.black_player_id,
-			g.white_claimed_by, g.black_claimed_by)`, len(args))
+			g.white_claimed_by, g.black_claimed_by, g.imported_by)`, len(args))
 	}
 	query += " ORDER BY g.start_time_utc DESC, g.game_id DESC"
 
@@ -423,7 +424,7 @@ func (s *Store) QueryGamesForUser(userID string, q UserGamesQuery) ([]GameSummar
 	var where string
 	switch q.Color {
 	case "":
-		where = "(g.white_claimed_by = $1 OR g.black_claimed_by = $1)"
+		where = "(g.white_claimed_by = $1 OR g.black_claimed_by = $1 OR g.imported_by = $1)"
 	case "w":
 		where = "g.white_claimed_by = $1"
 	case "b":
@@ -541,6 +542,7 @@ type rowScanner interface {
 func scanGame(scanner rowScanner, record *GameRecord, extra ...any) error {
 	var whiteClaimed, whiteName, blackClaimed, blackName, result, termination sql.NullString
 	var concessionResult, concessionTermination sql.NullString
+	var importedBy, event, site, round sql.NullString
 	var concessionPly sql.NullInt64
 	var endTime, concessionTime sql.NullTime
 	dest := []any{
@@ -551,6 +553,7 @@ func scanGame(scanner rowScanner, record *GameRecord, extra ...any) error {
 		&blackClaimed, &blackName,
 		&result, &termination, &record.StartTimeUTC, &endTime,
 		&concessionResult, &concessionTermination, &concessionPly, &concessionTime,
+		&importedBy, &event, &site, &round,
 	}
 	if err := scanner.Scan(append(dest, extra...)...); err != nil {
 		return err
@@ -567,6 +570,10 @@ func scanGame(scanner rowScanner, record *GameRecord, extra ...any) error {
 	record.ConcessionTermination = concessionTermination.String
 	record.ConcessionPly = int(concessionPly.Int64)
 	record.ConcessionTimeUTC = utcPointer(concessionTime)
+	record.ImportedBy = importedBy.String
+	record.Event = event.String
+	record.Site = site.String
+	record.Round = round.String
 	return nil
 }
 

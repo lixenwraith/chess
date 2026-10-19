@@ -82,9 +82,30 @@ type BoardResponse struct {
 	Board string `json:"board"` // ASCII representation
 }
 
+// ImportGameRequest is a PGN game to store for the signed-in user.
+type ImportGameRequest struct {
+	PGN string `json:"pgn" validate:"required,max=65536"`
+}
+
+// ImportGameResponse names the stored game.
+type ImportGameResponse struct {
+	GameID    string `json:"gameId"`
+	MoveCount int    `json:"moveCount"`
+	Result    string `json:"result,omitempty"`
+	PGNResult string `json:"pgnResult"`
+}
+
+// RemoveGameResponse says what DELETE /users/me/games/{id} did: "game" (the
+// game is gone) or "claim" (another player keeps it; the caller's side was
+// released).
+type RemoveGameResponse struct {
+	Removed string `json:"removed"`
+}
+
 // GameHistoryResponse is the durable replay representation of a game. Moves
 // are ordered and include the resulting FEN so clients do not need an engine
-// to replay a stored game.
+// to replay a stored game. Origin is "played" or "imported"; Event, Site and
+// Round are set for imported games that carried them.
 //
 // PGNResult is the PGN result token ("1-0", "0-1", "1/2-1/2", or "*") and
 // Termination names how a result was reached (see core.Termination; omitted
@@ -99,6 +120,10 @@ type GameHistoryResponse struct {
 	StartTimeUTC time.Time       `json:"startTimeUtc"`
 	EndTimeUTC   *time.Time      `json:"endTimeUtc,omitempty"`
 	Concession   *Concession     `json:"concession,omitempty"`
+	Origin       string          `json:"origin"`
+	Event        string          `json:"event,omitempty"`
+	Site         string          `json:"site,omitempty"`
+	Round        string          `json:"round,omitempty"`
 	Players      PlayersResponse `json:"players"`
 	Moves        []HistoryMove   `json:"moves"`
 }
@@ -117,7 +142,8 @@ type HistoryMove struct {
 // GameSummary is intentionally sufficient for a client-side game picker; the
 // full move list remains on the per-game history endpoint. FinalFEN is the
 // position after the last stored move (the initial FEN when there is none);
-// Termination says how a finished game ended, as in the history.
+// Termination says how a finished game ended, as in the history; Origin is
+// "played" or "imported", and Event is the imported game's event tag.
 type GameSummary struct {
 	GameID       string          `json:"gameId"`
 	InitialFEN   string          `json:"initialFen"`
@@ -128,6 +154,8 @@ type GameSummary struct {
 	StartTimeUTC time.Time       `json:"startTimeUtc"`
 	EndTimeUTC   *time.Time      `json:"endTimeUtc,omitempty"`
 	MoveCount    int             `json:"moveCount"`
+	Origin       string          `json:"origin"`
+	Event        string          `json:"event,omitempty"`
 	Players      PlayersResponse `json:"players"`
 }
 

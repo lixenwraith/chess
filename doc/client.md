@@ -182,11 +182,23 @@ repetition.` or `Black wins by resignation.`; a pending offer is shown as
 
 #### `games` / `g`
 List your stored games, newest first, 20 per page (requires login), numbered
-for `replay <#>`. The result column is the PGN token (`1-0`, `0-1`,
-`1/2-1/2`, `*`).
+for `replay <#>` and `games delete <#>`. The result column is the PGN token
+(`1-0`, `0-1`, `1/2-1/2`, `*`). Deleting a game you alone hold removes it
+with its moves; a game another player also claims is only released from
+your list.
 ```
-chess > games        # Newest games
-chess > games more   # Next page
+chess > games              # Newest games
+chess > games more         # Next page
+chess > games delete 3     # Remove the third game of the last listing (or an ID)
+```
+
+#### `import`
+Store a PGN file (one game) under your account, for replay with `replay`.
+The server checks every move; tags such as `White`, `Black`, `Event` and
+`Date` are kept. Not available in the browser build, which has no files;
+the web board imports a pasted PGN instead.
+```
+chess > import games/fischer-spassky-1972-1.pgn
 ```
 
 #### `pgn`

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lixenwraith/chess/internal/server/chess"
 	"github.com/lixenwraith/chess/internal/server/core"
 	"github.com/lixenwraith/chess/internal/server/processor"
 	"github.com/lixenwraith/chess/internal/server/service"
@@ -229,6 +230,20 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 	api.Post("/games/:gameId/draw", OptionalAuth(validateToken), h.Draw)
 	api.Get("/games/:gameId/board", h.GetBoard)
 	api.Get("/users/me/games", AuthRequired(validateToken), h.GetCurrentUserGames)
+	api.Delete("/users/me/games/:gameId", AuthRequired(validateToken), h.RemoveGame)
+	// Importing replays a whole game through the rules core: 5 a minute per IP.
+	api.Post("/games/import", AuthRequired(validateToken), limiter.New(limiter.Config{
+		Max:          5,
+		Expiration:   1 * time.Minute,
+		KeyGenerator: clientIP,
+		LimitReached: func(c *fiber.Ctx) error {
+			return c.Status(fiber.StatusTooManyRequests).JSON(core.ErrorResponse{
+				Error:   "rate limit exceeded",
+				Code:    core.ErrRateLimitExceeded,
+				Details: "5 imports per minute allowed",
+			})
+		},
+	}), h.ImportGame)
 
 	return app
 }
@@ -814,6 +829,77 @@ func (h *HTTPHandler) GetCurrentUserGames(c *fiber.Ctx) error {
 		})
 	}
 	return c.JSON(games)
+}
+
+// ImportGame stores a PGN game for the signed-in user and names it.
+func (h *HTTPHandler) ImportGame(c *fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return c.Status(fiber.StatusUnauthorized).JSON(core.ErrorResponse{
+			Error: "unauthorized", Code: core.ErrUnauthorized,
+		})
+	}
+	body := c.Locals("validatedBody")
+	if validated, _ := c.Locals("validated").(bool); !validated || body == nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
+			Error: "validation bypass detected", Code: core.ErrInternalError,
+		})
+	}
+	req := *(body.(*core.ImportGameRequest))
+
+	imported, err := h.svc.ImportGame(userID, req.PGN)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrInvalidPGN):
+			return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
+				Error: "invalid PGN", Code: core.ErrInvalidRequest,
+				Details: strings.TrimPrefix(err.Error(), "invalid PGN: "),
+			})
+		case errors.Is(err, service.ErrStorageDisabled), errors.Is(err, service.ErrStorageUnavailable):
+			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+				Error: "stored games unavailable", Code: core.ErrStorageUnavailable,
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
+			Error: "failed to import game", Code: core.ErrInternalError,
+		})
+	}
+	return c.Status(fiber.StatusCreated).JSON(core.ImportGameResponse{
+		GameID: imported.GameID, MoveCount: imported.Plies, Result: imported.Result,
+		PGNResult: chess.ResultToken(imported.Result),
+	})
+}
+
+// RemoveGame takes a stored game off the signed-in user's list: deleted when
+// the user alone holds it, released when another player keeps it.
+func (h *HTTPHandler) RemoveGame(c *fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return c.Status(fiber.StatusUnauthorized).JSON(core.ErrorResponse{
+			Error: "unauthorized", Code: core.ErrUnauthorized,
+		})
+	}
+	gameID := c.Params("gameId")
+	if !isValidUUID(gameID) {
+		return invalidGameID(c)
+	}
+	outcome, err := h.svc.RemoveGame(gameID, userID)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrGameNotFound):
+			return c.Status(fiber.StatusNotFound).JSON(core.ErrorResponse{
+				Error: "no such game of yours", Code: core.ErrGameNotFound,
+			})
+		case errors.Is(err, service.ErrStorageDisabled), errors.Is(err, service.ErrStorageUnavailable):
+			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+				Error: "stored games unavailable", Code: core.ErrStorageUnavailable,
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
+			Error: "failed to remove game", Code: core.ErrInternalError,
+		})
+	}
+	return c.JSON(core.RemoveGameResponse{Removed: string(outcome)})
 }
 
 func queryInt(c *fiber.Ctx, name string, defaultValue, minimum, maximum int) (int, error) {

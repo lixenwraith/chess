@@ -150,8 +150,9 @@ func (s *Store) DeleteAccount(userID string) error {
 				white_claimed_by = CASE WHEN white_claimed_by = $1 THEN NULL ELSE white_claimed_by END,
 				white_name       = CASE WHEN white_claimed_by = $1 THEN NULL ELSE white_name END,
 				black_claimed_by = CASE WHEN black_claimed_by = $1 THEN NULL ELSE black_claimed_by END,
-				black_name       = CASE WHEN black_claimed_by = $1 THEN NULL ELSE black_name END
-			WHERE white_claimed_by = $1 OR black_claimed_by = $1`, userID); err != nil {
+				black_name       = CASE WHEN black_claimed_by = $1 THEN NULL ELSE black_name END,
+				imported_by      = CASE WHEN imported_by = $1 THEN NULL ELSE imported_by END
+			WHERE white_claimed_by = $1 OR black_claimed_by = $1 OR imported_by = $1`, userID); err != nil {
 			return err
 		}
 		result, err := tx.ExecContext(ctx, `DELETE FROM users WHERE user_id = $1`, userID)
