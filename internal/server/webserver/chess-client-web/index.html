@@ -3,86 +3,194 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chess Game</title>
+    <meta name="color-scheme" content="dark">
+    <title>Chess</title>
     <link rel="stylesheet" href="style.css">
 </head>
-<body>
-<div class="outer-container">
-    <div class="container">
-        <main>
-            <div class="game-area">
-                <div class="board-container">
-                    <div class="board-wrapper">
-                        <div class="coordinates top">
-                            <span>a</span><span>b</span><span>c</span><span>d</span>
-                            <span>e</span><span>f</span><span>g</span><span>h</span>
-                        </div>
-                        <div class="coordinates left">
-                            <span>8</span><span>7</span><span>6</span><span>5</span>
-                            <span>4</span><span>3</span><span>2</span><span>1</span>
-                        </div>
-                        <div id="board"></div>
-                    </div>
+<body data-mode="live">
+<div class="app">
+    <header class="topbar">
+        <div class="brand" aria-label="Chess"><span class="brand-mark" aria-hidden="true">♞</span><span class="brand-name">Chess</span></div>
+        <div class="health" aria-label="Server status">
+            <span class="dot" id="server-dot" data-status="unknown" title="Server: unknown" role="img" aria-label="Server: unknown"></span>
+            <span class="dot" id="storage-dot" data-status="unknown" title="Storage: unknown" role="img" aria-label="Storage: unknown"></span>
+        </div>
+        <div class="topbar-spacer"></div>
+        <button id="games-btn" class="btn btn-ghost btn-sm" type="button" title="Stored games">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            <span>My games</span>
+        </button>
+        <button id="auth-btn" class="btn btn-ghost btn-sm" type="button" data-status="anonymous" title="Sign in or register">
+            <span class="dot" id="auth-dot" data-status="anonymous" aria-hidden="true"></span>
+            <span id="auth-label">Sign in</span>
+        </button>
+    </header>
+
+    <main class="workspace">
+        <section class="board-area" aria-label="Board">
+            <div class="board-wrapper">
+                <div class="coordinates files" aria-hidden="true"></div>
+                <div class="coordinates ranks" aria-hidden="true"></div>
+                <div id="board" role="grid" aria-label="Chess board"></div>
+            </div>
+            <div class="toast-host"><div id="toast" class="toast" role="status" aria-live="polite"></div></div>
+        </section>
+
+        <aside class="panel" aria-label="Game panel">
+            <!-- Live game -->
+            <div class="pane pane-live" id="pane-live">
+                <div class="turn-strip" id="turn-strip">
+                    <span class="dot turn-dot" id="turn-dot" data-status="idle" aria-hidden="true"></span>
+                    <span class="turn-text" id="turn-text">No game</span>
+                </div>
+                <div class="controls" role="group" aria-label="Game controls">
+                    <button id="new-game-btn" class="btn btn-primary" type="button">New game</button>
+                    <button id="undo-btn" class="btn btn-secondary" type="button" disabled>Undo</button>
+                    <button id="draw-btn" class="btn btn-secondary" type="button" title="Offer a draw" disabled>Draw</button>
+                    <button id="resign-btn" class="btn btn-secondary" type="button" title="Resign this game" disabled>Resign</button>
+                </div>
+                <div class="moves" id="live-moves-box">
+                    <div class="move-grid" id="live-moves" aria-label="Moves"></div>
+                    <p class="moves-empty" id="live-moves-empty">Start a game to play Stockfish, or open <strong>My games</strong> to replay one.</p>
+                </div>
+                <div class="toolbar" role="group" aria-label="Export">
+                    <button id="copy-fen-btn" class="btn btn-tool" type="button" title="Copy the current position as FEN" disabled>
+                        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+                        <span>FEN</span>
+                    </button>
+                    <button id="copy-pgn-btn" class="btn btn-tool" type="button" title="Copy the game as PGN" disabled>
+                        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+                        <span>PGN</span>
+                    </button>
+                    <button id="replay-live-btn" class="btn btn-tool" type="button" title="Replay this game from the start" disabled>
+                        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>
+                        <span>Replay</span>
+                    </button>
                 </div>
             </div>
 
-            <aside class="info-panel">
-                <div class="status-indicators">
-                    <div class="indicator" id="server-indicator" data-tooltip="Server">
-                        <span class="light" data-status="unknown">●</span>
+            <!-- Replay -->
+            <div class="pane pane-replay" id="pane-replay">
+                <div class="replay-head">
+                    <div class="replay-title-row">
+                        <span class="badge" id="replay-badge">Replay</span>
+                        <span class="replay-result" id="replay-result"></span>
+                        <span class="replay-ply" id="replay-ply" aria-hidden="true"></span>
                     </div>
-                    <div class="indicator" id="storage-indicator" data-tooltip="Storage">
-                        <span class="light" data-status="unknown">●</span>
-                    </div>
-                    <div class="indicator" id="turn-indicator" data-tooltip="Turn">
-                        <span class="light turn-light" data-status="white">●</span>
-                    </div>
-                    <div class="indicator auth-indicator" id="auth-indicator" data-tooltip="Auth">
-                        <span class="light" data-status="anonymous">●</span>
-                    </div>
-                    <div class="error-flash-overlay" id="error-flash-overlay">
-                        <div class="error-flash-message" id="error-flash-message"></div>
-                    </div>
+                    <div class="replay-players" id="replay-players"></div>
+                    <div class="replay-meta" id="replay-meta"></div>
                 </div>
-
-                <div class="controls">
-                    <button id="new-game-btn" class="btn btn-primary">New</button>
-                    <button id="undo-btn" class="btn btn-secondary" disabled>Undo</button>
-                    <button id="draw-btn" class="btn btn-secondary" title="Offer a draw" disabled>Draw</button>
-                    <button id="resign-btn" class="btn btn-secondary" title="Resign this game" disabled>Resign</button>
+                <div class="moves" id="replay-moves-box">
+                    <div class="move-grid move-grid-replay" id="replay-moves" aria-label="Moves"></div>
+                    <p class="moves-empty" id="replay-moves-empty">Loading…</p>
                 </div>
-
-                <div class="move-history-container">
-                    <button class="copy-btn" id="copy-history" title="Copy PGN">
-                        <svg viewBox="0 0 24 24" width="16" height="16">
-                            <rect x="9" y="9" width="13" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="2"/>
-                            <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" fill="none" stroke="currentColor" stroke-width="2"/>
-                        </svg>
+                <div class="replay-nav" role="group" aria-label="Replay controls">
+                    <button id="replay-first" class="btn btn-nav" type="button" title="First position (Home)" aria-label="First position">
+                        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14M18 5l-9 7 9 7z" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
                     </button>
-                    <div id="move-history" class="move-history">
-                        <div class="move-grid" id="move-grid"></div>
-                    </div>
+                    <button id="replay-prev" class="btn btn-nav" type="button" title="Previous move (←)" aria-label="Previous move">
+                        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M16 5l-9 7 9 7z" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+                    </button>
+                    <button id="replay-play" class="btn btn-nav btn-play" type="button" title="Autoplay (Space)" aria-label="Autoplay" aria-pressed="false">
+                        <svg class="icon icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>
+                        <svg class="icon icon-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h4v14H7zM13 5h4v14h-4z" fill="currentColor"/></svg>
+                    </button>
+                    <button id="replay-next" class="btn btn-nav" type="button" title="Next move (→)" aria-label="Next move">
+                        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5l9 7-9 7z" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+                    </button>
+                    <button id="replay-last" class="btn btn-nav" type="button" title="Last position (End)" aria-label="Last position">
+                        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5v14M6 5l9 7-9 7z" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+                    </button>
+                    <label class="speed" title="Autoplay speed">
+                        <span class="visually-hidden">Autoplay speed</span>
+                        <select id="replay-speed">
+                            <option value="2000">0.5×</option>
+                            <option value="1000" selected>1×</option>
+                            <option value="500">2×</option>
+                            <option value="250">4×</option>
+                        </select>
+                    </label>
+                    <button id="replay-flip" class="btn btn-nav" type="button" title="Flip the board (F)" aria-label="Flip the board" aria-pressed="false">
+                        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v12M7 16l-3-3M7 16l3-3M17 20V8M17 8l-3 3M17 8l3 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </button>
                 </div>
+                <div class="toolbar" role="group" aria-label="Export at this position">
+                    <button id="replay-copy-fen" class="btn btn-tool" type="button" title="Copy the FEN of this position">
+                        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+                        <span>FEN</span>
+                    </button>
+                    <button id="replay-copy-pgn" class="btn btn-tool" type="button" title="Copy the PGN up to this position">
+                        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+                        <span>PGN</span>
+                    </button>
+                    <button id="replay-download" class="btn btn-tool" type="button" title="Download the PGN up to this position">
+                        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 19h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        <span>Save</span>
+                    </button>
+                    <button id="replay-link" class="btn btn-tool" type="button" title="Copy a link to this position">
+                        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1.5 1.5M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1.5-1.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                        <span>Link</span>
+                    </button>
+                </div>
+                <button id="replay-exit" class="btn btn-secondary btn-block" type="button">Back to live game</button>
+                <div id="ply-announcer" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
+            </div>
+        </aside>
+    </main>
+</div>
 
-            </aside>
-        </main>
+<!-- My games drawer -->
+<div id="games-overlay" class="modal-overlay">
+    <div class="modal games-modal" role="dialog" aria-modal="true" aria-labelledby="games-title">
+        <div class="modal-head">
+            <h2 id="games-title">My games</h2>
+            <button id="games-close" class="btn btn-icon" type="button" aria-label="Close">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            </button>
+        </div>
+        <div class="games-filters" id="games-filters">
+            <div class="segmented" role="group" aria-label="Status">
+                <button type="button" class="seg active" data-filter="status" data-value="">All</button>
+                <button type="button" class="seg" data-filter="status" data-value="ongoing">Ongoing</button>
+                <button type="button" class="seg" data-filter="status" data-value="finished">Finished</button>
+            </div>
+            <div class="segmented" role="group" aria-label="Your colour">
+                <button type="button" class="seg active" data-filter="color" data-value="">Any</button>
+                <button type="button" class="seg" data-filter="color" data-value="white">White</button>
+                <button type="button" class="seg" data-filter="color" data-value="black">Black</button>
+            </div>
+        </div>
+        <div class="games-body">
+            <section class="games-section" id="account-games-section">
+                <h3 class="games-heading" id="account-games-heading">Your games</h3>
+                <p class="games-note" id="games-signin-note">Sign in to keep your games and replay them here. Games played anonymously are kept for 24 hours.</p>
+                <ul class="games-list" id="games-list"></ul>
+                <p class="games-status" id="games-status" role="status"></p>
+                <button id="games-more" class="btn btn-secondary btn-block" type="button">Load more</button>
+            </section>
+            <section class="games-section" id="local-games-section">
+                <h3 class="games-heading">On this device</h3>
+                <p class="games-note">Games played here without signing in; the server keeps them for 24 hours after the last move.</p>
+                <ul class="games-list" id="local-games-list"></ul>
+            </section>
+        </div>
     </div>
 </div>
 
 <!-- Auth Modal -->
 <div id="auth-modal-overlay" class="modal-overlay">
-    <div class="modal auth-modal">
-        <div class="auth-tabs">
-            <button class="auth-tab active" data-tab="login">Login</button>
-            <button class="auth-tab" data-tab="register">Register</button>
+    <div class="modal auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+        <h2 id="auth-title" class="visually-hidden">Account</h2>
+        <div class="auth-tabs" role="tablist">
+            <button class="auth-tab active" type="button" role="tab" data-tab="login" aria-selected="true">Sign in</button>
+            <button class="auth-tab" type="button" role="tab" data-tab="register" aria-selected="false">Register</button>
         </div>
 
-        <div id="auth-modal-message" class="modal-message"></div>
+        <div id="auth-modal-message" class="modal-message" role="status" aria-live="polite"></div>
 
-        <!-- Login Form -->
         <div id="login-form" class="auth-form">
             <div class="form-group">
-                <label for="login-identifier">Username or Email</label>
+                <label for="login-identifier">Username or email</label>
                 <input type="text" id="login-identifier" autocomplete="username">
             </div>
             <div class="form-group">
@@ -90,13 +198,12 @@
                 <input type="password" id="login-password" autocomplete="current-password">
             </div>
             <div class="modal-buttons">
-                <button id="login-submit-btn" class="btn btn-primary">Login</button>
-                <button id="auth-cancel-btn" class="btn btn-secondary">Cancel</button>
+                <button id="login-submit-btn" class="btn btn-primary" type="button">Sign in</button>
+                <button id="auth-cancel-btn" class="btn btn-secondary" type="button">Cancel</button>
             </div>
         </div>
 
-        <!-- Register Form -->
-        <div id="register-form" class="auth-form" style="display: none;">
+        <div id="register-form" class="auth-form hidden">
             <div class="form-group">
                 <label for="register-username">Username</label>
                 <input type="text" id="register-username" autocomplete="username">
@@ -106,12 +213,12 @@
                 <input type="email" id="register-email" autocomplete="email">
             </div>
             <div class="form-group">
-                <label for="register-password">Password (min 8 chars)</label>
+                <label for="register-password">Password (8+ characters, a letter and a number)</label>
                 <input type="password" id="register-password" autocomplete="new-password">
             </div>
             <div class="modal-buttons">
-                <button id="register-submit-btn" class="btn btn-primary">Register</button>
-                <button id="auth-cancel-btn-2" class="btn btn-secondary">Cancel</button>
+                <button id="register-submit-btn" class="btn btn-primary" type="button">Register</button>
+                <button id="auth-cancel-btn-2" class="btn btn-secondary" type="button">Cancel</button>
             </div>
         </div>
     </div>
@@ -124,8 +231,8 @@
         <div id="account-modal-message" class="modal-message" role="status" aria-live="polite"></div>
         <p class="account-name">Signed in as <strong id="account-username"></strong></p>
         <div class="modal-buttons">
-            <button id="logout-btn" class="btn btn-primary">Log out</button>
-            <button id="account-cancel-btn" class="btn btn-secondary">Close</button>
+            <button id="logout-btn" class="btn btn-primary" type="button">Sign out</button>
+            <button id="account-cancel-btn" class="btn btn-secondary" type="button">Close</button>
         </div>
         <details class="danger-zone" id="delete-account">
             <summary>Delete account</summary>
@@ -137,40 +244,40 @@
                 <input type="password" id="delete-password" autocomplete="current-password">
             </div>
             <div class="modal-buttons">
-                <button id="delete-account-btn" class="btn btn-danger">Delete account</button>
+                <button id="delete-account-btn" class="btn btn-danger" type="button">Delete account</button>
             </div>
         </details>
     </div>
 </div>
 
-<!-- Overlay Modal -->
+<!-- New Game Modal -->
 <div id="modal-overlay" class="modal-overlay">
-    <div class="modal">
-        <h2>New Game</h2>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="new-game-title">
+        <h2 id="new-game-title">New game</h2>
         <div id="new-game-modal-message" class="modal-message" role="status" aria-live="polite"></div>
         <div class="form-group form-row">
-            <span class="group-label" id="player-color-label">Your Color</span>
+            <span class="group-label" id="player-color-label">Your colour</span>
             <div class="radio-group" role="radiogroup" aria-labelledby="player-color-label">
                 <label><input type="radio" name="player-color" value="white" checked><span>White</span></label>
                 <label><input type="radio" name="player-color" value="black"><span>Black</span></label>
             </div>
         </div>
         <div class="form-group">
-            <label for="computer-level">Computer Level: <span id="level-value">10</span></label>
+            <label for="computer-level">Computer level: <span id="level-value">10</span></label>
             <input type="range" id="computer-level" min="0" max="20" value="10">
         </div>
         <div class="form-group">
-            <label for="search-time">Search Time (ms): <span id="time-value">1000</span></label>
+            <label for="search-time">Search time: <span id="time-value">1000</span> ms</label>
             <input type="range" id="search-time" min="100" max="10000" step="100" value="1000">
         </div>
         <div class="form-group">
-            <label for="starting-fen">Starting Position (FEN)</label>
-            <textarea id="starting-fen" class="fen-input" rows="2"
+            <label for="starting-fen">Starting position (FEN)</label>
+            <textarea id="starting-fen" class="fen-input" rows="2" spellcheck="false"
                       placeholder="Enter FEN notation">rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1</textarea>
         </div>
         <div class="modal-buttons">
-            <button id="start-game-btn" class="btn btn-primary">Start Game</button>
-            <button id="cancel-btn" class="btn btn-secondary">Cancel</button>
+            <button id="start-game-btn" class="btn btn-primary" type="button">Start game</button>
+            <button id="cancel-btn" class="btn btn-secondary" type="button">Cancel</button>
         </div>
     </div>
 </div>
@@ -180,8 +287,8 @@
     <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="resign-title">
         <h2 id="resign-title">Resign this game?</h2>
         <div class="modal-buttons">
-            <button id="resign-confirm-btn" class="btn btn-primary">Resign</button>
-            <button id="resign-cancel-btn" class="btn btn-secondary">Cancel</button>
+            <button id="resign-confirm-btn" class="btn btn-primary" type="button">Resign</button>
+            <button id="resign-cancel-btn" class="btn btn-secondary" type="button">Cancel</button>
         </div>
     </div>
 </div>
@@ -191,13 +298,13 @@
     <div class="modal promotion-modal" role="dialog" aria-modal="true" aria-labelledby="promotion-title">
         <h2 id="promotion-title">Promote to</h2>
         <div class="promotion-choices">
-            <button class="promotion-choice" data-piece="q" title="Queen (Q)" aria-label="Queen">♛</button>
-            <button class="promotion-choice" data-piece="r" title="Rook (R)" aria-label="Rook">♜</button>
-            <button class="promotion-choice" data-piece="b" title="Bishop (B)" aria-label="Bishop">♝</button>
-            <button class="promotion-choice" data-piece="n" title="Knight (N)" aria-label="Knight">♞</button>
+            <button class="promotion-choice" type="button" data-piece="q" title="Queen (Q)" aria-label="Queen">♛</button>
+            <button class="promotion-choice" type="button" data-piece="r" title="Rook (R)" aria-label="Rook">♜</button>
+            <button class="promotion-choice" type="button" data-piece="b" title="Bishop (B)" aria-label="Bishop">♝</button>
+            <button class="promotion-choice" type="button" data-piece="n" title="Knight (N)" aria-label="Knight">♞</button>
         </div>
         <div class="modal-buttons">
-            <button id="promotion-cancel-btn" class="btn btn-secondary">Cancel</button>
+            <button id="promotion-cancel-btn" class="btn btn-secondary" type="button">Cancel</button>
         </div>
     </div>
 </div>

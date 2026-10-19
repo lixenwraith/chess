@@ -31,6 +31,8 @@ into phases that each ship and test on their own.
 - [x] Rules core (`internal/server/chess`, R1) and replay API (R2), below.
 - [x] Pawn promotion in the web client (piece picker) and a specific API error
   for a promotion without its piece.
+- [x] Web replay UI (R3) and terminal replay commands (R4), below; `san` on
+  the live game response and `termination` on the listing.
 
 ## Decisions
 
@@ -44,6 +46,9 @@ into phases that each ship and test on their own.
 | D6 | Undo after a result | **Decided: keep allowed**, so a player can step back from a finished game and play a line again. Consequence: a finished game's stored history, result, and end time are rewritten by undo; replay shows the line as it stands now. **Refined (v3 schema):** a resignation or agreed draw between two humans is final, and undo, player changes, and unload respect other users' claims (no takebacks between players). Against the computer a concession can be undone, but the first one stays on record (`concession_*`) and in history and PGN. |
 | D8 | Human-vs-human in the web client | **Open.** The web client plays only against the computer; two-player games run through the API and terminal client (`join`, `poll`). A web mode would need join-by-link, a long-poll for the opponent's moves, and an offer indicator on the Draw button (accept by pressing it). |
 | D7 | List pagination | **Done.** Opaque keyset `cursor` on `(start_time_utc, game_id)`; `offset` kept for existing clients and exclusive with `cursor`. |
+| D9 | Replay for visitors without an account | **Done.** The history endpoint is public by ID (D2), so the web client keeps a list of the games it created anonymously in `localStorage` (ID, side, level, last position; entries expire with the server's 24-hour retention) and shows them under **On this device** in My games. A signed-in user's list comes from the API. No server change. |
+| D10 | Live SAN | **Done.** The live game response carries `san` beside `moves`, derived by the rules core from the position before each ply (the shadow check already parses it), so the web client shows SAN without an extra history request and without storage. |
+| D11 | Replay history | **Done.** Views push browser history entries (`?games`, `?replay=<id>&ply=<n>`, or both); stepping through a replay replaces the entry so back and forward move between the live view, the list and the replay rather than ply by ply. |
 
 ## Phase R1 — Notation Core (server) — done
 
@@ -88,29 +93,43 @@ Test gate:
   PGN, ETag, promotion, FEN validation, cursor paging and filters).
 - [x] Terminal client: `games` (cursor paging) and `pgn` commands.
 
-## Phase R3 — Web Replay UI
+## Phase R3 — Web Replay UI — done
 
-Plain JavaScript in the embedded client, no framework.
+Plain JavaScript in the embedded client, no framework. The client was
+restructured around the replay: a top bar (brand, server and storage dots,
+**My games**, account), the board, and a side panel with a live pane and a
+replay pane; the board colours and piece glyphs are unchanged.
 
-- [ ] **My games** button beside the account indicator (authenticated only)
-  opening a panel: mini-board from `finalFen`, result, date, opponent or
-  engine level, move count; loading, empty, error, and "load more" states.
-- [ ] Replay mode entered from the panel or a deep link
-  `?replay=<gameId>&ply=<n>`; `history.pushState` so browser back/forward
-  restores the list and the ply.
-- [ ] Controls: first, previous, next, last; keyboard `←` `→` `Home` `End`;
-  clickable SAN move list; autoplay with speed selector and pause; board flip;
-  current ply announced through an `aria-live` region.
-- [ ] Position rendering assigns the stored FEN for the ply; the browser never
-  computes moves.
-- [ ] Export at the current ply: copy FEN, copy PGN, and download PGN (fetched
-  from R2 as a `Blob`, saved through a temporary `<a download>`). The live
-  view's "Copy PGN" button copies UCI moves today; point it at the PGN
-  endpoint too.
-- [ ] Show SAN in the live move list (from the history, or a `san` field on
-  the live game response).
-- [ ] While replaying: stop live long-polling, disable move, undo, new-game,
-  and player-configuration controls; **Back to live game** restores them.
+- [x] **My games** button in the top bar opening a drawer: mini-board from
+  `finalFen`, players (the viewer's side as "You"), result and termination,
+  date, move count; status and colour filters; loading, empty, error (with
+  retry), and "load more" (cursor) states. Signed-out visitors see the games
+  played on this device (D9) and a sign-in note.
+- [x] Replay mode entered from the drawer, the live pane's **Replay** button,
+  or a deep link `?replay=<gameId>&ply=<n>`; `history.pushState` per view
+  (D11), so browser back/forward restores the list and the ply.
+- [x] Controls: first, previous, next, last; keyboard `←` `→` `Home` `End`,
+  `Space` (autoplay), `F` (flip), `Esc` (leave); clickable SAN move list with
+  the current ply marked; autoplay with a speed selector and pause; board
+  flip, defaulting to the viewer's side; current ply announced through an
+  `aria-live` region.
+- [x] Position rendering assigns the stored FEN for the ply; the browser never
+  computes moves. The mated king and the last move are marked as in live play.
+- [x] Export at the current ply: copy FEN, copy PGN (`?ply=N`, or the full
+  export at the last ply), download PGN (fetched as a `Blob`, saved through a
+  temporary `<a download>`; the host's iframe sandbox needs
+  `allow-downloads`), and copy a link to the position. The live view's "Copy
+  PGN" copies the stored game's PGN, falling back to the SAN line and FEN
+  when storage is off; "Copy FEN" beside it.
+- [x] SAN in the live move list from the `san` field on the live game
+  response (D10).
+- [x] While replaying: live long-polling stops, the live pane (move, undo,
+  new game, draw, resign) hides and square clicks are ignored; **Back to
+  live game** (or **Close replay** without one) restores them and resumes
+  polling if the computer was thinking.
+- [x] History responses are revalidated with `If-None-Match`; `ETag` and
+  `Content-Disposition` are exposed over CORS for the development setup,
+  where the web client and the API are on different ports.
 
 Constraints from the host's security headers:
 
@@ -128,20 +147,39 @@ Constraints from the host's security headers:
 
 Test gate:
 
-- [ ] Playwright (Chromium) end-to-end against server and PostgreSQL: play a
-  short game, open My games, step backward and forward, autoplay to the end,
-  and compare exported FEN/PGN with the API.
-- [ ] Keyboard-only navigation and screen-reader labels; reduced-motion
-  disables autoplay animation.
-- [ ] Deep link works beneath `/projects/chess/` with the API at `/chess`.
+- [x] Playwright (Chromium) end-to-end against server and PostgreSQL
+  (`test/e2e`, run by the `e2e` CI job): play a short game, open My games,
+  step backward and forward with buttons and keys, autoplay to the end,
+  compare the exported FEN and PGN with the API, download, copy a link,
+  browser back through replay and list; a deep link to a checkmate; the
+  device list for an anonymous visitor.
+- [x] Keyboard-only navigation and labels: every control is a button with a
+  name, the move list is a list of buttons, the current ply has
+  `aria-current` and is announced; `prefers-reduced-motion` disables the
+  client's animations and transitions (autoplay itself is user-initiated and
+  stays).
+- [x] Deep link: the client reads `?replay=` from its own URL, so it works
+  wherever the document is published (`/chess/web-client/` on lixen.com,
+  with the API at `/chess`); the old `/projects/chess/` path redirects there.
 
-## Phase R4 — CLI and WASM Replay (optional)
+## Phase R4 — CLI and WASM Replay — done
 
-- [x] `games` (list with cursor paging) and `pgn [gameId] [ply]`.
-- [ ] `replay <gameId|index>`, `next`, `prev`, `first`, `last`, `goto <ply>`,
-  `auto <ms>`, `fen`, `pgn save <path>`.
-- [ ] Replay state is separate from the live session: no polling, moves, undo,
-  or configuration while replaying.
+- [x] `games` (list with cursor paging, numbered) and `pgn [gameId] [ply]`.
+- [x] `replay <gameId|index>` (index into the last `games` page), `next`
+  `prev` (`>` `<`, with a count), `first`, `last`, `goto <ply>`, `auto [ms]`,
+  `fen`, `pgn [save <path>]` (the replayed game up to the current ply; in
+  the browser build the PGN is printed instead of saved), `live` to leave.
+- [x] Replay state is separate from the live session: `new`, `join`, `move`,
+  `computer`, `undo`, `delete`, `poll`, `resign` and `draw` are refused
+  while replaying, `show` shows the replayed position, and the prompt reads
+  `replay <ply>/<plies>`; `live` returns to the game as it was.
+
+Later for the replay clients:
+
+- [ ] Web: an "Analysis" link on a replay (chess.com-style evaluation needs
+  an engine in the browser or a server endpoint; none exists).
+- [ ] Web: a light theme, following the host page's choice.
+- [ ] CLI: `auto` cannot be interrupted before the end of the line.
 
 ## Phase R5 — Curated Archive (later)
 

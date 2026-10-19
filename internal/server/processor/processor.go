@@ -674,6 +674,7 @@ func (p *Processor) buildGameResponse(gameID string, g game.View) core.GameRespo
 		State:       g.State.String(),
 		Termination: string(g.Termination),
 		Moves:       g.Moves,
+		SAN:         notateLine(g.FENs, g.Moves),
 		Players: core.PlayersResponse{
 			White: g.WhitePlayer,
 			Black: g.BlackPlayer,
@@ -719,6 +720,27 @@ func (p *Processor) Close() error {
 	engineErr := p.validationEng.Close()
 	p.mu.Unlock()
 	return errors.Join(queueErr, engineErr)
+}
+
+// notateLine derives SAN for each live move from the position before it,
+// fens[i] being the position before moves[i]. Each ply stands alone, so a
+// position the core cannot parse leaves only that entry empty (and is logged
+// once, by the shadow check, when the move was made).
+func notateLine(fens, moves []string) []string {
+	san := make([]string, len(moves))
+	for i, uci := range moves {
+		if i >= len(fens) {
+			break
+		}
+		pos, err := chess.ParseFEN(fens[i])
+		if err != nil {
+			continue
+		}
+		if m, err := pos.ParseUCI(uci); err == nil {
+			san[i] = pos.SAN(m)
+		}
+	}
+	return san
 }
 
 // rulesResult is the rules core's verdict on a move, computed alongside the

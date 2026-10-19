@@ -114,6 +114,12 @@ func buildPrompt(s *session.Session) string {
 		}
 	}
 
+	// A replay replaces the turn: the live game is not what the board shows
+	if seg := command.ReplayPrompt(s); seg != "" {
+		b.Add(display.Magenta, seg)
+		return display.Prompt(b.String())
+	}
+
 	// Add game state if available
 	if s.CurrentGameState != nil {
 		turnInfo := " - Turn:"

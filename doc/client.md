@@ -12,13 +12,13 @@ The chess client is an interactive command-line debugging tool for the chess ser
 - Verbose mode for detailed API request/response inspection
 - Long-polling support for real-time game updates
 
-## Replay Foundation
+## Replay
 
 The Go API client exposes `GetGameHistory(gameID)`, `GetGamePGN(gameID, ply)`,
 and `GetMyGames(limit, cursor)`, including durable result, timestamps, player
 claims, move count, ordered UCI and SAN moves, and FEN after every move. The
-`games` and `pgn` commands use them; step-by-step `replay` controls are still
-planned, see [Replay Implementation Tasks](./todo.md).
+`games`, `pgn` and `replay` commands use them. A replay renders the stored
+FEN of each ply; the client never computes a move.
 
 ## Building
 ```bash
@@ -44,6 +44,7 @@ The prompt dynamically updates to show context:
 - `chess [username - gameId]` - User in active game
 - `chess [username - gameId] White` - Shows player color
 - Turn indicator with player type (h=human, c=computer)
+- `chess [...] replay 12/40` - Replaying a stored game at ply 12 of 40
 
 ## Command Reference
 
@@ -180,19 +181,76 @@ repetition.` or `Black wins by resignation.`; a pending offer is shown as
 `White offers a draw`.
 
 #### `games` / `g`
-List your stored games, newest first, 20 per page (requires login). The
-result column is the PGN token (`1-0`, `0-1`, `1/2-1/2`, `*`).
+List your stored games, newest first, 20 per page (requires login), numbered
+for `replay <#>`. The result column is the PGN token (`1-0`, `0-1`,
+`1/2-1/2`, `*`).
 ```
 chess > games        # Newest games
 chess > games more   # Next page
 ```
 
 #### `pgn`
-Print a stored game as PGN (SAN movetext, standard tags).
+Print a stored game as PGN (SAN movetext, standard tags), or save it with
+`save <path>`. During a replay the default is the replayed game up to the
+current ply.
 ```
-chess > pgn                  # Current game, every ply
-chess > pgn 10               # Current game, first 10 plies
-chess > pgn <gameId> [ply]   # Another game
+chess > pgn                        # Current game, every ply
+chess > pgn 10                     # Current game, first 10 plies
+chess > pgn <gameId> [ply]         # Another game
+chess > pgn save game.pgn          # Write instead of print
+```
+In the browser build there is no file system: `save` prints the PGN to copy.
+
+### Replay Commands
+
+A replay steps through a stored game's history: any game by ID (histories
+are public to holders of the ID), or one of your own by its number in the
+last `games` listing. The replay is separate from the live session: the
+current game, login and poll position are kept, and `new`, `join`, `move`,
+`computer`, `undo`, `delete`, `poll`, `resign` and `draw` are refused until
+`live` ends the replay.
+
+#### `replay`
+Load a stored game and show its initial position, the players, the result,
+and the whole move list.
+```
+chess > replay 2                                      # From the last 'games' page
+chess > replay a1b2c3d4-e5f6-7890-1234-567890abcdef   # Any stored game
+```
+
+#### `next` / `>`, `prev` / `<`, `first`, `last`, `goto`
+Move through the line; each prints the board, the ply, and the move that
+led to it (`2... Nf6`). `next` and `prev` take a count.
+```
+chess > next
+chess > next 4
+chess > prev
+chess > goto 12
+chess > last
+chess > first
+```
+
+#### `auto`
+Play forward from the current ply to the end of the line, one board per ply,
+with a delay in milliseconds (default 1000).
+```
+chess > auto        # one ply a second
+chess > auto 250
+```
+
+#### `fen`
+Print the FEN of the current position.
+```
+chess > fen
+```
+
+#### `show` / `h` while replaying
+Shows the replayed position instead of the live game.
+
+#### `live`
+Leave the replay and return to the live session.
+```
+chess > live
 ```
 
 ### Debug Commands
@@ -285,9 +343,13 @@ ASCII board with colored pieces:
 ```
 
 ### Move History
-Displayed in UCI notation with move numbers:
+The live game's history is displayed in UCI notation with move numbers:
 ```
 History: 1.e2e4 e7e5 2.g1f3 b8c6 3.f1b5
+```
+A replay lists the stored game in SAN, with the current ply in brackets:
+```
+1. e4 c5 2. [Nf3] Nf6 3. Nc3 e6
 ```
 
 ## Workflows
@@ -319,8 +381,9 @@ History: 1.e2e4 e7e5 2.g1f3 b8c6 3.f1b5
 ### Limitations
 - No move validation in client (server validates)
 - No algebraic notation input (UCI format only)
-- Single game context at a time
+- Single game context at a time (plus one replay)
 - No persistent authentication across restarts
+- `auto` runs to the end of the line; it cannot be interrupted
 
 ## Error Handling
 

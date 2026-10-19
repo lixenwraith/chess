@@ -42,7 +42,9 @@ type UndoRequest struct {
 // DrawOffer is the color whose draw offer awaits an answer; DrawOutcome
 // reports what a draw request did ("offered", "accepted", "declined") and is
 // set only on responses to that request. Concession is the game's first
-// resignation or agreed draw, kept after an undo continues play.
+// resignation or agreed draw, kept after an undo continues play. SAN runs
+// parallel to Moves, derived by the rules core from the position before each
+// move; an entry is empty only for a move the core cannot notate.
 type GameResponse struct {
 	GameID      string          `json:"gameId"`
 	FEN         string          `json:"fen"`
@@ -53,6 +55,7 @@ type GameResponse struct {
 	DrawOutcome string          `json:"drawOutcome,omitempty"`
 	Concession  *Concession     `json:"concession,omitempty"`
 	Moves       []string        `json:"moves"`
+	SAN         []string        `json:"san"`
 	Players     PlayersResponse `json:"players"`
 	LastMove    *MoveInfo       `json:"lastMove,omitempty"`
 }
@@ -113,13 +116,15 @@ type HistoryMove struct {
 
 // GameSummary is intentionally sufficient for a client-side game picker; the
 // full move list remains on the per-game history endpoint. FinalFEN is the
-// position after the last stored move (the initial FEN when there is none).
+// position after the last stored move (the initial FEN when there is none);
+// Termination says how a finished game ended, as in the history.
 type GameSummary struct {
 	GameID       string          `json:"gameId"`
 	InitialFEN   string          `json:"initialFen"`
 	FinalFEN     string          `json:"finalFen"`
 	Result       string          `json:"result,omitempty"`
 	PGNResult    string          `json:"pgnResult"`
+	Termination  string          `json:"termination,omitempty"`
 	StartTimeUTC time.Time       `json:"startTimeUtc"`
 	EndTimeUTC   *time.Time      `json:"endTimeUtc,omitempty"`
 	MoveCount    int             `json:"moveCount"`

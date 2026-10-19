@@ -167,6 +167,12 @@ test-replay:
 test-draw:
 	test/test-draw.sh
 
+# Web client end-to-end tests (Playwright); needs a server started with
+# WEB_PORT=9090 test/run-test-server.sh and `npm install` in test/e2e.
+.PHONY: test-e2e
+test-e2e:
+	cd test/e2e && npm test
+
 # Database operations
 .PHONY: db-init
 db-init: server
@@ -251,6 +257,7 @@ help:
 	@echo "  make test-endstate Run end-state tests"
 	@echo "  make test-replay  Run replay (SAN, PGN, listing) tests"
 	@echo "  make test-draw    Run draw and resignation tests"
+	@echo "  make test-e2e     Run the web client's Playwright tests (see test/README.md)"
 	@echo ""
 	@echo "Database targets (CHESS_DSN=$(CHESS_DSN)):"
 	@echo "  make db-init      Create or migrate the schema"
