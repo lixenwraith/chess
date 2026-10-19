@@ -131,9 +131,15 @@ sudo chess-db user list
 su -m chess -c '/home/chess/bin/chess-server db user add -username <name> -dsn "postgres:///chess?host=/tmp"'
 ```
 
-Other `user` subcommands: `delete`, `set-email`, `set-username`, and
-`set-hash` (an existing PHC string). CLI-created accounts are identical to
-site registrations, and the CLI ignores the registration cap.
+Other `user` subcommands: `delete`, `set-email`, `set-username`, `set-hash`
+(an existing PHC string), and `reset-link -url <web client>`, which prints a
+one-time password-reset link (valid an hour) to hand to someone who cannot
+receive the recovery email. CLI-created accounts are identical to site
+registrations, and the CLI ignores the registration cap.
+
+Pending password resets live in `password_resets`: the SHA-256 of the token
+in the emailed link, one per account, deleted when used, expired, or by the
+hourly cleanup. The token itself is never stored.
 
 Sign a user out everywhere (takes effect on their next request):
 

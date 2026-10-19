@@ -154,6 +154,10 @@ as `postgres`, list them with `\dt chess.*` and name them as `chess.games`.
 | `chessd_dsn` | `postgres:///chess?host=/tmp` | Database `chess` over the socket as the OS user |
 | `chessd_jwt_key` | `${chessd_home}/jwt.key` | JWT signing key; created (0600) on first start if missing |
 | `chessd_trusted_proxies` | empty | Proxy address(es) whose `X-Real-IP` is trusted |
+| `chessd_public_url` | empty | The web client's public address, which emailed reset links open (`https://<site>/chess/web-client/`) |
+| `chessd_smtp_host`, `chessd_smtp_port` | empty, `25` | SMTP relay for password-reset email; unset leaves recovery off |
+| `chessd_smtp_user`, `chessd_smtp_password_file` | empty, `${chessd_home}/smtp.secret` if present | Relay credentials, when the relay authenticates this host; the file is mode 0600 |
+| `chessd_mail_from` | empty | Sender address, e.g. `Chess <chess@<site>>` |
 | `chessd_flags` | empty | Extra flags, e.g. `-max-users 500 -db-cleanup report` |
 
 The script runs `daemon(8)` as root, which writes the supervisor pidfile
@@ -174,6 +178,11 @@ Server flags:
 | `-anonymous-game-ttl` | | Retention of games without a registered player (default `24h`) |
 | `-finished-game-ttl` | | Memory retention of finished games (default `1h`) |
 | `-db-cleanup` | | Hourly integrity sweep: `off` (default), `report` (log findings), or `delete` ([database.md](database.md#integrity-sweep)) |
+| `-smtp-host`, `-smtp-port` | | SMTP relay for password-reset email (default port 25); recovery is off without a transport |
+| `-smtp-user`, `-smtp-password-file` | | Relay credentials, optional; the file is mode 0600 and only sent over TLS |
+| `-mail-from` | | Sender address of server email |
+| `-mail-dir` | | Development: write email to `.eml` files here instead of a relay |
+| `-public-url` | | The web client's address that emailed links open; required with a transport |
 
 Administrative CLI commands run as `chess` so peer authentication selects the
 right role; root may use `su -m` although the account has no shell:
@@ -186,7 +195,47 @@ jail# su -m chess -c '/home/chess/bin/chess-server db user list -dsn "postgres:/
 (games, with 8-digit ID prefixes), `pgn -gameId <id|prefix> [-ply N]`,
 `verify [-gameId <id|prefix>]` (replays stored games against the rules and
 exits non-zero on a mismatch; run it after an upgrade), and `user add|delete|
-set-password|set-hash|set-email|set-username|list`.
+set-password|set-hash|set-email|set-username|reset-link|list`.
+
+A forgotten password is reset from the jail without mail:
+
+```sh
+jail# su -m chess -c '/home/chess/bin/chess-server db user set-password -username <name> -dsn "postgres:///chess?host=/tmp"'
+```
+
+which prompts for the new password (or takes `-password`), or with a one-time
+link to hand to the person, the same link the recovery email carries:
+
+```sh
+jail# su -m chess -c '/home/chess/bin/chess-server db user reset-link -username <name> -url https://<site>/chess/web-client/ -dsn "postgres:///chess?host=/tmp"'
+```
+
+## Password Recovery by Email
+
+With an SMTP relay the server emails a reset link on request (`POST
+/api/auth/recover`, the **Forgot password?** link in the web client); the link
+opens the client, which sets the new password and signs the person in. The
+link works for an hour and once; using it signs the account out everywhere
+else. Accounts without an email address cannot use it (the CLI commands above
+can).
+
+The relay is a separate jail reached over the internal network. Set in
+`rc.conf`:
+
+```sh
+sysrc chessd_public_url="https://<site>/chess/web-client/"
+sysrc chessd_smtp_host="<mail jail address>"      # chessd_smtp_port, default 25
+sysrc chessd_mail_from="Chess <chess@<site>>"
+# only when the relay authenticates this host:
+sysrc chessd_smtp_user="<user>"
+(umask 077 && echo '<password>' > /home/chess/smtp.secret) && chown chess:chess /home/chess/smtp.secret
+service chessd restart
+```
+
+The server uses STARTTLS when the relay offers it and sends credentials only
+over TLS. `GET /chess/health` reports `"mail": "ok"` once recovery is on. For
+a test without a relay, `-mail-dir <dir>` in `chessd_flags` writes each
+message to a file instead.
 
 ## Host nginx and Web Clients
 

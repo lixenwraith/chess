@@ -93,6 +93,7 @@ const games = {
 const ui = {
     healthTimer: null,
     storage: 'unknown',
+    mail: 'unknown',    // "ok" when the server emails password-reset links
     toastTimer: null,
     historyCache: new Map(), // gameId -> {etag, history}
 };
@@ -209,6 +210,22 @@ function describeResult(state, termination) {
         case 'draw': return 'Draw';
     }
     return 'Game over';
+}
+
+// shortResult is the outcome in a few words, for the narrow turn strip.
+function shortResult(state, termination) {
+    const winner = state === 'white wins' ? 'White' : 'Black';
+    switch (termination) {
+        case 'resignation': return `${winner} wins · resigned`;
+        case 'checkmate': return `${winner} wins · mate`;
+        case 'stalemate': return 'Draw · stalemate';
+        case 'insufficient_material': return 'Draw · material';
+        case 'threefold_repetition': return 'Draw · repetition';
+        case 'fifty_move_rule': return 'Draw · 50 moves';
+        case 'agreement': return 'Draw · agreed';
+    }
+    if (state === 'white wins' || state === 'black wins') return `${winner} wins`;
+    return 'Draw';
 }
 
 function terminationLabel(termination) {
@@ -358,6 +375,11 @@ function setStorageStatus(status) {
     updateLiveTools();
 }
 
+function setMailStatus(status) {
+    ui.mail = status;
+    $('forgot-row').classList.toggle('hidden', status !== 'ok');
+}
+
 function startHealthCheck() {
     const checkHealth = async () => {
         try {
@@ -366,6 +388,7 @@ function startHealthCheck() {
                 const health = await response.json();
                 setServerStatus(health.status === 'healthy' ? 'healthy' : 'degraded');
                 setStorageStatus(health.storage || 'unknown');
+                setMailStatus(health.mail || 'disabled');
             } else {
                 handleApiError('health check', null, response);
                 setStorageStatus('unknown');
@@ -551,7 +574,8 @@ async function deleteAccount() {
 // re-entrancy from the Enter-key handler and stops edits mid-request.
 function setAuthModalBusy(busy) {
     auth.busy = busy;
-    for (const id of ['login-submit-btn', 'register-submit-btn', 'auth-cancel-btn', 'auth-cancel-btn-2']) {
+    for (const id of ['login-submit-btn', 'register-submit-btn', 'auth-cancel-btn', 'auth-cancel-btn-2',
+        'forgot-btn', 'recover-submit-btn', 'recover-back-btn']) {
         $(id).disabled = busy;
     }
     document.querySelectorAll('.auth-tab').forEach(t => t.disabled = busy);
@@ -560,7 +584,7 @@ function setAuthModalBusy(busy) {
 
 function showAuthModal() {
     $('auth-modal-overlay').classList.add('show');
-    $('login-identifier').focus();
+    switchAuthTab('login');
     document.removeEventListener('keydown', handleAuthModalKeydown);
     document.addEventListener('keydown', handleAuthModalKeydown);
 }
@@ -584,50 +608,72 @@ function handleAuthModalKeydown(e) {
         hideAuthModal();
     } else if (e.key === 'Enter') {
         e.preventDefault();
-        if (!$('login-form').classList.contains('hidden')) handleLogin(); else handleRegister();
+        ({ login: handleLogin, register: handleRegister, recover: handleRecover })[activeAuthForm()]();
     }
 }
 
+// The auth modal shows one of three forms: sign in, register, or password
+// recovery (reached from the sign-in form, without a tab).
 function switchAuthTab(tab) {
     document.querySelectorAll('.auth-tab').forEach(t => {
         const active = t.dataset.tab === tab;
         t.classList.toggle('active', active);
         t.setAttribute('aria-selected', active ? 'true' : 'false');
     });
+    document.querySelector('.auth-tabs').classList.toggle('hidden', tab === 'recover');
     $('login-form').classList.toggle('hidden', tab !== 'login');
     $('register-form').classList.toggle('hidden', tab !== 'register');
+    $('recover-form').classList.toggle('hidden', tab !== 'recover');
     clearModalMessage('auth-modal-message');
-    $(tab === 'login' ? 'login-identifier' : 'register-username').focus();
+    $({ login: 'login-identifier', register: 'register-username', recover: 'recover-identifier' }[tab]).focus();
 }
 
-async function submitAuth(path, body, failure) {
+function activeAuthForm() {
+    if (!$('login-form').classList.contains('hidden')) return 'login';
+    if (!$('register-form').classList.contains('hidden')) return 'register';
+    return 'recover';
+}
+
+// Returns the focus to a field after a failed request: the request disabled
+// the fields, which drops the focus to the page, and a retyped password
+// would otherwise go nowhere.
+function refocus(id, select = true) {
+    const el = $(id);
+    if (!el) return;
+    el.focus();
+    if (select && typeof el.select === 'function') el.select();
+}
+
+async function submitAuth(path, body, failure, focusId) {
     setAuthModalBusy(true);
     clearModalMessage('auth-modal-message');
+
+    const fail = message => {
+        setModalMessage('auth-modal-message', message, 'error');
+        setAuthModalBusy(false);
+        refocus(focusId);
+        return null;
+    };
 
     let response;
     try {
         response = await apiJSON('POST', path, body);
     } catch (error) {
-        const errorInfo = handleApiError(path, error);
-        setModalMessage('auth-modal-message', errorInfo.statusMessage, 'error');
-        setAuthModalBusy(false);
-        return null;
+        return fail(handleApiError(path, error).statusMessage);
     }
 
     if (!response.ok) {
         const err = await parseErrorResponse(response);
-        setModalMessage('auth-modal-message', err.details || err.error || failure, 'error');
-        setAuthModalBusy(false);
-        return null;
+        if (response.status === 401) return fail('Wrong username or password');
+        if (response.status === 429) return fail('Too many attempts. Wait a minute and try again.');
+        return fail(err.details || err.error || failure);
     }
 
     try {
         return await response.json();
     } catch (error) {
         console.error(`${path}: response OK but JSON parse failed:`, error);
-        setModalMessage('auth-modal-message', 'Unexpected response from server', 'error');
-        setAuthModalBusy(false);
-        return null;
+        return fail('Unexpected response from server');
     }
 }
 
@@ -637,13 +683,154 @@ async function handleLogin() {
     const password = $('login-password').value;
     if (!identifier || !password) {
         setModalMessage('auth-modal-message', 'Fill in both fields', 'error');
+        refocus(identifier ? 'login-password' : 'login-identifier', false);
         return;
     }
-    const result = await submitAuth('/api/auth/login', { identifier, password }, 'Sign-in failed');
+    const result = await submitAuth('/api/auth/login', { identifier, password }, 'Sign-in failed', 'login-password');
     if (!result) return;
     setSignedIn(result.userId, result.username, result.token);
     setModalMessage('auth-modal-message', `Signed in as ${result.username}`, 'success');
     setTimeout(hideAuthModal, MODAL_SUCCESS_DISPLAY_MS);
+}
+
+// The server's password rule, checked first for a quicker answer.
+function passwordProblem(password) {
+    if (password.length < 8) return 'Password needs at least 8 characters';
+    if (!/[a-zA-Z]/.test(password) || !/[0-9]/.test(password)) return 'Password needs a letter and a number';
+    return '';
+}
+
+// Asks for a reset link. The server answers the same whether or not the
+// account exists, so the message is the same too.
+async function handleRecover() {
+    if (auth.busy) return;
+    const identifier = $('recover-identifier').value.trim();
+    if (!identifier) {
+        setModalMessage('auth-modal-message', 'Enter your username or email', 'error');
+        refocus('recover-identifier', false);
+        return;
+    }
+    setAuthModalBusy(true);
+    clearModalMessage('auth-modal-message');
+    let response;
+    try {
+        response = await apiJSON('POST', '/api/auth/recover', { identifier });
+    } catch (error) {
+        setModalMessage('auth-modal-message', handleApiError('recover', error).statusMessage, 'error');
+        setAuthModalBusy(false);
+        refocus('recover-identifier');
+        return;
+    }
+    setAuthModalBusy(false);
+    if (response.status === 202) {
+        setModalMessage('auth-modal-message', 'If the account has an email address, a reset link is on its way. Check your inbox.', 'success');
+        $('recover-identifier').value = '';
+        $('recover-back-btn').focus();
+        return;
+    }
+    const err = await parseErrorResponse(response);
+    let message = err.error || 'Could not send the link';
+    if (response.status === 429) message = 'Too many requests. Wait a minute and try again.';
+    else if (response.status === 503 && err.code === 'NOT_CONFIGURED') message = 'This server cannot send email; ask its administrator for a reset link.';
+    setModalMessage('auth-modal-message', message, 'error');
+    refocus('recover-identifier');
+}
+
+// --- reset: the link in the recovery email opens the client with ?reset=<token>
+
+const reset = { token: null, busy: false };
+
+function openResetModal(token) {
+    reset.token = token;
+    reset.busy = false;
+    $('reset-password').value = '';
+    $('reset-password-2').value = '';
+    clearModalMessage('reset-modal-message');
+    $('reset-overlay').classList.add('show');
+    document.removeEventListener('keydown', handleResetKeydown);
+    document.addEventListener('keydown', handleResetKeydown);
+    $('reset-password').focus();
+}
+
+function closeResetModal() {
+    if (reset.busy) return;
+    reset.token = null;
+    $('reset-overlay').classList.remove('show');
+    $('reset-password').value = '';
+    $('reset-password-2').value = '';
+    document.removeEventListener('keydown', handleResetKeydown);
+}
+
+function setResetBusy(busy) {
+    reset.busy = busy;
+    for (const id of ['reset-password', 'reset-password-2', 'reset-submit-btn', 'reset-cancel-btn']) {
+        $(id).disabled = busy;
+    }
+}
+
+function handleResetKeydown(e) {
+    if (reset.busy) {
+        if (e.key === 'Enter' || e.key === 'Escape') e.preventDefault();
+        return;
+    }
+    if (e.key === 'Escape') {
+        e.preventDefault();
+        closeResetModal();
+    } else if (e.key === 'Enter') {
+        e.preventDefault();
+        submitReset();
+    }
+}
+
+async function submitReset() {
+    if (reset.busy || !reset.token) return;
+    const password = $('reset-password').value;
+    const again = $('reset-password-2').value;
+    const weak = passwordProblem(password);
+    if (weak) {
+        setModalMessage('reset-modal-message', weak, 'error');
+        refocus('reset-password');
+        return;
+    }
+    if (password !== again) {
+        setModalMessage('reset-modal-message', 'The two passwords differ', 'error');
+        refocus('reset-password-2');
+        return;
+    }
+    setResetBusy(true);
+    clearModalMessage('reset-modal-message');
+    let response;
+    try {
+        response = await apiJSON('POST', '/api/auth/reset', { token: reset.token, password });
+    } catch (error) {
+        setResetBusy(false);
+        setModalMessage('reset-modal-message', handleApiError('reset', error).statusMessage, 'error');
+        refocus('reset-password');
+        return;
+    }
+    if (!response.ok) {
+        const err = await parseErrorResponse(response);
+        setResetBusy(false);
+        setModalMessage('reset-modal-message', response.status === 400
+            ? (err.details && err.error === 'weak password' ? err.details : 'This link is invalid or has expired. Ask for a new one from Sign in.')
+            : (err.error || `Server error (${response.status})`), 'error');
+        refocus('reset-password');
+        return;
+    }
+    let result;
+    try {
+        result = await response.json();
+    } catch {
+        setResetBusy(false);
+        setModalMessage('reset-modal-message', 'Unexpected response from server', 'error');
+        return;
+    }
+    setSignedIn(result.userId, result.username, result.token);
+    setModalMessage('reset-modal-message', `Password changed — signed in as ${result.username}`, 'success');
+    setTimeout(() => {
+        setResetBusy(false);
+        closeResetModal();
+    }, MODAL_SUCCESS_DISPLAY_MS * 2);
 }
 
 async function handleRegister() {
@@ -655,17 +842,15 @@ async function handleRegister() {
         setModalMessage('auth-modal-message', 'Username and password required', 'error');
         return;
     }
-    if (password.length < 8) {
-        setModalMessage('auth-modal-message', 'Password needs at least 8 characters', 'error');
-        return;
-    }
-    if (!/[a-zA-Z]/.test(password) || !/[0-9]/.test(password)) {
-        setModalMessage('auth-modal-message', 'Password needs a letter and a number', 'error');
+    const weak = passwordProblem(password);
+    if (weak) {
+        setModalMessage('auth-modal-message', weak, 'error');
+        refocus('register-password');
         return;
     }
     const body = { username, password };
     if (email) body.email = email;
-    const result = await submitAuth('/api/auth/register', body, 'Registration failed');
+    const result = await submitAuth('/api/auth/register', body, 'Registration failed', 'register-password');
     if (!result) return;
     setSignedIn(result.userId, result.username, result.token);
     setModalMessage('auth-modal-message', `Account created, welcome ${result.username}`, 'success');
@@ -1344,26 +1529,32 @@ function updateTurnStrip() {
     const dot = $('turn-dot');
     const text = $('turn-text');
     let status = 'idle', label = 'No game';
+    let title = '';
     if (!live.gameId) {
         status = 'idle';
         label = 'No game';
     } else if (live.state === 'pending' || live.isLocked) {
         status = 'thinking';
-        label = 'Computer thinking…';
+        label = 'Thinking…';
+        title = 'The computer is thinking';
     } else if (isGameOver(live.state)) {
         status = live.state === 'white wins' ? 'white-wins' : live.state === 'black wins' ? 'black-wins' : live.state;
-        label = describeResult(live.state, live.termination);
+        label = shortResult(live.state, live.termination);
+        title = describeResult(live.state, live.termination);
     } else if (live.state === 'stuck') {
         status = 'stuck';
-        label = 'Engine error — undo or start a new game';
+        label = 'Engine error';
+        title = 'Engine error — undo or start a new game';
     } else {
+        // The dot shows the side to move; the text says whose it is.
         status = live.turn === 'w' ? 'white' : 'black';
         const side = live.turn === 'w' ? 'White' : 'Black';
-        label = live.turn === playerColor() ? `Your move (${side})` : `Computer to move (${side})`;
+        label = live.turn === playerColor() ? 'Your move' : 'Computer';
+        title = `${side} to move: ${live.turn === playerColor() ? 'you' : 'the computer'}`;
     }
     dot.dataset.status = status;
     text.textContent = label;
-    $('turn-strip').title = label;
+    $('turn-strip').title = title || label;
 }
 
 // Draw needs a game in progress with the board free; resigning only needs
@@ -2144,6 +2335,11 @@ function bindEvents() {
     });
     $('login-submit-btn').addEventListener('click', handleLogin);
     $('register-submit-btn').addEventListener('click', handleRegister);
+    $('forgot-btn').addEventListener('click', () => switchAuthTab('recover'));
+    $('recover-back-btn').addEventListener('click', () => switchAuthTab('login'));
+    $('recover-submit-btn').addEventListener('click', handleRecover);
+    $('reset-submit-btn').addEventListener('click', submitReset);
+    $('reset-cancel-btn').addEventListener('click', closeResetModal);
     $('auth-cancel-btn').addEventListener('click', hideAuthModal);
     $('auth-cancel-btn-2').addEventListener('click', hideAuthModal);
     $('logout-btn').addEventListener('click', handleLogoutClick);
@@ -2198,6 +2394,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     updateTurnStrip();
     updateGameControls();
     startHealthCheck();
+    // A reset link: take the token off the address before anything else, so
+    // it is neither kept in history nor shared with a copied link.
+    const params = new URLSearchParams(location.search);
+    const resetToken = params.get('reset');
+    if (resetToken !== null) {
+        params.delete('reset');
+        const query = params.toString();
+        try {
+            history.replaceState({ chess: true }, '', location.pathname + (query ? `?${query}` : ''));
+        } catch { /* history blocked */ }
+    }
     await restoreAuthSession();
     await applyURL();
+    if (resetToken) openResetModal(resetToken);
 });

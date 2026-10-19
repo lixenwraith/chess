@@ -174,12 +174,35 @@ Test gate:
   while replaying, `show` shows the replayed position, and the prompt reads
   `replay <ply>/<plies>`; `live` returns to the game as it was.
 
+Follow-up polish (done): the phone layout is full-width rows under the board
+(`svh` units, so the browser's bars never cover the controls; a replay
+reserves more height than live play), the turn strip says whose move it is in
+two words with the dot showing the side, the sign-in dialog keeps the focus in
+the password field after a wrong password, the brand mark is the site's
+bishop, and the terminal client pages long output (help, games, pgn, state,
+show, replay) one screen at a time, natively and in the browser.
+
 Later for the replay clients:
 
 - [ ] Web: an "Analysis" link on a replay (chess.com-style evaluation needs
   an engine in the browser or a server endpoint; none exists).
-- [ ] Web: a light theme, following the host page's choice.
 - [ ] CLI: `auto` cannot be interrupted before the end of the line.
+
+## Accounts
+
+- [x] Password recovery by email: `POST /api/auth/recover` sends a one-time
+  link (an hour, SHA-256 of the token stored in `password_resets`, schema
+  v4) to the account's address through an SMTP relay (`-smtp-host`, with
+  optional credentials over TLS) or, for development, a directory of `.eml`
+  files (`-mail-dir`); `POST /api/auth/reset` sets the password, ends the
+  account's other sessions and signs the person in; the web client offers
+  **Forgot password?** when `/health` reports `"mail": "ok"` and opens the
+  password form from `?reset=<token>`. `db user reset-link` prints the same
+  link for an administrator; `db user set-password` resets without one.
+- [ ] Deliver from the chess jail through the mail jail (devops): relay
+  address, sender, and `chessd_smtp_*` in `rc.conf` (deployment.md).
+- [ ] Email verification at registration and on `set-email`; today an
+  address is taken as typed, so a typo sends nobody a link.
 
 ## Phase R5 — Curated Archive (later)
 

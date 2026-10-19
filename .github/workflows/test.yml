@@ -80,11 +80,13 @@ jobs:
         run: npm install && npx playwright install --with-deps chromium
       - name: Start the test server with the web client
         run: |
-          WEB_PORT=9090 LOG_LEVEL=info test/run-test-server.sh bin/chess-server > server.log 2>&1 &
+          WEB_PORT=9090 MAIL_DIR="$RUNNER_TEMP/chess-mail" LOG_LEVEL=info test/run-test-server.sh bin/chess-server > server.log 2>&1 &
           for i in $(seq 1 60); do curl -sf http://localhost:8080/health && break; sleep 1; done
           curl -sf http://localhost:8080/health
       - name: Run the web client tests
         working-directory: test/e2e
+        env:
+          CHESS_E2E_MAIL_DIR: ${{ runner.temp }}/chess-mail
         run: npm test
       - name: Server log
         if: failure()

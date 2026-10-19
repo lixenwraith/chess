@@ -125,9 +125,9 @@ button { cursor: pointer; }
 }
 
 .brand-mark {
-    font-size: 1.35rem;
-    line-height: 1;
-    color: var(--periwinkle);
+    width: 1.5rem;
+    height: 1.5rem;
+    flex: none;
 }
 
 .health {
@@ -722,6 +722,7 @@ input[type="range"]:focus-visible { outline: 2px solid var(--periwinkle); outlin
 .auth-form input[type="text"],
 .auth-form input[type="email"],
 .auth-form input[type="password"],
+#reset-overlay input[type="password"],
 .account-form input[type="password"] {
     width: 100%;
     padding: 0.5rem 0.6rem;
@@ -740,7 +741,7 @@ input[type="range"]:focus-visible { outline: 2px solid var(--periwinkle); outlin
     word-wrap: break-word;
 }
 
-.fen-input:focus, .auth-form input:focus, .account-form input:focus {
+.fen-input:focus, .auth-form input:focus, .account-form input:focus, #reset-overlay input:focus {
     outline: none;
     border-color: var(--royal);
 }
@@ -753,6 +754,33 @@ input[type="range"]:focus-visible { outline: 2px solid var(--periwinkle); outlin
 }
 
 .auth-modal, .account-modal { max-width: 360px; }
+
+.auth-aside {
+    margin: 0.9rem 0 0;
+    text-align: center;
+    font-size: 0.85rem;
+}
+
+.auth-help {
+    margin: 0 0 0.9rem;
+    font-size: 0.85rem;
+    line-height: 1.45;
+    color: var(--muted);
+}
+
+.link-btn {
+    padding: 0;
+    background: none;
+    border: none;
+    color: var(--periwinkle);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+}
+
+.link-btn:hover { color: var(--fg); }
+.link-btn:focus-visible { outline: 2px solid var(--periwinkle); outline-offset: 2px; border-radius: 2px; }
+.auth-form input[type="password"]#reset-password, .auth-form input[type="password"]#reset-password-2 { width: 100%; }
 
 .auth-tabs {
     display: flex;
@@ -1007,7 +1035,7 @@ input[type="range"]:focus-visible { outline: 2px solid var(--periwinkle); outlin
 
 /* --- Stacked layout (board over panel) -------------------------------- */
 
-@media (max-width: 978px) {
+@media (min-width: 641px) and (max-width: 978px) {
     :root {
         --panel-width: clamp(360px, 45vw, 440px);
         --panel-height: 230px;
@@ -1036,11 +1064,17 @@ input[type="range"]:focus-visible { outline: 2px solid var(--periwinkle); outlin
 
     .pane {
         display: grid;
-        grid-template-columns: clamp(150px, 18.4vw, 180px) 1fr;
+        grid-template-columns: clamp(150px, 18.4vw, 180px) minmax(0, 1fr);
         grid-template-rows: min-content 1fr;
         gap: 0.5rem 0.75rem;
         padding: 0.6rem;
     }
+
+    .pane > * { min-width: 0; }
+    .toolbar .btn-tool { min-width: 0; overflow: hidden; }
+    /* Four export buttons in the narrow right column: icons only. */
+    .pane-replay .toolbar .btn-tool span { display: none; }
+    .pane-replay .toolbar .btn-tool .icon { width: 1.2rem; height: 1.2rem; }
 
     body[data-mode="replay"] .pane-live, body[data-mode="live"] .pane-replay { display: none; }
 
@@ -1086,24 +1120,123 @@ input[type="range"]:focus-visible { outline: 2px solid var(--periwinkle); outlin
     .btn-tool { font-size: 0.74rem; padding: 0.3rem 0.2rem; }
 }
 
-@media (max-width: 530px) {
+/* --- Phone layout: full-width rows, edge to edge ------------------------ */
+
+@media (max-width: 640px) {
     :root {
-        --panel-width: min(92vw, 440px);
-        --board-edge: max(240px, min(min(92vw, 440px), calc(100vh - 332px)));
-        --board-pad: 12px;
+        /* Reserve under the board: top bar 40 + gap 6 + turn strip 32 +
+           controls 36 + move list 96 + toolbar 36 + gaps and padding 26 =
+           276. Small viewport units, so the browser's bars never cover the
+           panel. The replay pane is taller (head, navigation, export, exit),
+           so a replay reserves more and the board gives way on a short
+           screen rather than the controls dropping below the fold. */
+        --board-edge: max(240px, min(100vw, calc(100svh - 284px)));
+        --board-pad: 14px;
+        --panel-width: 100%;
+        --panel-height: auto;
+        --topbar-height: 2.5rem;
+    }
+
+    body { overflow-y: auto; overflow-x: hidden; }
+    body[data-mode="replay"] { --board-edge: max(240px, min(100vw, calc(100svh - 372px))); }
+
+    /* The app is exactly the viewport, so the panel and its move list shrink
+       to fit; only when their minimums do not fit does the page scroll. */
+    .app { padding: 0; gap: 6px; height: 100svh; min-height: 100svh; overflow: visible; }
+
+    .topbar {
+        border-radius: 0;
+        border-left: none;
+        border-right: none;
+        border-top: none;
+        padding: 0 0.6rem;
     }
 
     .brand-name, #games-btn span, #auth-label { display: none; }
-    /* Icon-only export row in the replay pane: four buttons in 190px. */
-    .pane-replay .toolbar .btn-tool span { display: none; }
-    .pane-replay .toolbar .btn-tool .icon { width: 1.2rem; height: 1.2rem; }
-    #games-btn, #auth-btn { padding: 0.35rem 0.5rem; }
-    .pane { grid-template-columns: 140px 1fr; }
+    #games-btn, #auth-btn { padding: 0.35rem 0.55rem; }
+
+    .workspace {
+        flex: 1 1 auto;
+        min-height: 0;
+        flex-direction: column;
+        justify-content: flex-start;
+        gap: 6px;
+        overflow: visible;
+    }
+
+    .board-area { flex: none; }
+
+    .board-area { padding: var(--board-pad) 6px 6px 16px; }
+    .board-wrapper {
+        width: calc(var(--board-edge) - 22px);
+        height: calc(var(--board-edge) - 22px);
+    }
+    .coordinates.ranks { left: -14px; }
+    .coordinates.files { top: -15px; }
+
+    .panel {
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        flex: 1 1 auto;
+        min-height: 0;
+        height: auto;
+        border-radius: 0;
+        border-left: none;
+        border-right: none;
+        border-bottom: none;
+    }
+
+    .pane, .pane-live, .pane-replay {
+        display: flex;
+        flex: 1 1 auto;
+        flex-direction: column;
+        gap: 0.4rem;
+        padding: 0.5rem 0.6rem 0.6rem;
+        height: auto;
+    }
+
+    .pane > * { min-width: 0; }
+
+    .turn-strip { min-height: 2rem; padding: 0.25rem 0.6rem; }
+
+    .pane-live .controls {
+        grid-template-columns: repeat(4, 1fr);
+        grid-template-rows: auto;
+        gap: 0.35rem;
+    }
+    .pane-live .controls .btn { padding: 0.5rem 0.2rem; font-size: 0.85rem; min-height: 2.25rem; height: auto; }
+
+    .moves { flex: 1 1 auto; min-height: 96px; }
+    .move-grid { grid-template-columns: 2.2rem 1fr 1fr; font-size: 0.9rem; }
+
+    .toolbar .btn-tool { padding: 0.45rem 0.3rem; font-size: 0.82rem; min-width: 0; }
+
+    /* Replay: head, list, navigation, export and exit as rows. */
+    .pane-replay .replay-head { padding: 0.35rem 0.6rem; }
+    .pane-replay .replay-meta { display: none; }
+    .pane-replay .replay-nav {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr) 1.4fr 1fr;
+        gap: 0.3rem;
+    }
+    .pane-replay .replay-nav .speed { margin: 0; }
+    .pane-replay .replay-nav .speed select { width: 100%; }
+    .pane-replay .btn-nav { width: 100%; height: 2.2rem; }
+    .pane-replay #replay-exit { padding: 0.5rem; font-size: 0.85rem; }
+
     .games-modal { padding: 0.75rem; }
     .game-row { gap: 0.5rem; padding: 0.4rem; }
     .mini-board { width: 56px; height: 56px; }
     .mini-board span { font-size: 6px; }
     .modal-overlay { padding: 0.5rem; }
+}
+
+/* Very narrow phones: icon-only export buttons. */
+@media (max-width: 380px) {
+    .pane-replay .toolbar .btn-tool span { display: none; }
+    .pane-replay .toolbar .btn-tool .icon { width: 1.2rem; height: 1.2rem; }
+    .pane-live .controls .btn { font-size: 0.8rem; }
 }
 
 /* --- Motion ---------------------------------------------------------- */

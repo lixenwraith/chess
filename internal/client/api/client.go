@@ -107,7 +107,7 @@ func (c *Client) doRequest(method, path string, body any, result any) error {
 	if resp.StatusCode >= 400 {
 		statusColor = display.Red
 	}
-	fmt.Printf("%s[%d %s]%s\n", statusColor, resp.StatusCode, http.StatusText(resp.StatusCode), display.Reset)
+	display.Printf("%s[%d %s]%s\n", statusColor, resp.StatusCode, http.StatusText(resp.StatusCode), display.Reset)
 
 	// Display response body if verbose
 	if c.Verbose && len(respBody) > 0 {

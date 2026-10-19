@@ -89,6 +89,8 @@ func TestAPIRoutes(t *testing.T) {
 		"GET /api/auth/me",
 		"POST /api/auth/logout",
 		"DELETE /api/auth/me",
+		"POST /api/auth/recover",
+		"POST /api/auth/reset",
 		"POST /api/games",
 		"GET /api/games/:gameId",
 		"GET /api/games/:gameId/history",

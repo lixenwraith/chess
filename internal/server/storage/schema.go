@@ -81,7 +81,7 @@ type MovePersistence struct {
 // schemaVersion is the newest schema this binary understands. Migrations are
 // applied in order inside one transaction; PostgreSQL DDL is transactional, so
 // a failed upgrade leaves the previous version intact.
-const schemaVersion = 3
+const schemaVersion = 4
 
 // migrations[v-1] upgrades the schema from version v-1 to v. Never edit a
 // released migration; append a new one.
@@ -213,7 +213,22 @@ ALTER TABLE games ADD CONSTRAINT games_concession_check CHECK (
 		(concession_result IN ('white_wins', 'black_wins') AND concession_termination = 'resignation')
 		OR (concession_result = 'draw' AND concession_termination = 'agreement'))));
 `,
+
+	// v4: password recovery. One pending reset per account; the token the
+	// email carries is never stored, only its SHA-256, and it expires after
+	// an hour. Consuming a token deletes the row.
+	`
+CREATE TABLE password_resets (
+	user_id    uuid PRIMARY KEY REFERENCES users (user_id) ON DELETE CASCADE,
+	token_hash bytea NOT NULL,
+	created_at timestamptz NOT NULL DEFAULT now(),
+	expires_at timestamptz NOT NULL,
+	CONSTRAINT password_resets_token_hash_key UNIQUE (token_hash),
+	CONSTRAINT password_resets_token_hash_check CHECK (octet_length(token_hash) = 32)
+);
+CREATE INDEX password_resets_expires_at_idx ON password_resets (expires_at);
+`,
 }
 
 // ownedTables lists every table created by migrations, children first.
-var ownedTables = []string{"moves", "games", "sessions", "users", "schema_version"}
+var ownedTables = []string{"moves", "games", "password_resets", "sessions", "users", "schema_version"}

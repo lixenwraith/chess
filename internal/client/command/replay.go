@@ -22,6 +22,7 @@ func (r *Registry) registerReplayCommands() {
 		Description: "Step through a stored game",
 		Usage:       "replay <gameId|index>  (index from the last 'games' listing)",
 		Handler:     replayHandler,
+		Paged:       true,
 	})
 	r.Register(&Command{
 		Name:        "next",
@@ -122,7 +123,7 @@ func replayHandler(s *session.Session, args []string) error {
 
 	white, black := s.Replay.Players()
 	display.Println(display.Cyan, "\nReplaying %s", history.GameID)
-	fmt.Printf("%s vs %s  ·  %s  ·  %d plies  ·  started %s\n",
+	display.Printf("%s vs %s  ·  %s  ·  %d plies  ·  started %s\n",
 		display.C(display.Blue, white), display.C(display.Red, black), s.Replay.Result(), s.Replay.Len(),
 		history.StartTimeUTC.UTC().Format("2006-01-02 15:04"))
 	if c := history.Concession; c != nil {
@@ -135,8 +136,8 @@ func replayHandler(s *session.Session, args []string) error {
 		}
 		display.Println(display.Yellow, "%s at ply %d; play continued.", what, c.Ply)
 	}
-	fmt.Println()
-	fmt.Println(s.Replay.Movetext(80))
+	display.Line()
+	display.Line(s.Replay.Movetext(80))
 	display.Println(display.Reset, "\nnext, prev, first, last, goto <ply>, auto [ms], fen, pgn [save <path>], live")
 	return showReplayPosition(s)
 }
@@ -217,7 +218,7 @@ func fenHandler(s *session.Session, args []string) error {
 	if s.Replay == nil {
 		return errNotReplaying
 	}
-	fmt.Println(s.Replay.FEN())
+	display.Line(s.Replay.FEN())
 	return nil
 }
 
@@ -241,13 +242,13 @@ func showReplayPosition(s *session.Session) error {
 	if err != nil {
 		return fmt.Errorf("stored position cannot be shown: %w", err)
 	}
-	fmt.Println()
+	display.Line()
 	display.RenderBoard(board)
 	label := r.Label(r.Ply)
 	if r.Ply == 0 {
 		label = "initial position"
 	}
-	fmt.Printf("\nPly %d/%d  %s\n", r.Ply, r.Len(), display.C(display.Cyan, label))
+	display.Printf("\nPly %d/%d  %s\n", r.Ply, r.Len(), display.C(display.Cyan, label))
 	if r.AtEnd() && r.History.Result != "" {
 		display.Println(display.Green, "Result: %s", r.Result())
 	}

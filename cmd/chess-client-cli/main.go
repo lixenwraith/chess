@@ -35,8 +35,14 @@ func runClient() (restart bool) {
 		Verbose:    false,
 	}
 
-	// Initialize simple input scanner
+	// Initialize simple input scanner; the pager reads from it between screens
 	scanner := bufio.NewScanner(os.Stdin)
+	s.ReadLine = func() (string, bool) {
+		if !scanner.Scan() {
+			return "", false
+		}
+		return scanner.Text(), true
+	}
 
 	display.Println(display.Cyan, "Chess Debug Client")
 	display.Println(display.Cyan, "API: %s", s.APIBaseURL)

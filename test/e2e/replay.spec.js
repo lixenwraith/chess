@@ -6,6 +6,11 @@
 const { test, expect } = require('@playwright/test');
 
 const API = process.env.CHESS_E2E_API || 'http://localhost:8080';
+// Where the server writes password-reset email (-mail-dir); the reset test
+// is skipped without it.
+const MAIL_DIR = process.env.CHESS_E2E_MAIL_DIR || '';
+const fs = require('fs');
+const path = require('path');
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
 // The engine level and search time are set through the sliders' inputs.
@@ -174,6 +179,90 @@ test.describe('web replay', () => {
         await expect(page).toHaveURL(/\/$/);
     });
 
+    test('a phone fits the board and the controls without scrolling', async ({ browser }) => {
+        const context = await browser.newContext({ viewport: { width: 412, height: 780 }, isMobile: true, hasTouch: true });
+        const page = await context.newPage();
+        await page.goto('/');
+        const fits = () => page.evaluate(() => ({
+            w: document.documentElement.scrollWidth <= innerWidth,
+            h: document.documentElement.scrollHeight <= innerHeight,
+        }));
+        expect(await fits()).toEqual({ w: true, h: true });
+        // The controls sit in one row of short labels.
+        await expect(page.locator('#new-game-btn')).toHaveText('New');
+        const [newBox, resignBox] = await Promise.all([
+            page.locator('#new-game-btn').boundingBox(), page.locator('#resign-btn').boundingBox()]);
+        expect(Math.abs(newBox.y - resignBox.y)).toBeLessThan(2);
+        expect(newBox.height).toBeLessThan(50);
+        await expect(page.locator('.pane-live .toolbar')).toBeInViewport();
+        // A replay keeps its controls on screen too.
+        const created = await (await context.request.post(`${API}/api/games`, { data: { white: { type: 1 }, black: { type: 1 } } })).json();
+        await context.request.post(`${API}/api/games/${created.gameId}/moves`, { data: { move: 'e2e4' } });
+        await page.goto(`/?replay=${created.gameId}&ply=1`);
+        await expect(page.locator('body')).toHaveAttribute('data-mode', 'replay');
+        expect(await fits()).toEqual({ w: true, h: true });
+        await expect(page.locator('#replay-exit')).toBeInViewport();
+        await expect(page.locator('#replay-link')).toBeInViewport();
+        await context.close();
+    });
+
+    test('a forgotten password is reset through the emailed link', async ({ page, request }) => {
+        test.skip(!MAIL_DIR, 'CHESS_E2E_MAIL_DIR is not set (start the server with MAIL_DIR)');
+        const username = `reset${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`;
+        const email = `${username}@example.test`;
+        const created = await request.post(`${API}/api/auth/register`, {
+            data: { username, email, password: 'OldPass123' },
+        });
+        expect(created.status(), await created.text()).toBe(201);
+
+        await page.goto('/');
+        await expect(page.locator('#storage-dot')).toHaveAttribute('data-status', 'ok');
+        await page.click('#auth-btn');
+        // A wrong password keeps the focus in the password field.
+        await page.fill('#login-identifier', username);
+        await page.fill('#login-password', 'wrong');
+        await page.click('#login-submit-btn');
+        await expect(page.locator('#auth-modal-message')).toContainText('Wrong username or password');
+        await expect(page.locator('#login-password')).toBeFocused();
+
+        await expect(page.locator('#forgot-btn')).toBeVisible();
+        await page.click('#forgot-btn');
+        await page.fill('#recover-identifier', email);
+        const mails = () => (fs.existsSync(MAIL_DIR) ? fs.readdirSync(MAIL_DIR) : []);
+        const before = mails().length;
+        await page.click('#recover-submit-btn');
+        await expect(page.locator('#auth-modal-message')).toContainText('on its way');
+        await expect.poll(() => mails().length, { timeout: 10_000 }).toBeGreaterThan(before);
+        const files = fs.readdirSync(MAIL_DIR).map(f => path.join(MAIL_DIR, f))
+            .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+        const mail = fs.readFileSync(files[0], 'utf8');
+        expect(mail).toContain(`To: ${email}`);
+        const link = /(https?:\/\/\S+\?reset=[A-Za-z0-9_-]+)/.exec(mail)[1];
+        const origin = new URL(page.url()).origin;
+        await page.goto(link.replace(/^https?:\/\/[^/]+/, origin));
+        await expect(page.locator('#reset-overlay')).toHaveClass(/show/);
+        // The token is removed from the address at once.
+        expect(page.url()).not.toContain('reset=');
+        await page.fill('#reset-password', 'NewPass123');
+        await page.fill('#reset-password-2', 'NewPass124');
+        await page.click('#reset-submit-btn');
+        await expect(page.locator('#reset-modal-message')).toContainText('differ');
+        await page.fill('#reset-password-2', 'NewPass123');
+        await page.keyboard.press('Enter');
+        await expect(page.locator('#auth-label')).toHaveText(username);
+        await expect(page.locator('#reset-overlay')).not.toHaveClass(/show/, { timeout: 5_000 });
+        // The old password is gone, the new one and the link are not reusable.
+        const old = await request.post(`${API}/api/auth/login`, { data: { identifier: username, password: 'OldPass123' } });
+        expect(old.status()).toBe(401);
+        const fresh = await request.post(`${API}/api/auth/login`, { data: { identifier: username, password: 'NewPass123' } });
+        expect(fresh.status()).toBe(200);
+        await page.goto(link.replace(/^https?:\/\/[^/]+/, origin));
+        await page.fill('#reset-password', 'NewPass125');
+        await page.fill('#reset-password-2', 'NewPass125');
+        await page.click('#reset-submit-btn');
+        await expect(page.locator('#reset-modal-message')).toContainText('invalid or has expired');
+    });
+
     test('an anonymous visitor replays from the device list', async ({ page }) => {
         await page.goto('/');
         await expect(page.locator('#auth-label')).toHaveText('Sign in');
@@ -193,6 +282,7 @@ test.describe('web replay', () => {
         await expect(page.locator('.coordinates.ranks span').first()).toHaveText('1');
         expect(await page.evaluate(() => replay.history.initialFen)).toBe(START_FEN);
         await page.click('#replay-exit');
-        await expect(page.locator('#turn-text')).toContainText('Your move (Black)');
+        await expect(page.locator('#turn-text')).toHaveText('Your move');
+        await expect(page.locator('#turn-dot')).toHaveAttribute('data-status', 'black');
     });
 });

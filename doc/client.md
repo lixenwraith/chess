@@ -294,6 +294,13 @@ Exit the client.
 chess > exit
 ```
 
+### Long output
+
+`help`, `games`, `pgn`, `state`, `show` and `replay` print one screen at a
+time when their output is taller than the terminal: `-- More (N lines left;
+Enter continues, q quits) --`. The terminal's size comes from the TTY, or in
+the browser from xterm.js; output piped to another program is never paged.
+
 ### Verbose Mode
 
 Append `-v` flag to any command for detailed output:

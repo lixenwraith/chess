@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"syscall"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/lixenwraith/chess/internal/server/replay"
+	"github.com/lixenwraith/chess/internal/server/service"
 	"github.com/lixenwraith/chess/internal/server/storage"
 
 	"github.com/google/uuid"
@@ -40,7 +42,7 @@ func Run(args []string) error {
 		return runVerify(args[1:])
 	case "user":
 		if len(args) < 2 {
-			return fmt.Errorf("user subcommand required: add, delete, set-password, set-hash, set-email, set-username, list")
+			return fmt.Errorf("user subcommand required: add, delete, set-password, set-hash, set-email, set-username, reset-link, list")
 		}
 		return runUser(args[1], args[2:])
 	default:
@@ -303,11 +305,55 @@ func runUser(subcommand string, args []string) error {
 		return runUserSetEmail(args)
 	case "set-username":
 		return runUserSetUsername(args)
+	case "reset-link":
+		return runUserResetLink(args)
 	case "list":
 		return runUserList(args)
 	default:
 		return fmt.Errorf("unknown user subcommand: %s", subcommand)
 	}
+}
+
+// runUserResetLink prints a one-time password-reset link for an account, the
+// same link the recovery email carries, for an administrator to pass on when
+// the server sends no mail or the account has no email. It works for an hour
+// and replaces any pending link.
+func runUserResetLink(args []string) error {
+	fs, dsn := newFlagSet("user reset-link")
+	username := fs.String("username", "", "Username")
+	userID := fs.String("id", "", "User ID")
+	publicURL := fs.String("url", "", "Web client address the link opens, e.g. https://example.com/chess/web-client/ (required)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	base, err := url.Parse(*publicURL)
+	if *publicURL == "" || err != nil || base.Scheme == "" || base.Host == "" {
+		return fmt.Errorf("-url must be the web client's absolute address")
+	}
+
+	store, err := openStore(*dsn, true)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	targetID, err := lookupUser(store, *username, *userID)
+	if err != nil {
+		return err
+	}
+	token, hash, err := service.NewResetToken()
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	if err := store.CreatePasswordReset(storage.PasswordResetRecord{
+		UserID: targetID, TokenHash: hash, CreatedAt: now, ExpiresAt: now.Add(service.PasswordResetTTL),
+	}); err != nil {
+		return fmt.Errorf("failed to create reset: %w", err)
+	}
+	fmt.Printf("Reset link for %s, valid until %s (one use):\n%s\n",
+		abbreviateID(targetID), now.Add(service.PasswordResetTTL).Format(time.RFC3339), service.ResetLink(base, token))
+	return nil
 }
 
 // readPassword prompts on the terminal without echo.

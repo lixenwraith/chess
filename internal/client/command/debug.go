@@ -44,12 +44,12 @@ func healthHandler(s *session.Session, args []string) error {
 	}
 
 	display.Println(display.Cyan, "Server Health:")
-	fmt.Printf("  Status:  %s\n", resp.Status)
+	display.Printf("  Status:  %s\n", resp.Status)
 	// Convert Unix timestamp to readable time
 	t := time.Unix(resp.Time, 0)
-	fmt.Printf("  Time:    %s\n", t.Format("2006-01-02 15:04:05"))
+	display.Printf("  Time:    %s\n", t.Format("2006-01-02 15:04:05"))
 	if resp.Storage != "" {
-		fmt.Printf("  Storage: %s\n", resp.Storage)
+		display.Printf("  Storage: %s\n", resp.Storage)
 	}
 
 	return nil
@@ -57,7 +57,7 @@ func healthHandler(s *session.Session, args []string) error {
 
 func urlHandler(s *session.Session, args []string) error {
 	if len(args) == 0 {
-		fmt.Printf("Current API URL: %s\n", s.GetAPIBaseURL())
+		display.Printf("Current API URL: %s\n", s.GetAPIBaseURL())
 		return nil
 	}
 

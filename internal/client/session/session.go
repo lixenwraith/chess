@@ -18,8 +18,11 @@ type Session struct {
 	Client        *api.Client
 	// Replay is the stored game being stepped through, nil while live. The
 	// live game, user, and poll state above are untouched by a replay.
-	Replay  *replay.State
-	Verbose bool
+	Replay *replay.State
+	// ReadLine reads the next input line (false at end of input); the pager
+	// uses it to wait between screens.
+	ReadLine func() (string, bool)
+	Verbose  bool
 	// Game state for prompt
 	CurrentGameState *api.GameResponse
 	PlayerColor      string // "w", "b", or ""

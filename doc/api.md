@@ -116,6 +116,48 @@ Errors: 400 `INVALID_REQUEST` without a password, 401 for a wrong password or
 token, 429 past 5 attempts a minute per IP, 503 `RESOURCE_LIMIT` when password
 hashing is saturated or `STORAGE_UNAVAILABLE` when storage is down.
 
+### Request a Password Reset
+`POST /auth/recover`
+
+Emails a one-time reset link to the account's address. The response is the
+same whether or not the account exists or has an email, so nothing is
+revealed.
+
+**Request:**
+```json
+{"identifier": "alice"}
+```
+
+- `identifier` (string, required): Username or email address
+
+**Response (202):**
+```json
+{"message": "If the account has an email address, a reset link has been sent to it."}
+```
+
+Errors: 429 past 3 requests a minute per IP, 503 `NOT_CONFIGURED` when the
+server has no mail transport (`/health` reports `"mail": "disabled"`), 502
+when the relay refused the message.
+
+### Reset a Password
+`POST /auth/reset`
+
+Sets a new password with the token from the link (`?reset=<token>` on the web
+client) and signs the user in; the token works once, for an hour, and every
+other session of the account ends.
+
+**Request:**
+```json
+{"token": "…", "password": "NewPass123"}
+```
+
+**Response (200):** as login (`token`, `userId`, `username`, `email`,
+`expiresAt`).
+
+Errors: 400 `INVALID_REQUEST` for a weak password or an invalid, used or
+expired token (`"invalid or expired reset link"`), 429 past 10 a minute per
+IP, 503 when storage or password hashing is unavailable.
+
 ## Game Endpoints
 
 ### Health Check
@@ -129,9 +171,13 @@ Returns server and storage status, and the build the server runs.
   "status": "healthy",
   "time": 1699123456,
   "storage": "ok",
+  "mail": "disabled",
   "version": "v0.14.0-3-g1a2b3c4"
 }
 ```
+
+`mail` is `"ok"` when the server can email password-reset links (the web
+client then offers **Forgot password?**), otherwise `"disabled"`.
 
 `version` is `git describe` of the source the binary was built from (`make`
 sets it), or `dev` for a plain `go build`. Compare it after a deployment: a
@@ -556,6 +602,7 @@ Error codes:
 - Registration: 5 requests/minute/IP
 - Login: 10 requests/minute/IP
 - Account deletion: 5 requests/minute/IP
+- Password recovery: 3 requests/minute/IP; reset: 10 requests/minute/IP
 
 Exceeding limit returns 429 status. Behind a reverse proxy the client IP is the
 proxy's `X-Real-IP` header, trusted only from addresses listed in

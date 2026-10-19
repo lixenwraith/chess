@@ -40,7 +40,7 @@ func RenderBoard(asciiBoard string) {
 				Print(Reset, "%c", char)
 			}
 		}
-		fmt.Println()
+		fmt.Fprintln(Out)
 	}
 }
 

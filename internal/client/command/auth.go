@@ -81,8 +81,8 @@ func registerHandler(s *session.Session, args []string) error {
 	c.SetToken(resp.Token)
 
 	display.Println(display.Green, "Registered successfully")
-	fmt.Printf("User ID: %s\n", resp.UserID)
-	fmt.Printf("Username: %s\n", resp.Username)
+	display.Printf("User ID: %s\n", resp.UserID)
+	display.Printf("Username: %s\n", resp.Username)
 
 	return nil
 }
@@ -111,8 +111,8 @@ func loginHandler(s *session.Session, args []string) error {
 	c.SetToken(resp.Token)
 
 	display.Println(display.Green, "Logged in successfully")
-	fmt.Printf("User ID: %s\n", resp.UserID)
-	fmt.Printf("Username: %s\n", resp.Username)
+	display.Printf("User ID: %s\n", resp.UserID)
+	display.Printf("Username: %s\n", resp.Username)
 
 	return nil
 }
@@ -151,14 +151,14 @@ func whoamiHandler(s *session.Session, args []string) error {
 	}
 
 	display.Println(display.Cyan, "Current User:")
-	fmt.Printf("  User ID:  %s\n", user.UserID)
-	fmt.Printf("  Username: %s\n", user.Username)
+	display.Printf("  User ID:  %s\n", user.UserID)
+	display.Printf("  Username: %s\n", user.Username)
 	if user.Email != "" {
-		fmt.Printf("  Email:    %s\n", user.Email)
+		display.Printf("  Email:    %s\n", user.Email)
 	}
-	fmt.Printf("  Created:  %s\n", user.CreatedAt.Format("2006-01-02 15:04:05"))
+	display.Printf("  Created:  %s\n", user.CreatedAt.Format("2006-01-02 15:04:05"))
 	if user.LastLogin != nil {
-		fmt.Printf("  Last Login: %s\n", user.LastLogin.Format("2006-01-02 15:04:05"))
+		display.Printf("  Last Login: %s\n", user.LastLogin.Format("2006-01-02 15:04:05"))
 	}
 
 	return nil
@@ -172,7 +172,7 @@ func setUserHandler(s *session.Session, args []string) error {
 	userID := args[0]
 	s.SetCurrentUser(userID)
 	display.Println(display.Cyan, "User ID set to: %s", userID)
-	fmt.Println("Note: This doesn't authenticate, just sets the ID for display")
+	display.Line("Note: This doesn't authenticate, just sets the ID for display")
 
 	return nil
 }

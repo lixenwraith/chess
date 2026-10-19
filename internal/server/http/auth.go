@@ -35,6 +35,17 @@ type DeleteAccountRequest struct {
 	Password string `json:"password" validate:"required"`
 }
 
+// RecoverRequest asks for a password-reset email.
+type RecoverRequest struct {
+	Identifier string `json:"identifier" validate:"required"` // username or email
+}
+
+// ResetPasswordRequest sets a new password with the token from the email.
+type ResetPasswordRequest struct {
+	Token    string `json:"token" validate:"required"`
+	Password string `json:"password" validate:"required"`
+}
+
 // AuthResponse contains JWT token and user information
 type AuthResponse struct {
 	Token     string    `json:"token"`
@@ -321,4 +332,105 @@ func (h *HTTPHandler) DeleteAccountHandler(c *fiber.Ctx) error {
 	}
 
 	return c.SendStatus(fiber.StatusNoContent)
+}
+
+// RecoverHandler emails a password-reset link. The answer is the same whether
+// or not the account exists or has an email, so nothing is revealed; only a
+// missing transport (503) or a delivery failure (502) is reported.
+func (h *HTTPHandler) RecoverHandler(c *fiber.Ctx) error {
+	var req RecoverRequest
+	if err := c.BodyParser(&req); err != nil || strings.TrimSpace(req.Identifier) == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
+			Error:   "invalid request body",
+			Code:    core.ErrInvalidRequest,
+			Details: "identifier (username or email) is required",
+		})
+	}
+	if len(req.Identifier) > 254 {
+		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
+			Error: "invalid identifier", Code: core.ErrInvalidRequest,
+		})
+	}
+
+	if err := h.svc.RequestPasswordReset(req.Identifier); err != nil {
+		switch {
+		case errors.Is(err, service.ErrMailDisabled):
+			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+				Error: "password recovery is not available on this server", Code: core.ErrNotConfigured,
+			})
+		case errors.Is(err, service.ErrMailFailed):
+			return c.Status(fiber.StatusBadGateway).JSON(core.ErrorResponse{
+				Error: "the reset email could not be sent; try again later", Code: core.ErrInternalError,
+			})
+		case errors.Is(err, service.ErrStorageDisabled), errors.Is(err, service.ErrStorageUnavailable):
+			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+				Error: "account storage unavailable", Code: core.ErrStorageUnavailable,
+			})
+		default:
+			return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
+				Error: "failed to start password recovery", Code: core.ErrInternalError,
+			})
+		}
+	}
+	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
+		"message": "If the account has an email address, a reset link has been sent to it.",
+	})
+}
+
+// ResetPasswordHandler sets a new password from a reset link and signs the
+// user in, returning a session token like login.
+func (h *HTTPHandler) ResetPasswordHandler(c *fiber.Ctx) error {
+	var req ResetPasswordRequest
+	if err := c.BodyParser(&req); err != nil || req.Token == "" || req.Password == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
+			Error:   "invalid request body",
+			Code:    core.ErrInvalidRequest,
+			Details: "token and password are required",
+		})
+	}
+	if err := validatePassword(req.Password); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
+			Error:   "weak password",
+			Code:    core.ErrInvalidRequest,
+			Details: err.Error(),
+		})
+	}
+
+	user, sessionID, err := h.svc.ResetPassword(req.Token, req.Password)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrResetInvalid):
+			return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
+				Error:   "invalid or expired reset link",
+				Code:    core.ErrInvalidRequest,
+				Details: "request a new link from the sign-in dialog",
+			})
+		case errors.Is(err, service.ErrAuthBusy):
+			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+				Error: "authentication temporarily unavailable", Code: core.ErrResourceLimit,
+			})
+		case errors.Is(err, service.ErrStorageDisabled), errors.Is(err, service.ErrStorageUnavailable):
+			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+				Error: "account storage unavailable", Code: core.ErrStorageUnavailable,
+			})
+		default:
+			return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
+				Error: "failed to reset password", Code: core.ErrInternalError,
+			})
+		}
+	}
+
+	token, err := h.svc.GenerateUserToken(user.UserID, sessionID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
+			Error: "failed to generate token", Code: core.ErrInternalError,
+		})
+	}
+	return c.JSON(AuthResponse{
+		Token:     token,
+		UserID:    user.UserID,
+		Username:  user.Username,
+		Email:     user.Email,
+		ExpiresAt: time.Now().Add(service.SessionTTL),
+	})
 }
