@@ -1,0 +1,11 @@
+{
+  "name": "chess-web-e2e",
+  "private": true,
+  "description": "Playwright end-to-end tests for the chess web client (see test/README.md)",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.57.0"
+  }
+}

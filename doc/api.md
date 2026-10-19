@@ -180,6 +180,7 @@ Authorization: Bearer <token>
   "turn": "w",
   "state": "ongoing",
   "moves": [],
+  "san": [],
   "players": {
     "white": {"id": "550e8400-...", "color": 1, "type": 1},
     "black": {"id": "ai-player-...", "color": 2, "type": 2, "level": 15, "searchTime": 1000}
@@ -210,6 +211,9 @@ GET /games/{gameId}?wait=true&moveCount=5
 ```
 
 Response includes all game data. Compare `moves` array length to detect changes.
+`moves` holds the UCI line and `san` the same moves in standard algebraic
+notation, derived by the rules core from the position before each move (an
+entry is empty only for a move it cannot notate, which the server logs).
 
 **Timeout behavior:**
 - Returns current state after 30 seconds even if no changes
@@ -337,8 +341,9 @@ later first-move slot claim, newest first. Requires
   be combined with `cursor`, and pages shift when games are added.
 
 Each item contains game ID, initial FEN, final FEN (after the last stored move,
-or the initial FEN when there is none), result and its `pgnResult` token,
-timestamps, players, and move count. `nextCursor` is present only when another
+or the initial FEN when there is none), result, its `pgnResult` token and
+`termination` (as in the history; both omitted while ongoing), timestamps,
+players, and move count. `nextCursor` is present only when another
 page exists; `nextOffset` also, on requests without a cursor. A game belongs
 to a user who created it while authenticated or claimed a slot with a first
 move; the association survives later player reconfiguration.
@@ -355,6 +360,7 @@ Returns 400 `INVALID_REQUEST` for a malformed cursor or filter.
       "finalFen": "r1bqkb1r/pppp1Qpp/2n2n2/4p3/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 0 4",
       "result": "white_wins",
       "pgnResult": "1-0",
+      "termination": "checkmate",
       "startTimeUtc": "2026-09-07T12:00:00Z",
       "endTimeUtc": "2026-09-07T12:15:00Z",
       "moveCount": 7,

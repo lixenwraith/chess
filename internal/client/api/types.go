@@ -45,6 +45,7 @@ type GameResponse struct {
 	DrawOutcome string          `json:"drawOutcome,omitempty"`
 	Concession  *Concession     `json:"concession,omitempty"`
 	Moves       []string        `json:"moves"`
+	SAN         []string        `json:"san"`
 	Players     PlayersResponse `json:"players"`
 	LastMove    *MoveInfo       `json:"lastMove,omitempty"`
 }
@@ -129,6 +130,7 @@ type GameHistoryResponse struct {
 	Termination  string          `json:"termination,omitempty"`
 	StartTimeUTC time.Time       `json:"startTimeUtc"`
 	EndTimeUTC   *time.Time      `json:"endTimeUtc,omitempty"`
+	Concession   *Concession     `json:"concession,omitempty"` // Result in stored form ("black_wins")
 	Players      PlayersResponse `json:"players"`
 	Moves        []HistoryMove   `json:"moves"`
 }
@@ -148,6 +150,7 @@ type GameSummary struct {
 	FinalFEN     string          `json:"finalFen"`
 	Result       string          `json:"result,omitempty"`
 	PGNResult    string          `json:"pgnResult"`
+	Termination  string          `json:"termination,omitempty"`
 	StartTimeUTC time.Time       `json:"startTimeUtc"`
 	EndTimeUTC   *time.Time      `json:"endTimeUtc,omitempty"`
 	MoveCount    int             `json:"moveCount"`

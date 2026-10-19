@@ -38,9 +38,11 @@ The server runs with `-dev`, debug logging, HTTP request logging, and relaxed ra
 It drops the test tables on exit, so it's preferred for clean testing.
 Can be used for all the tests.
 
-Logging can be adjusted without editing the script:
+Logging can be adjusted without editing the script, and `WEB_PORT` also
+serves the embedded web client (needed by the end-to-end suite):
 ```bash
 LOG_LEVEL=info LOG_HTTP=false test/run-test-server.sh bin/chess-server
+WEB_PORT=9090 test/run-test-server.sh bin/chess-server
 ```
 
 ### Pre-configured Users
@@ -83,6 +85,7 @@ curl -X POST http://localhost:8080/api/games \
 | End States | `test-endstate.sh` | Checkmate, stalemate, terminal custom positions |
 | Replay | `test-replay.sh` | SAN history, PGN export, ETag/304, promotion, FEN validation, cursor-paged listing |
 | Draws & Resignation | `test-draw.sh` | Automatic draws, offers (human and computer), resignation and authorization, long-poll wake-up, concessions and claim control, server version, hand-deleted game row |
+| Web client (end-to-end) | `e2e/` | Playwright in Chromium against the embedded web client: play, My games, replay controls and keyboard, autoplay, FEN/PGN export and download compared with the API, deep links, device list |
 | Test Server | `run-test-server.sh` | Pre-populated test environment |
 
 ## 1. API Functionality Tests (`test-api.sh`)
@@ -216,3 +219,38 @@ unknown route answered with `NOT_FOUND`, `/health` reporting the build, and a
 game whose row is deleted with
 psql (needs `CHESS_TEST_DSN` and `psql`; the server unloads the game and
 stays healthy).
+
+## Web client end-to-end tests (`e2e/`)
+
+Playwright drives the embedded web client in Chromium against a running
+server with PostgreSQL and Stockfish: it plays a short game, lists it under
+My games, replays it with the buttons and the keyboard, autoplays to the end,
+compares the FEN and PGN it exports (copy and download) with the API, follows
+a deep link to a checkmate, steps back through the browser history, and
+replays an anonymous game from the device list.
+
+Requirements: Node.js 20+ and a Chromium that Playwright can run.
+
+```bash
+# Terminal 1: the test server with the web client
+WEB_PORT=9090 test/run-test-server.sh bin/chess-server
+
+# Terminal 2, once
+cd test/e2e && npm install && npx playwright install chromium
+
+# Terminal 2: run
+npm test                      # or, from the repository root: make test-e2e
+```
+
+Environment:
+
+- `CHESS_E2E_WEB` (default `http://localhost:9090`): the web client's origin
+- `CHESS_E2E_API` (default `http://localhost:8080`): the API's origin, used
+  to register users, create games and fetch what the client should export
+- `CHESS_E2E_CHROMIUM`: path to a Chromium binary when
+  `npx playwright install` is not possible (an already installed browser)
+
+Each test registers its own user or plays anonymously, so the suite can be
+repeated against the same server. The engine plays at level 0 with a 100 ms
+search, so a run takes about ten seconds. On failure Playwright keeps a trace
+under `test/e2e/test-results/`; open it with `npx playwright show-trace`.

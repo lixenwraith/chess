@@ -167,12 +167,16 @@ The chess server includes an embedded web UI for playing games through a browser
 
 - Visual chess board with click-to-move and a promotion picker
 - Human vs Computer gameplay, with undo, draw offers and resignation
-- Configurable engine strength (0-20)
-- UCI move history with move numbers
-- FEN display and custom starting positions
-- Real-time server health monitoring
-- User authentication support
-- Responsive design for mobile devices
+- Configurable engine strength (0-20) and custom starting positions
+- Move list in standard algebraic notation; copy the FEN or the PGN
+- **My games**: a signed-in user's stored games with thumbnails, filters and
+  paging; games played anonymously on the device are listed for 24 hours
+- **Replay** of any stored game: step, autoplay, flip, keyboard navigation,
+  export FEN and PGN at any ply, and shareable links
+  (`?replay=<gameId>&ply=<n>`)
+- Server and storage health in the top bar
+- Accounts: register, sign in, delete
+- Responsive layout, board beside or above the panel
 
 Access the UI at `http://localhost:9090` when server is running with `-serve` flag.
 
@@ -184,8 +188,8 @@ Access the UI at `http://localhost:9090` when server is running with `-serve` fl
 - [Database Operations](./doc/database.md) - layout, psql as `postgres`, games, users, integrity sweep, starting fresh
 - [Architecture](./doc/architecture.md) - System design with auth layer
 - [Development](./doc/development.md) - Build, test, and user management
-- [Client Guide](./doc/client.md) - Interactive debugging client
-- [Replay Plan](./doc/todo.md) - Phased game-replay implementation and open decisions
+- [Client Guide](./doc/client.md) - Interactive debugging client, including replay
+- [Replay Plan](./doc/todo.md) - Game-replay phases, decisions, and what is left
 - [Stockfish Integration](./doc/stockfish.md) - Engine communication
 
 ## License

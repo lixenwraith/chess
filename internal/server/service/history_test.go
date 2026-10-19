@@ -142,7 +142,8 @@ func TestUserGamesCursorAndFilters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(page.Games) != 1 || page.Games[0].GameID != finished || page.Games[0].PGNResult != "0-1" {
+	if len(page.Games) != 1 || page.Games[0].GameID != finished || page.Games[0].PGNResult != "0-1" ||
+		page.Games[0].Termination != "checkmate" {
 		t.Fatalf("finished games = %+v", page.Games)
 	}
 	for _, bad := range []UserGamesOptions{

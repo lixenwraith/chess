@@ -2,6 +2,8 @@ package processor
 
 import (
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/lixenwraith/chess/internal/server/chess"
@@ -22,6 +24,33 @@ func TestRulesCheck(t *testing.T) {
 	}
 	if r := rulesCheck("not a fen", "e2e4"); !errors.Is(r.err, chess.ErrInvalidFEN) {
 		t.Errorf("bad FEN: error = %v, want ErrInvalidFEN", r.err)
+	}
+}
+
+func TestNotateLine(t *testing.T) {
+	line, err := chess.Replay(chess.StartFEN, []string{"e2e4", "e7e5", "g1f3", "b8c6", "f1b5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fens := make([]string, 6)
+	for i := range fens {
+		fens[i] = line.Position(i).FEN()
+	}
+	moves := []string{"e2e4", "e7e5", "g1f3", "b8c6", "f1b5"}
+	if got := strings.Join(notateLine(fens, moves), " "); got != "e4 e5 Nf3 Nc6 Bb5" {
+		t.Errorf("SAN = %q", got)
+	}
+	// A ply the core cannot notate leaves only its own entry empty.
+	broken := append([]string(nil), fens...)
+	broken[2] = "not a fen"
+	if got := notateLine(broken, moves); !reflect.DeepEqual(got, []string{"e4", "e5", "", "Nc6", "Bb5"}) {
+		t.Errorf("SAN with a broken position = %q", got)
+	}
+	if got := notateLine(nil, nil); len(got) != 0 {
+		t.Errorf("SAN of no moves = %q", got)
+	}
+	if got := notateLine(fens[:1], moves[:2]); !reflect.DeepEqual(got, []string{"e4", ""}) {
+		t.Errorf("SAN short of positions = %q", got)
 	}
 }
 

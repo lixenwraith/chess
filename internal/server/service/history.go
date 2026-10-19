@@ -172,6 +172,7 @@ func (s *Service) GetUserGames(userID string, opts UserGamesOptions) (*core.Game
 			InitialFEN:   record.InitialFEN,
 			Result:       record.Result,
 			PGNResult:    chess.ResultToken(record.Result),
+			Termination:  record.Termination,
 			StartTimeUTC: record.StartTimeUTC,
 			EndTimeUTC:   record.EndTimeUTC,
 			MoveCount:    record.MoveCount,
