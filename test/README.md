@@ -38,11 +38,12 @@ The server runs with `-dev`, debug logging, HTTP request logging, and relaxed ra
 It drops the test tables on exit, so it's preferred for clean testing.
 Can be used for all the tests.
 
-Logging can be adjusted without editing the script, and `WEB_PORT` also
-serves the embedded web client (needed by the end-to-end suite):
+Logging can be adjusted without editing the script; `WEB_PORT` also serves
+the embedded web client and `MAIL_DIR` turns on password recovery with the
+email written to that directory (both used by the end-to-end suite):
 ```bash
 LOG_LEVEL=info LOG_HTTP=false test/run-test-server.sh bin/chess-server
-WEB_PORT=9090 test/run-test-server.sh bin/chess-server
+WEB_PORT=9090 MAIL_DIR=/tmp/chess-mail test/run-test-server.sh bin/chess-server
 ```
 
 ### Pre-configured Users
@@ -226,20 +227,22 @@ Playwright drives the embedded web client in Chromium against a running
 server with PostgreSQL and Stockfish: it plays a short game, lists it under
 My games, replays it with the buttons and the keyboard, autoplays to the end,
 compares the FEN and PGN it exports (copy and download) with the API, follows
-a deep link to a checkmate, steps back through the browser history, and
-replays an anonymous game from the device list.
+a deep link to a checkmate, steps back through the browser history, replays
+an anonymous game from the device list, checks that a phone-sized viewport
+holds the board and the controls without scrolling, and resets a forgotten
+password through the link in the emailed message (needs `MAIL_DIR`).
 
 Requirements: Node.js 20+ and a Chromium that Playwright can run.
 
 ```bash
-# Terminal 1: the test server with the web client
-WEB_PORT=9090 test/run-test-server.sh bin/chess-server
+# Terminal 1: the test server with the web client and mail to a directory
+WEB_PORT=9090 MAIL_DIR=/tmp/chess-mail test/run-test-server.sh bin/chess-server
 
 # Terminal 2, once
 cd test/e2e && npm install && npx playwright install chromium
 
 # Terminal 2: run
-npm test                      # or, from the repository root: make test-e2e
+CHESS_E2E_MAIL_DIR=/tmp/chess-mail npm test   # or, from the repository root: make test-e2e
 ```
 
 Environment:
@@ -249,6 +252,9 @@ Environment:
   to register users, create games and fetch what the client should export
 - `CHESS_E2E_CHROMIUM`: path to a Chromium binary when
   `npx playwright install` is not possible (an already installed browser)
+- `CHESS_E2E_MAIL_DIR`: the server's `-mail-dir` (`MAIL_DIR` of the test
+  server); the password-reset test reads the link from the newest file and
+  is skipped when unset
 
 Each test registers its own user or plays anonymously, so the suite can be
 repeated against the same server. The engine plays at level 0 with a 100 ms

@@ -41,6 +41,8 @@ type Service struct {
 
 	integrityMode   IntegrityMode
 	integrityCursor string // last game ID the integrity sweep verified; cleanup goroutine only
+
+	mail *mailer // password recovery; nil when no transport is configured
 }
 
 // New creates a service with optional storage. jwtSecret signs session tokens
@@ -192,6 +194,11 @@ func (s *Service) cleanupExpired() {
 			slog.Error("cleanup failed to delete expired sessions", "error", err)
 		} else if deleted > 0 {
 			slog.Info("cleanup deleted expired sessions", "count", deleted)
+		}
+		if deleted, err := s.store.DeleteExpiredPasswordResets(); err != nil {
+			slog.Error("cleanup failed to delete expired password resets", "error", err)
+		} else if deleted > 0 {
+			slog.Info("cleanup deleted expired password resets", "count", deleted)
 		}
 	}
 	s.cleanupGames(now)

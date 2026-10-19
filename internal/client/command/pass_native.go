@@ -3,15 +3,15 @@
 package command
 
 import (
-	"fmt"
+	"github.com/lixenwraith/chess/internal/client/display"
 
 	"golang.org/x/term"
 )
 
 func readPassword(prompt string) (string, error) {
-	fmt.Print(prompt)
+	display.Write(prompt)
 	bytePassword, err := term.ReadPassword(0) // 0 is stdin
-	fmt.Println()
+	display.Line()
 	if err != nil {
 		return "", err
 	}

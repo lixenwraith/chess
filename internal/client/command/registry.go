@@ -1,6 +1,7 @@
 package command
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 
@@ -16,6 +17,9 @@ type Command struct {
 	Description string
 	Usage       string
 	Handler     func(*session.Session, []string) error
+	// Paged commands print at length and read nothing: their output is
+	// shown one screen at a time (display.Page).
+	Paged bool
 }
 
 type Registry struct {
@@ -43,6 +47,7 @@ func NewRegistry(s *session.Session) *Registry {
 		Description: "Show available commands",
 		Usage:       "help [command]",
 		Handler:     r.helpHandler,
+		Paged:       true,
 	})
 
 	// Exit command (handled in main loop, but registered for help display)
@@ -89,6 +94,18 @@ func (r *Registry) Execute(input string) {
 		cl.SetVerbose(r.session.IsVerbose())
 	}
 
+	if cmd.Paged && r.session.ReadLine != nil {
+		var buf bytes.Buffer
+		previous := display.Out
+		display.Out = &buf
+		err := cmd.Handler(r.session, args)
+		display.Out = previous
+		display.Page(buf.String(), r.session.ReadLine)
+		if err != nil {
+			display.Println(display.Red, "Error: %s", err.Error())
+		}
+		return
+	}
 	if err := cmd.Handler(r.session, args); err != nil {
 		display.Println(display.Red, "Error: %s", err.Error())
 	}
@@ -101,13 +118,13 @@ func (r *Registry) helpHandler(s *session.Session, args []string) error {
 		if !exists {
 			return fmt.Errorf("unknown command: %s", args[0])
 		}
-		fmt.Println()
+		display.Line()
 		display.Print(display.Cyan, cmd.Name)
 		display.Println(display.Reset, " - %s", cmd.Description)
 		if cmd.ShortName != "" {
 			display.Println(display.Cyan, "Short form: %s", cmd.ShortName)
 		}
-		fmt.Printf("Usage: %s\n", cmd.Usage)
+		display.Printf("Usage: %s\n", cmd.Usage)
 		return nil
 	}
 
@@ -173,10 +190,10 @@ func (r *Registry) helpHandler(s *session.Session, args []string) error {
 				if info.shortName != "" {
 					shortPart = fmt.Sprintf("[%s%s%s] ", display.Cyan, info.shortName, display.Reset)
 				}
-				fmt.Printf("  %s%-10s %s\n", shortPart, cmd.Name, cmd.Description)
+				display.Printf("  %s%-10s %s\n", shortPart, cmd.Name, cmd.Description)
 			}
 		}
-		fmt.Println()
+		display.Line()
 	}
 
 	printCommandGroup("Game Commands", gameCommands)
@@ -185,7 +202,8 @@ func (r *Registry) helpHandler(s *session.Session, args []string) error {
 	printCommandGroup("Utility Commands", utilCommands)
 
 	display.Println(display.Reset, "Type 'help <command>' for detailed usage")
-	display.Println(display.Reset, "Add '-v' to any command for verbose output\n")
+	display.Println(display.Reset, "Add '-v' to any command for verbose output")
+	display.Println(display.Reset, "Long output pauses after each screen: Enter continues, q stops\n")
 	return nil
 }
 

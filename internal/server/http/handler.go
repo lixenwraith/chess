@@ -140,6 +140,33 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 		},
 	}), h.LoginHandler)
 
+	// Password recovery: 3 requests a minute per IP, each of which may send
+	// an email; the reset itself is limited like login.
+	auth.Post("/recover", limiter.New(limiter.Config{
+		Max:          3,
+		Expiration:   1 * time.Minute,
+		KeyGenerator: clientIP,
+		LimitReached: func(c *fiber.Ctx) error {
+			return c.Status(fiber.StatusTooManyRequests).JSON(core.ErrorResponse{
+				Error:   "rate limit exceeded",
+				Code:    core.ErrRateLimitExceeded,
+				Details: "3 recovery requests per minute allowed",
+			})
+		},
+	}), h.RecoverHandler)
+	auth.Post("/reset", limiter.New(limiter.Config{
+		Max:          10,
+		Expiration:   1 * time.Minute,
+		KeyGenerator: clientIP,
+		LimitReached: func(c *fiber.Ctx) error {
+			return c.Status(fiber.StatusTooManyRequests).JSON(core.ErrorResponse{
+				Error:   "rate limit exceeded",
+				Code:    core.ErrRateLimitExceeded,
+				Details: "10 password resets per minute allowed",
+			})
+		},
+	}), h.ResetPasswordHandler)
+
 	// Create token validator closure
 	validateToken := svc.ValidateToken
 
@@ -263,6 +290,7 @@ func (h *HTTPHandler) Health(c *fiber.Ctx) error {
 		"status":  status,
 		"time":    time.Now().Unix(),
 		"storage": storageHealth,
+		"mail":    h.svc.MailHealth(),
 		"version": h.version,
 	})
 }

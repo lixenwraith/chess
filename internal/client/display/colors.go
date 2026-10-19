@@ -24,12 +24,12 @@ func C(color, text string) string {
 
 // Print outputs colored text immediately
 func Print(color, format string, args ...any) {
-	fmt.Printf(C(color, format), args...)
+	fmt.Fprintf(Out, C(color, format), args...)
 }
 
 // Println outputs colored text with newline
 func Println(color, format string, args ...any) {
-	fmt.Println(C(color, fmt.Sprintf(format, args...)))
+	fmt.Fprintln(Out, C(color, fmt.Sprintf(format, args...)))
 }
 
 // Build creates a multi-colored string

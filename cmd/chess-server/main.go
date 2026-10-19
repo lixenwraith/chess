@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/lixenwraith/chess/cmd/chess-server/cli"
 	"github.com/lixenwraith/chess/internal/server/http"
+	"github.com/lixenwraith/chess/internal/server/mail"
 	"github.com/lixenwraith/chess/internal/server/processor"
 	"github.com/lixenwraith/chess/internal/server/service"
 	"github.com/lixenwraith/chess/internal/server/storage"
@@ -57,6 +59,17 @@ func main() {
 		maxUsers    = flag.Int("max-users", service.DefaultMaxUsers, "Accounts at which public registration closes (0 = no limit; CLI-created accounts are not limited)")
 		jwtFile     = flag.String("jwt-secret-file", "", "File holding a stable JWT signing key, mode 0600, at least 32 bytes (default $CHESS_JWT_SECRET_FILE)")
 		dbCleanup   = flag.String("db-cleanup", "off", "Hourly integrity sweep of stored games and accounts: off, report (log only), or delete")
+
+		// Password recovery by email: a transport (SMTP relay, or a directory
+		// of .eml files for development) and the web client's address, which
+		// the emailed link opens. Without a transport, recovery is off.
+		smtpHost     = flag.String("smtp-host", "", "SMTP relay for password-reset email (recovery is off when empty)")
+		smtpPort     = flag.Int("smtp-port", 25, "SMTP relay port")
+		smtpUser     = flag.String("smtp-user", "", "SMTP user name (optional; the password comes from -smtp-password-file)")
+		smtpPassFile = flag.String("smtp-password-file", "", "File holding the SMTP password, mode 0600")
+		mailFrom     = flag.String("mail-from", "", "Sender address of server email, e.g. \"Chess <chess@example.com>\"")
+		mailDir      = flag.String("mail-dir", "", "Write email to .eml files in this directory instead of sending (development)")
+		publicURL    = flag.String("public-url", "", "Web client address that emailed links open, e.g. https://example.com/chess/web-client/")
 
 		// Web UI server flags
 		serve     = flag.Bool("serve", false, "Enable web UI server")
@@ -164,6 +177,27 @@ func main() {
 		log.Fatalf("-db-cleanup %s requires a database (-dsn)", integrity)
 	}
 	svc.SetIntegrityMode(integrity)
+
+	// Password recovery needs mail and the client's public address.
+	sender, err := mail.Config{
+		SMTPHost: *smtpHost, SMTPPort: *smtpPort, SMTPUser: *smtpUser, SMTPPasswordFile: *smtpPassFile,
+		Dir: *mailDir, From: *mailFrom,
+	}.Build()
+	switch {
+	case errors.Is(err, mail.ErrNoSender):
+		log.Printf("Password recovery disabled (no -smtp-host or -mail-dir)")
+	case err != nil:
+		log.Fatalf("Invalid mail configuration: %v", err)
+	case store == nil:
+		log.Fatalf("Password recovery (-smtp-host or -mail-dir) requires a database (-dsn)")
+	case *publicURL == "":
+		log.Fatalf("Password recovery requires -public-url, the web client address that reset links open")
+	default:
+		if err := svc.SetMailer(sender, *publicURL); err != nil {
+			log.Fatalf("Invalid -public-url: %v", err)
+		}
+		log.Printf("Password recovery enabled: %s; links open %s", sender.Describe(), *publicURL)
+	}
 
 	// Start cleanup job for expired users/sessions
 	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())

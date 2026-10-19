@@ -56,6 +56,13 @@
     const fitAddon = new FitAddon.FitAddon();
     term.loadAddon(fitAddon);
 
+    // The client pages long output by the terminal's size, read from here
+    // (display/termsize_wasm.go).
+    globalThis.chessTerminal = {
+        get rows() { return term.rows; },
+        get cols() { return term.cols; }
+    };
+
     term.open(screenEl);
 
     // WebGL must load after open(); the DOM renderer is the fallback.

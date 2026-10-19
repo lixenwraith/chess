@@ -59,6 +59,7 @@ func (r *Registry) registerGameCommands() {
 		Description: "Show board and game state",
 		Usage:       "show",
 		Handler:     showBoardHandler,
+		Paged:       true,
 	})
 
 	r.Register(&Command{
@@ -67,6 +68,7 @@ func (r *Registry) registerGameCommands() {
 		Description: "Show raw game JSON",
 		Usage:       "state",
 		Handler:     gameStateHandler,
+		Paged:       true,
 	})
 
 	r.Register(&Command{
@@ -99,6 +101,7 @@ func (r *Registry) registerGameCommands() {
 		Description: "List your stored games, newest first (login required)",
 		Usage:       "games [more]",
 		Handler:     gamesHandler,
+		Paged:       true,
 	})
 
 	r.Register(&Command{
@@ -107,6 +110,7 @@ func (r *Registry) registerGameCommands() {
 		Description: "Print or save a stored game as PGN",
 		Usage:       "pgn [gameId] [ply] [save <path>]  (default: current or replayed game)",
 		Handler:     pgnHandler,
+		Paged:       true,
 	})
 
 	r.Register(&Command{
@@ -259,8 +263,8 @@ func joinGameHandler(s *session.Session, args []string) error {
 		}
 	}
 
-	fmt.Printf("%sJoined game: %s%s\n", display.Green, gameID, display.Reset)
-	fmt.Printf("Turn: %s | State: %s | Moves: %d\n", resp.Turn, resp.State, len(resp.Moves))
+	display.Printf("%sJoined game: %s%s\n", display.Green, gameID, display.Reset)
+	display.Printf("Turn: %s | State: %s | Moves: %d\n", resp.Turn, resp.State, len(resp.Moves))
 
 	return nil
 }
@@ -368,9 +372,9 @@ func computerMoveHandler(s *session.Session, args []string) error {
 	if final.LastMove != nil && len(final.Moves) > baselineMoves {
 		display.Print(display.Magenta, "Computer played: %s", final.LastMove.Move)
 		if final.LastMove.Depth > 0 {
-			fmt.Printf(" (depth %d, score %d)", final.LastMove.Depth, final.LastMove.Score)
+			display.Printf(" (depth %d, score %d)", final.LastMove.Depth, final.LastMove.Score)
 		}
-		fmt.Println()
+		display.Line()
 	}
 
 	printOutcome(final)
@@ -546,28 +550,28 @@ func showBoardHandler(s *session.Session, args []string) error {
 	s.SetGameState(game)
 
 	// Display board with colors
-	fmt.Println()
+	display.Line()
 	display.RenderBoard(board.Board)
 
 	// Display game info
-	fmt.Printf("\nFEN: %s\n", game.FEN)
-	fmt.Printf("Turn: %s | State: %s | Moves: %d\n",
+	display.Printf("\nFEN: %s\n", game.FEN)
+	display.Printf("Turn: %s | State: %s | Moves: %d\n",
 		display.ColorForTurn(game.Turn), game.State, len(game.Moves))
 
 	// Display move history
 	if len(game.Moves) > 0 {
-		fmt.Printf("\nHistory: ")
+		display.Printf("\nHistory: ")
 		for i, move := range game.Moves {
 			if i > 0 {
-				fmt.Print(" ")
+				display.Write(" ")
 			}
 			if i%2 == 0 {
-				fmt.Printf("%d.%s", (i/2)+1, move)
+				display.Printf("%d.%s", (i/2)+1, move)
 			} else {
-				fmt.Printf(" %s", move)
+				display.Printf(" %s", move)
 			}
 		}
-		fmt.Println()
+		display.Line()
 	}
 
 	// Display last move info
@@ -576,11 +580,11 @@ func showBoardHandler(s *session.Session, args []string) error {
 		if game.LastMove.PlayerColor == "b" {
 			color = "Black"
 		}
-		fmt.Printf("Last move: %s by %s", game.LastMove.Move, color)
+		display.Printf("Last move: %s by %s", game.LastMove.Move, color)
 		if game.LastMove.Depth > 0 {
-			fmt.Printf(" (depth %d, score %d)", game.LastMove.Depth, game.LastMove.Score)
+			display.Printf(" (depth %d, score %d)", game.LastMove.Depth, game.LastMove.Score)
 		}
-		fmt.Println()
+		display.Line()
 	}
 	printOutcome(game)
 	printConcession(game)
@@ -630,7 +634,7 @@ func deleteGameHandler(s *session.Session, args []string) error {
 		s.SetLastMoveCount(0)
 	}
 
-	fmt.Printf("%sLive game unloaded (history retained): %s%s\n", display.Green, gameID, display.Reset)
+	display.Printf("%sLive game unloaded (history retained): %s%s\n", display.Green, gameID, display.Reset)
 	return nil
 }
 
@@ -661,7 +665,7 @@ func pollHandler(s *session.Session, args []string) error {
 	case len(resp.Moves) > moveCount:
 		display.Println(display.Green, "Game updated! New moves detected")
 		if resp.LastMove != nil {
-			fmt.Printf("Last move: %s\n", resp.LastMove.Move)
+			display.Printf("Last move: %s\n", resp.LastMove.Move)
 		}
 	case len(resp.Moves) < moveCount:
 		display.Println(display.Green, "Game updated: %d move(s) taken back", moveCount-len(resp.Moves))
@@ -701,9 +705,9 @@ func gamesHandler(s *session.Session, args []string) error {
 		return nil
 	}
 
-	fmt.Printf("\n%3s  %-36s  %-20s  %-20s  %-7s  %5s  %s\n", "#", "Game ID", "White", "Black", "Result", "Plies", "Started (UTC)")
+	display.Printf("\n%3s  %-36s  %-20s  %-20s  %-7s  %5s  %s\n", "#", "Game ID", "White", "Black", "Result", "Plies", "Started (UTC)")
 	for i, g := range resp.Games {
-		fmt.Printf("%3d  %-36s  %-20s  %-20s  %-7s  %5d  %s\n", i+1, g.GameID,
+		display.Printf("%3d  %-36s  %-20s  %-20s  %-7s  %5d  %s\n", i+1, g.GameID,
 			playerLabel(g.Players.White), playerLabel(g.Players.Black), g.PGNResult, g.MoveCount,
 			g.StartTimeUTC.UTC().Format("2006-01-02 15:04"))
 	}
@@ -761,7 +765,7 @@ func pgnHandler(s *session.Session, args []string) error {
 		display.Println(display.Green, "Saved PGN of %s to %s", describePGNTarget(gameID, ply), path)
 		return nil
 	}
-	fmt.Println()
-	fmt.Print(text)
+	display.Line()
+	display.Write(text)
 	return nil
 }

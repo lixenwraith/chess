@@ -16,4 +16,5 @@ const (
 	ErrConflict           = "GAME_CONFLICT"
 	ErrStorageUnavailable = "STORAGE_UNAVAILABLE"
 	ErrRouteNotFound      = "NOT_FOUND"
+	ErrNotConfigured      = "NOT_CONFIGURED"
 )

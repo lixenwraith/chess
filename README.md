@@ -30,6 +30,8 @@ Go backend server providing a RESTful API for chess gameplay with user authentic
 - Authenticated stored-game listing with cursor pagination and filters
 - Configurable structured debug logs for persistence, cleanup, and engine work
 - User management with secure Argon2id password storage and scoped JWTs
+- Password recovery by email (SMTP relay, or a directory of `.eml` files in
+  development) and administrative reset links
 - Self-service account deletion: claims and names are cleared from stored games
 - Static, CGO-free binaries (cross-compiles for FreeBSD)
 - Scripted deployment: FreeBSD jail (rc.d) or Linux (sandboxed systemd unit)
@@ -134,8 +136,11 @@ their last activity.
 # List all users
 ./chess-server db user list
 
-# Update password
+# Update password (a forgotten one too); without -password it prompts
 ./chess-server db user set-password -username alice -password NewPass456
+
+# One-time reset link to hand to the person (what the recovery email carries)
+./chess-server db user reset-link -username alice -url https://example.com/chess/web-client/
 
 # Update email
 ./chess-server db user set-email -username alice -email newemail@example.com
@@ -175,7 +180,7 @@ The chess server includes an embedded web UI for playing games through a browser
   export FEN and PGN at any ply, and shareable links
   (`?replay=<gameId>&ply=<n>`)
 - Server and storage health in the top bar
-- Accounts: register, sign in, delete
+- Accounts: register, sign in, forgotten-password recovery by email, delete
 - Responsive layout, board beside or above the panel
 
 Access the UI at `http://localhost:9090` when server is running with `-serve` flag.

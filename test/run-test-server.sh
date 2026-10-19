@@ -10,8 +10,11 @@ CHESS_SERVER_EXEC=${1:-"bin/chess-server"}
 export CHESS_DSN="$CHESS_TEST_DSN"
 PID_FILE="/tmp/chess-server_test.pid"
 API_PORT=${API_PORT:-8080}
-# Set WEB_PORT to also serve the embedded web client (for test/e2e).
+# Set WEB_PORT to also serve the embedded web client (for test/e2e), and
+# MAIL_DIR to enable password recovery with the email written to that
+# directory instead of sent.
 WEB_PORT=${WEB_PORT:-}
+MAIL_DIR=${MAIL_DIR:-}
 LOG_LEVEL=${LOG_LEVEL:-debug}
 LOG_HTTP=${LOG_HTTP:-true}
 
@@ -98,6 +101,7 @@ echo "Configuration:"
 echo "  Executable: $CHESS_SERVER_EXEC"
 echo "  Database:   \$CHESS_TEST_DSN (tables dropped on exit)"
 echo "  Port:       $API_PORT${WEB_PORT:+ (web client on $WEB_PORT)}"
+echo "  Mail:       ${MAIL_DIR:-off (set MAIL_DIR for password recovery)}"
 echo "  Mode:       Development (relaxed rate limits; PostgreSQL storage)"
 echo "  Log level:  $LOG_LEVEL (HTTP requests: $LOG_HTTP)"
 echo "  Purpose:    Backend for chess-server tests"
@@ -115,6 +119,11 @@ echo ""
 # Start chess-server in foreground with dev mode and storage
 WEB_FLAGS=()
 [ -n "$WEB_PORT" ] && WEB_FLAGS=(-serve -web-port "$WEB_PORT")
+if [ -n "$MAIL_DIR" ]; then
+    mkdir -p "$MAIL_DIR"
+    WEB_FLAGS+=(-mail-dir "$MAIL_DIR" -mail-from "Chess <chess@localhost>" \
+        -public-url "http://localhost:${WEB_PORT:-9090}/")
+fi
 "$CHESS_SERVER_EXEC" \
 	-dev \
 	-log-level "$LOG_LEVEL" \

@@ -12,5 +12,5 @@ func PrettyPrintJSON(v any) {
 		Print(Red, "Error formatting JSON: %s\n", err.Error())
 		return
 	}
-	fmt.Println(string(data))
+	fmt.Fprintln(Out, string(data))
 }

@@ -38,6 +38,9 @@ go build ./cmd/chess-client-cli
 - `-anonymous-game-ttl`: How long games without a registered player survive after their last activity, in memory and in the database (default: `24h`; `0` keeps them)
 - `-max-users`: Accounts at which public registration closes (default: `100`; `0` = no limit; the CLI is not limited)
 - `-web-api-url`: Browser-visible API origin for the embedded web client, set on its script element as `data-api`; useful when its public origin differs from the listen address
+- `-smtp-host`, `-smtp-port`, `-smtp-user`, `-smtp-password-file`, `-mail-from`: SMTP relay for password-reset email; without a transport, recovery is off
+- `-mail-dir`: Development: write email to `.eml` files in this directory instead of sending
+- `-public-url`: The web client's address that emailed links open (required with a transport)
 
 ### Modes
 ```bash
@@ -223,8 +226,8 @@ go test ./...
 go test -race ./internal/server/storage ./internal/server/service
 
 # Web client end-to-end (Playwright): see test/README.md
-WEB_PORT=9090 test/run-test-server.sh   # terminal 1
-make test-e2e                           # terminal 2
+WEB_PORT=9090 MAIL_DIR=/tmp/chess-mail test/run-test-server.sh   # terminal 1
+CHESS_E2E_MAIL_DIR=/tmp/chess-mail make test-e2e                 # terminal 2
 ```
 
 ## Configuration
@@ -308,7 +311,7 @@ make test-e2e                           # terminal 2
 - JWT tokens don't support refresh (must re-login after expiry)
 - User deletion doesn't cascade to games (games keep player and claim IDs)
 - Games played without a registered player are deleted 24 hours after their last activity
-- No password recovery mechanism
+- Password recovery needs an SMTP relay and an email on the account
 - No email verification for registration
 - Fixed worker pool size for engine calculations
 - No push-based game updates (30-second long-polling is used)

@@ -10,7 +10,31 @@
 <body data-mode="live">
 <div class="app">
     <header class="topbar">
-        <div class="brand" aria-label="Chess"><span class="brand-mark" aria-hidden="true">♞</span><span class="brand-name">Chess</span></div>
+        <div class="brand" aria-label="Chess">
+            <svg class="brand-mark" viewBox="41 34 430 430" aria-hidden="true" focusable="false">
+                <defs>
+                    <linearGradient id="brand-piece" x1="20%" y1="0%" x2="80%" y2="100%">
+                        <stop offset="0%" stop-color="#C8CDD6"/>
+                        <stop offset="45%" stop-color="#8B929E"/>
+                        <stop offset="100%" stop-color="#4F545D"/>
+                    </linearGradient>
+                </defs>
+                <g fill="url(#brand-piece)" stroke="#14161A" stroke-width="4" stroke-linejoin="round">
+                    <path d="M136 450Q256 465 376 450L346 410Q256 420 166 410Z"/>
+                    <path d="M166 410Q256 420 346 410L316 370Q256 380 196 370Z"/>
+                    <path d="M196 370Q256 380 316 370C300 290 286 230 282 205H230C226 230 212 290 196 370Z"/>
+                </g>
+                <path d="M330 90Q265 96 230 120Q265 144 335 150Z" fill="#111318"/>
+                <g stroke="#F0F2F5" stroke-width="6" stroke-linecap="round">
+                    <path d="M263.17 85V155M299.33 85V155"/>
+                </g>
+                <g fill="url(#brand-piece)" stroke="#14161A" stroke-width="4" stroke-linejoin="round">
+                    <path d="M226 200C150 180 150 70 256 40C290 50 315 65 330 90Q265 96 230 120Q265 144 335 150C335 170 315 190 286 200Z"/>
+                    <rect x="216" y="195" width="80" height="16" rx="8"/>
+                </g>
+            </svg>
+            <span class="brand-name">Chess</span>
+        </div>
         <div class="health" aria-label="Server status">
             <span class="dot" id="server-dot" data-status="unknown" title="Server: unknown" role="img" aria-label="Server: unknown"></span>
             <span class="dot" id="storage-dot" data-status="unknown" title="Storage: unknown" role="img" aria-label="Storage: unknown"></span>
@@ -44,7 +68,7 @@
                     <span class="turn-text" id="turn-text">No game</span>
                 </div>
                 <div class="controls" role="group" aria-label="Game controls">
-                    <button id="new-game-btn" class="btn btn-primary" type="button">New game</button>
+                    <button id="new-game-btn" class="btn btn-primary" type="button" title="New game">New</button>
                     <button id="undo-btn" class="btn btn-secondary" type="button" disabled>Undo</button>
                     <button id="draw-btn" class="btn btn-secondary" type="button" title="Offer a draw" disabled>Draw</button>
                     <button id="resign-btn" class="btn btn-secondary" type="button" title="Resign this game" disabled>Resign</button>
@@ -201,6 +225,19 @@
                 <button id="login-submit-btn" class="btn btn-primary" type="button">Sign in</button>
                 <button id="auth-cancel-btn" class="btn btn-secondary" type="button">Cancel</button>
             </div>
+            <p class="auth-aside hidden" id="forgot-row"><button id="forgot-btn" class="link-btn" type="button">Forgot password?</button></p>
+        </div>
+
+        <div id="recover-form" class="auth-form hidden">
+            <p class="auth-help">Enter your username or email. If the account has an email address, a link to choose a new password is sent to it; the link works for an hour.</p>
+            <div class="form-group">
+                <label for="recover-identifier">Username or email</label>
+                <input type="text" id="recover-identifier" autocomplete="username">
+            </div>
+            <div class="modal-buttons">
+                <button id="recover-submit-btn" class="btn btn-primary" type="button">Send reset link</button>
+                <button id="recover-back-btn" class="btn btn-secondary" type="button">Back</button>
+            </div>
         </div>
 
         <div id="register-form" class="auth-form hidden">
@@ -220,6 +257,26 @@
                 <button id="register-submit-btn" class="btn btn-primary" type="button">Register</button>
                 <button id="auth-cancel-btn-2" class="btn btn-secondary" type="button">Cancel</button>
             </div>
+        </div>
+    </div>
+</div>
+
+<!-- Reset Modal: opened by the link in the recovery email (?reset=<token>) -->
+<div id="reset-overlay" class="modal-overlay">
+    <div class="modal auth-modal" role="dialog" aria-modal="true" aria-labelledby="reset-title">
+        <h2 id="reset-title">Choose a new password</h2>
+        <div id="reset-modal-message" class="modal-message" role="status" aria-live="polite"></div>
+        <div class="form-group">
+            <label for="reset-password">New password (8+ characters, a letter and a number)</label>
+            <input type="password" id="reset-password" autocomplete="new-password">
+        </div>
+        <div class="form-group">
+            <label for="reset-password-2">Repeat the password</label>
+            <input type="password" id="reset-password-2" autocomplete="new-password">
+        </div>
+        <div class="modal-buttons">
+            <button id="reset-submit-btn" class="btn btn-primary" type="button">Set password</button>
+            <button id="reset-cancel-btn" class="btn btn-secondary" type="button">Cancel</button>
         </div>
     </div>
 </div>
