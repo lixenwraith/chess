@@ -93,10 +93,14 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 			TimeZone:   "UTC",
 		}))
 	}
+	// ETag and Content-Disposition are not CORS-safelisted: a browser client
+	// on another origin (the embedded web server's port, in development) can
+	// only revalidate histories and name PGN downloads when they are exposed.
 	app.Use(cors.New(cors.Config{
-		AllowOrigins: "*",
-		AllowMethods: "GET,POST,PUT,DELETE,OPTIONS",
-		AllowHeaders: "Origin,Content-Type,Accept,Authorization",
+		AllowOrigins:  "*",
+		AllowMethods:  "GET,POST,PUT,DELETE,OPTIONS",
+		AllowHeaders:  "Origin,Content-Type,Accept,Authorization,If-None-Match",
+		ExposeHeaders: "ETag,Content-Disposition",
 	}))
 
 	// Health check (no rate limit)

@@ -221,6 +221,10 @@ go test ./...
 
 # Concurrency checks for the state/persistence boundary
 go test -race ./internal/server/storage ./internal/server/service
+
+# Web client end-to-end (Playwright): see test/README.md
+WEB_PORT=9090 test/run-test-server.sh   # terminal 1
+make test-e2e                           # terminal 2
 ```
 
 ## Configuration
@@ -310,5 +314,5 @@ go test -race ./internal/server/storage ./internal/server/service
 - No push-based game updates (30-second long-polling is used)
 - Live games are not rehydrated after restart; persisted games are currently replay-only
 - Database history has no automatic retention policy
-- Replay UI, PGN export, and curated games are planned in [Replay Plan](./todo.md)
+- Curated games are planned in [Replay Plan](./todo.md)
 - REST API only

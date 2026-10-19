@@ -104,8 +104,8 @@ func (r *Registry) registerGameCommands() {
 	r.Register(&Command{
 		Name:        "pgn",
 		ShortName:   "",
-		Description: "Print a stored game as PGN",
-		Usage:       "pgn [gameId] [ply]  (default: current game, all plies)",
+		Description: "Print or save a stored game as PGN",
+		Usage:       "pgn [gameId] [ply] [save <path>]  (default: current or replayed game)",
 		Handler:     pgnHandler,
 	})
 
@@ -520,6 +520,9 @@ func undoHandler(s *session.Session, args []string) error {
 }
 
 func showBoardHandler(s *session.Session, args []string) error {
+	if s.Replay != nil {
+		return showReplayPosition(s)
+	}
 	gameID := s.GetCurrentGame()
 	if gameID == "" {
 		return fmt.Errorf("no current game, use 'new' or 'join <gameId>'")
@@ -692,19 +695,21 @@ func gamesHandler(s *session.Session, args []string) error {
 		return err
 	}
 	s.GamesCursor = resp.NextCursor
+	s.GamesPage = resp.Games
 	if len(resp.Games) == 0 {
 		display.Println(display.Yellow, "No stored games")
 		return nil
 	}
 
-	fmt.Printf("\n%-36s  %-20s  %-20s  %-7s  %5s  %s\n", "Game ID", "White", "Black", "Result", "Plies", "Started (UTC)")
-	for _, g := range resp.Games {
-		fmt.Printf("%-36s  %-20s  %-20s  %-7s  %5d  %s\n", g.GameID,
+	fmt.Printf("\n%3s  %-36s  %-20s  %-20s  %-7s  %5s  %s\n", "#", "Game ID", "White", "Black", "Result", "Plies", "Started (UTC)")
+	for i, g := range resp.Games {
+		fmt.Printf("%3d  %-36s  %-20s  %-20s  %-7s  %5d  %s\n", i+1, g.GameID,
 			playerLabel(g.Players.White), playerLabel(g.Players.Black), g.PGNResult, g.MoveCount,
 			g.StartTimeUTC.UTC().Format("2006-01-02 15:04"))
 	}
+	display.Println(display.Cyan, "\nReplay one: replay <#> or replay <gameId>")
 	if resp.NextCursor != "" {
-		display.Println(display.Cyan, "\nMore games: games more")
+		display.Println(display.Cyan, "More games: games more")
 	}
 	return nil
 }
@@ -720,9 +725,21 @@ func playerLabel(p api.PlayerInfo) string {
 }
 
 // pgnHandler prints the stored game as PGN: the current game unless an ID is
-// given, and every ply unless a count is given.
+// given, and every ply unless a count is given. During a replay the default
+// is the replayed game up to the current ply. "save <path>" writes the
+// export to a file instead of printing it.
 func pgnHandler(s *session.Session, args []string) error {
+	path, args, err := pgnSaveArgs(args)
+	if err != nil {
+		return err
+	}
 	gameID, ply := s.CurrentGame, -1
+	if s.Replay != nil {
+		gameID = s.Replay.History.GameID
+		if !s.Replay.AtEnd() {
+			ply = s.Replay.Ply
+		}
+	}
 	for _, arg := range args {
 		if n, err := strconv.Atoi(arg); err == nil && n >= 0 {
 			ply = n
@@ -736,6 +753,13 @@ func pgnHandler(s *session.Session, args []string) error {
 	text, err := s.Client.GetGamePGN(gameID, ply)
 	if err != nil {
 		return err
+	}
+	if path != "" {
+		if err := savePGN(path, trimPGN(text)); err != nil {
+			return err
+		}
+		display.Println(display.Green, "Saved PGN of %s to %s", describePGNTarget(gameID, ply), path)
+		return nil
 	}
 	fmt.Println()
 	fmt.Print(text)

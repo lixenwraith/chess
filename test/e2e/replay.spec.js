@@ -1,0 +1,198 @@
+// End-to-end: play a short game on the board, open My games, replay it with
+// the controls and the keyboard, autoplay to the end, and compare the
+// exported FEN and PGN with the API. Also the deep link, a checkmate's
+// replay, and the device list for an anonymous visitor.
+'use strict';
+const { test, expect } = require('@playwright/test');
+
+const API = process.env.CHESS_E2E_API || 'http://localhost:8080';
+const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+
+// The engine level and search time are set through the sliders' inputs.
+async function startGame(page, { color = 'white' } = {}) {
+    await page.click('#new-game-btn');
+    await expect(page.locator('#modal-overlay')).toHaveClass(/show/);
+    await page.locator('#computer-level').fill('0');
+    await page.locator('#search-time').fill('100');
+    await page.check(`input[name="player-color"][value="${color}"]`);
+    await page.click('#start-game-btn');
+    await expect(page.locator('#modal-overlay')).not.toHaveClass(/show/);
+}
+
+async function move(page, from, to) {
+    await page.click(`[data-square="${from}"]`);
+    await page.click(`[data-square="${to}"]`);
+}
+
+// Waits for the computer's reply: n plies in the list and the board free.
+async function expectPlies(page, n) {
+    await expect(page.locator('#live-moves .move')).toHaveCount(n, { timeout: 60_000 });
+    await expect(page.locator('#turn-text')).not.toContainText('thinking', { timeout: 60_000 });
+}
+
+async function register(page, request) {
+    const username = `e2e${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`;
+    const response = await request.post(`${API}/api/auth/register`, {
+        data: { username, password: 'Passw0rd123' },
+    });
+    expect(response.status(), await response.text()).toBe(201);
+    const auth = await response.json();
+    // The client restores a session from localStorage on load.
+    await page.addInitScript(token => localStorage.setItem('authToken', token), auth.token);
+    return { ...auth, password: 'Passw0rd123' };
+}
+
+test.describe('web replay', () => {
+    test('play, list, replay, export', async ({ page, request }) => {
+        const user = await register(page, request);
+        await page.goto('/');
+        await expect(page.locator('#auth-label')).toHaveText(user.username);
+
+        await startGame(page);
+        await move(page, 'e2', 'e4');
+        await expectPlies(page, 2);
+        await move(page, 'g1', 'f3');
+        await expectPlies(page, 4);
+        // The live list shows SAN from the server.
+        await expect(page.locator('#live-moves .move').first()).toHaveText('e4');
+        await expect(page.locator('#live-moves .move').nth(2)).toHaveText('Nf3');
+        const gameId = await page.evaluate(() => live.gameId);
+        const liveFen = await page.evaluate(() => live.fen);
+        const history = await (await request.get(`${API}/api/games/${gameId}/history`)).json();
+        expect(history.moves.map(m => m.san)).toEqual(await page.$$eval('#live-moves .move', els => els.map(e => e.textContent)));
+
+        // Copy PGN from the live view: the stored game's export.
+        await page.click('#copy-pgn-btn');
+        await expect(page.locator('#copy-pgn-btn')).toHaveClass(/done/);
+        const copied = await page.evaluate(() => navigator.clipboard.readText());
+        const apiPgn = await (await request.get(`${API}/api/games/${gameId}/pgn`)).text();
+        expect(copied).toBe(apiPgn);
+
+        // My games lists the game with the user's side named.
+        await page.click('#games-btn');
+        await expect(page.locator('#games-overlay')).toHaveClass(/show/);
+        const row = page.locator('#games-list .game-row').first();
+        await expect(row).toContainText('You vs Stockfish L0');
+        await expect(row).toContainText('Ongoing');
+        await expect(row).toHaveClass(/current/);
+        await expect(page).toHaveURL(/\?games$/);
+        await page.click('.seg[data-filter="status"][data-value="finished"]');
+        await expect(page.locator('#games-status')).toContainText('No games match');
+        await page.click('.seg[data-filter="status"][data-value=""]');
+        await expect(page.locator('#games-list .game-row')).toHaveCount(1);
+
+        // Replay from the list opens at the last ply; the live controls hide.
+        await row.click();
+        await expect(page.locator('body')).toHaveAttribute('data-mode', 'replay');
+        await expect(page.locator('#replay-ply')).toHaveText('4 / 4');
+        await expect(page).toHaveURL(new RegExp(`\\?replay=${gameId}&ply=4$`));
+        await expect(page.locator('#pane-live')).toBeHidden();
+        await expect(page.locator('#replay-moves .move[aria-current="true"]')).toHaveText(history.moves[3].san);
+
+        // Backward and forward: buttons, then the keyboard.
+        await page.click('#replay-first');
+        await expect(page.locator('#replay-ply')).toHaveText('0 / 4');
+        await expect(page.locator('#replay-first')).toBeDisabled();
+        await page.keyboard.press('ArrowRight');
+        await page.keyboard.press('ArrowRight');
+        await expect(page.locator('#replay-ply')).toHaveText('2 / 4');
+        await expect(page.locator('#ply-announcer')).toContainText('Ply 2 of 4');
+        await expect(page).toHaveURL(new RegExp(`ply=2$`));
+        await page.keyboard.press('ArrowLeft');
+        await expect(page.locator('#replay-ply')).toHaveText('1 / 4');
+        await page.keyboard.press('End');
+        await expect(page.locator('#replay-ply')).toHaveText('4 / 4');
+        await page.keyboard.press('Home');
+        await expect(page.locator('#replay-ply')).toHaveText('0 / 4');
+        await page.click('#replay-moves .move[data-ply="3"]');
+        await expect(page.locator('#replay-ply')).toHaveText('3 / 4');
+
+        // The exported FEN and PGN at ply 3 match the API.
+        await page.click('#replay-copy-fen');
+        expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(history.moves[2].fenAfterMove);
+        await page.click('#replay-copy-pgn');
+        await expect(page.locator('#replay-copy-pgn')).toHaveClass(/done/);
+        const pgn3 = await (await request.get(`${API}/api/games/${gameId}/pgn?ply=3`)).text();
+        expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(pgn3);
+        const downloadPromise = page.waitForEvent('download');
+        await page.click('#replay-download');
+        const download = await downloadPromise;
+        expect(download.suggestedFilename()).toMatch(/^chess-\d{8}-[0-9a-f]{8}-ply3\.pgn$/);
+        await page.click('#replay-link');
+        expect(await page.evaluate(() => navigator.clipboard.readText()))
+            .toBe(`${new URL(page.url()).origin}/?replay=${gameId}&ply=3`);
+
+        // Autoplay to the end at 4x, then pause state clears.
+        await page.selectOption('#replay-speed', '250');
+        await page.click('#replay-play');
+        await expect(page.locator('#replay-play')).toHaveAttribute('aria-pressed', 'true');
+        await expect(page.locator('#replay-ply')).toHaveText('4 / 4', { timeout: 10_000 });
+        await expect(page.locator('#replay-play')).toHaveAttribute('aria-pressed', 'false');
+
+        // Flip, then back to the live game, which continues where it was.
+        await page.click('#replay-flip');
+        await expect(page.locator('.coordinates.ranks span').first()).toHaveText('1');
+        await page.click('#replay-exit');
+        await expect(page.locator('body')).toHaveAttribute('data-mode', 'live');
+        await expect(page.locator('.coordinates.ranks span').first()).toHaveText('8');
+        expect(await page.evaluate(() => live.fen)).toBe(liveFen);
+        await expect(page.locator('#live-moves .move')).toHaveCount(4);
+        await move(page, 'b1', 'c3');
+        await expectPlies(page, 6);
+
+        // Browser history: back to the replay, back again to the list.
+        await page.goBack();
+        await expect(page.locator('body')).toHaveAttribute('data-mode', 'replay');
+        await page.goBack();
+        await expect(page.locator('#games-overlay')).toHaveClass(/show/);
+        await expect(page.locator('body')).toHaveAttribute('data-mode', 'live');
+    });
+
+    test('deep link to a checkmate replays with the mated king marked', async ({ page, request }) => {
+        // A human-vs-human game over the API: fool's mate.
+        const created = await request.post(`${API}/api/games`, { data: { white: { type: 1 }, black: { type: 1 } } });
+        expect(created.status()).toBe(201);
+        const { gameId } = await created.json();
+        for (const m of ['f2f3', 'e7e5', 'g2g4', 'd8h4']) {
+            const r = await request.post(`${API}/api/games/${gameId}/moves`, { data: { move: m } });
+            expect(r.status(), await r.text()).toBe(200);
+        }
+        await page.goto(`/?replay=${gameId}&ply=2`);
+        await expect(page.locator('body')).toHaveAttribute('data-mode', 'replay');
+        await expect(page.locator('#replay-ply')).toHaveText('2 / 4');
+        await expect(page.locator('#replay-result')).toContainText('0-1');
+        await expect(page.locator('#replay-result')).toContainText('Checkmate');
+        await expect(page.locator('#replay-exit')).toHaveText('Close replay');
+        await expect(page.locator('#replay-moves .move').nth(3)).toHaveText('Qh4#');
+        await page.keyboard.press('End');
+        await expect(page.locator('[data-square="e1"]')).toHaveClass(/mated-king/);
+        await expect(page.locator('[data-square="h4"]')).toHaveClass(/last-move-to/);
+        // Escape leaves the replay; with no live game the start position shows.
+        await page.keyboard.press('Escape');
+        await expect(page.locator('body')).toHaveAttribute('data-mode', 'live');
+        await expect(page.locator('#turn-text')).toHaveText('No game');
+        await expect(page).toHaveURL(/\/$/);
+    });
+
+    test('an anonymous visitor replays from the device list', async ({ page }) => {
+        await page.goto('/');
+        await expect(page.locator('#auth-label')).toHaveText('Sign in');
+        await startGame(page, { color: 'black' });
+        await expectPlies(page, 1);
+        // Black at the bottom while playing Black.
+        await expect(page.locator('.coordinates.ranks span').first()).toHaveText('1');
+        await page.click('#games-btn');
+        await expect(page.locator('#games-signin-note')).toBeVisible();
+        const row = page.locator('#local-games-list .game-row');
+        await expect(row).toHaveCount(1);
+        await expect(row).toContainText('Stockfish L0 vs You');
+        await row.click();
+        await expect(page.locator('body')).toHaveAttribute('data-mode', 'replay');
+        await expect(page.locator('#replay-ply')).toHaveText('1 / 1');
+        // The viewer's side stays at the bottom in the replay.
+        await expect(page.locator('.coordinates.ranks span').first()).toHaveText('1');
+        expect(await page.evaluate(() => replay.history.initialFen)).toBe(START_FEN);
+        await page.click('#replay-exit');
+        await expect(page.locator('#turn-text')).toContainText('Your move (Black)');
+    });
+});

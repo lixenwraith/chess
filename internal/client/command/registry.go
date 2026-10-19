@@ -32,6 +32,7 @@ func NewRegistry(s *session.Session) *Registry {
 
 	// Register all commands
 	r.registerGameCommands()
+	r.registerReplayCommands()
 	r.registerAuthCommands()
 	r.registerDebugCommands()
 
@@ -76,6 +77,10 @@ func (r *Registry) Execute(input string) {
 	if !exists {
 		display.Println(display.Red, "Unknown command: %s", cmdName)
 		display.Println(display.Reset, "Type 'help' for available commands")
+		return
+	}
+	if r.session.Replay != nil && liveOnly[cmd.Name] {
+		display.Println(display.Red, "'%s' is not available while replaying; 'live' returns to the live session", cmd.Name)
 		return
 	}
 
@@ -132,6 +137,18 @@ func (r *Registry) helpHandler(s *session.Session, args []string) error {
 		{"pgn", "", ""},
 	}
 
+	replayCommands := []cmdInfo{
+		{"replay", "", ""},
+		{"next", ">", ""},
+		{"prev", "<", ""},
+		{"first", "", ""},
+		{"last", "", ""},
+		{"goto", "", ""},
+		{"auto", "", ""},
+		{"fen", "", ""},
+		{"live", "", ""},
+	}
+
 	authCommands := []cmdInfo{
 		{"register", "r", ""},
 		{"login", "l", ""},
@@ -163,6 +180,7 @@ func (r *Registry) helpHandler(s *session.Session, args []string) error {
 	}
 
 	printCommandGroup("Game Commands", gameCommands)
+	printCommandGroup("Replay Commands", replayCommands)
 	printCommandGroup("Auth Commands", authCommands)
 	printCommandGroup("Utility Commands", utilCommands)
 

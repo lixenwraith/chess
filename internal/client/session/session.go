@@ -2,6 +2,7 @@ package session
 
 import (
 	"github.com/lixenwraith/chess/internal/client/api"
+	"github.com/lixenwraith/chess/internal/client/replay"
 )
 
 // Session maintains client state and configuration
@@ -12,9 +13,13 @@ type Session struct {
 	AuthToken     string
 	Username      string
 	LastMoveCount int
-	GamesCursor   string // next page of the "games" listing
+	GamesCursor   string            // next page of the "games" listing
+	GamesPage     []api.GameSummary // the last "games" page, for "replay <index>"
 	Client        *api.Client
-	Verbose       bool
+	// Replay is the stored game being stepped through, nil while live. The
+	// live game, user, and poll state above are untouched by a replay.
+	Replay  *replay.State
+	Verbose bool
 	// Game state for prompt
 	CurrentGameState *api.GameResponse
 	PlayerColor      string // "w", "b", or ""

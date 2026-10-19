@@ -10,6 +10,8 @@ CHESS_SERVER_EXEC=${1:-"bin/chess-server"}
 export CHESS_DSN="$CHESS_TEST_DSN"
 PID_FILE="/tmp/chess-server_test.pid"
 API_PORT=${API_PORT:-8080}
+# Set WEB_PORT to also serve the embedded web client (for test/e2e).
+WEB_PORT=${WEB_PORT:-}
 LOG_LEVEL=${LOG_LEVEL:-debug}
 LOG_HTTP=${LOG_HTTP:-true}
 
@@ -95,7 +97,7 @@ echo ""
 echo "Configuration:"
 echo "  Executable: $CHESS_SERVER_EXEC"
 echo "  Database:   \$CHESS_TEST_DSN (tables dropped on exit)"
-echo "  Port:       $API_PORT"
+echo "  Port:       $API_PORT${WEB_PORT:+ (web client on $WEB_PORT)}"
 echo "  Mode:       Development (relaxed rate limits; PostgreSQL storage)"
 echo "  Log level:  $LOG_LEVEL (HTTP requests: $LOG_HTTP)"
 echo "  Purpose:    Backend for chess-server tests"
@@ -111,10 +113,13 @@ echo "Starting server..."
 echo ""
 
 # Start chess-server in foreground with dev mode and storage
+WEB_FLAGS=()
+[ -n "$WEB_PORT" ] && WEB_FLAGS=(-serve -web-port "$WEB_PORT")
 "$CHESS_SERVER_EXEC" \
 	-dev \
 	-log-level "$LOG_LEVEL" \
 	-log-http="$LOG_HTTP" \
     -api-port "$API_PORT" \
+    "${WEB_FLAGS[@]}" \
     -pid "$PID_FILE" \
     -pid-lock
