@@ -45,17 +45,16 @@
     --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
 
-    /* Side-by-side sizes: the board edge includes its coordinate margin. It
-       grows with the window but never past what is left under the top bar
-       (the host's 30rem frame leaves 416px), so the embed keeps a 360px
-       board while a full window gets up to 560px. */
+    /* Side-by-side sizes: the board edge includes its coordinate margin. The
+       panel takes a quarter of the width between 260px and 420px; the board
+       takes everything else the window leaves beside it and under the top
+       bar, so the margins give way first, the board second, and the panel
+       is never pushed out of view. 3.5rem and 2rem are the app's padding and
+       gaps (8px each side, a gap of up to 2rem beside the board) plus 8px of
+       slack; the host's embed sizes its frame to this formula. */
     --topbar-height: 2.5rem;
-    --panel-width: clamp(260px, 22vw, 380px);
-    /* The board takes what the window leaves beside the panel and under the
-       top bar, so the panel is never pushed out of view and the row never
-       scrolls: 5rem covers the gaps and the frame's padding. The host's
-       30rem desktop frame leaves 416px. */
-    --board-edge: clamp(280px, min(100vw - var(--panel-width) - 5rem, 100vh - var(--topbar-height) - 2.5rem), 600px);
+    --panel-width: clamp(260px, 24vw, 420px);
+    --board-edge: clamp(280px, min(100vw - var(--panel-width) - 3.5rem, 100vh - var(--topbar-height) - 2rem), 840px);
     --board-pad: clamp(14px, 1.04vw, 20px);
 }
 
@@ -548,6 +547,11 @@ body[data-mode="replay"] .pane-live { display: none; }
 }
 
 /* --- Replay pane ----------------------------------------------------- */
+
+/* The export row wraps the exit button onto a row of its own. */
+.pane-replay .toolbar { flex-wrap: wrap; row-gap: 0.6rem; }
+.pane-replay .btn-exit { flex: 1 0 100%; }
+.pane-replay .btn-exit .label-short { display: none; }
 
 .replay-head {
     flex: none;
@@ -1090,13 +1094,15 @@ input[type="range"]:focus-visible { outline: 2px solid var(--periwinkle); outlin
 @media (max-width: 699px) {
     :root {
         /* Reserve under the board, in rem so a larger system font grows it:
-           top bar 2.5 + gap 0.4 + turn strip 2 + controls 2.25 + move list 6
-           + toolbar 2.25 + gaps and padding 2.35 = 17.75rem. Small viewport
-           units, so the browser's bars never cover the panel. The replay
+           top bar 2.5 + gap 0.4 + turn strip 2 + controls 2.25 + move list 4
+           + toolbar 2.25 + gaps and padding 2.35 = 15.75rem. Small viewport
+           units, so the browser's bars never cover the panel. At a 1.5x
+           system font (rem 24px) on a 412x734 viewport this still leaves a
+           356px board; the move list scrolls inside its 4rem. The replay
            pane is taller (head, navigation, export, exit), so a replay
            reserves more and the board gives way on a short screen rather
            than the controls dropping below the fold. */
-        --board-edge: max(240px, min(100vw, calc(100svh - 17.75rem)));
+        --board-edge: max(240px, min(100vw, calc(100svh - 15.75rem)));
         --board-pad: 14px;
         --panel-width: 100%;
         --panel-height: auto;
@@ -1104,7 +1110,9 @@ input[type="range"]:focus-visible { outline: 2px solid var(--periwinkle); outlin
     }
 
     body { overflow-y: auto; overflow-x: hidden; }
-    body[data-mode="replay"] { --board-edge: max(240px, min(100vw, calc(100svh - 23.25rem))); }
+    /* A replay's panel: head 2.3 + list 4 + navigation 2.2 + export row 2.25
+       + gaps and padding 2.85, under the top bar 2.9 = 16.5rem. */
+    body[data-mode="replay"] { --board-edge: max(240px, min(100vw, calc(100svh - 16.5rem))); }
 
     /* The app is exactly the viewport, so the panel and its move list shrink
        to fit; only when their minimums do not fit does the page scroll. */
@@ -1167,6 +1175,8 @@ input[type="range"]:focus-visible { outline: 2px solid var(--periwinkle); outlin
         padding: 0.5rem 0.6rem 0.6rem;
         height: auto;
         min-height: 0;
+        container-type: inline-size;
+        container-name: pane;
     }
 
     .pane > * { min-width: 0; }
@@ -1180,14 +1190,29 @@ input[type="range"]:focus-visible { outline: 2px solid var(--periwinkle); outlin
     }
     .pane-live .controls .btn { padding: 0.5rem 0.2rem; font-size: 0.85rem; min-height: 2.25rem; height: auto; }
 
-    .moves { flex: 1 1 auto; min-height: 6rem; }
+    .moves { flex: 1 1 auto; min-height: 4rem; }
     .move-grid { grid-template-columns: 2.2rem 1fr 1fr; font-size: 0.9rem; }
 
     .toolbar .btn-tool { padding: 0.45rem 0.3rem; font-size: 0.82rem; min-width: 0; }
 
-    /* Replay: head, list, navigation, export and exit as rows. */
-    .pane-replay .replay-head { padding: 0.35rem 0.6rem; }
+    /* Replay: a one-line head (result, players, ply; no badge, no meta),
+       the list, the navigation row, then export and exit on one row. */
+    .pane-replay .replay-head {
+        flex-direction: row;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.35rem 0.6rem;
+        min-height: 2.3rem;
+    }
+    .pane-replay .replay-title-row { display: contents; }
+    .pane-replay .badge { display: none; }
+    .pane-replay .replay-result { flex: none; white-space: nowrap; }
+    .pane-replay .replay-players { order: 1; flex: 1 1 auto; }
+    .pane-replay .replay-ply { order: 2; margin-left: auto; }
     .pane-replay .replay-meta { display: none; }
+    .pane-replay .btn-exit { flex: 1.3 1 0; min-width: 0; padding: 0.45rem 0.3rem; font-size: 0.82rem; }
+    .pane-replay .btn-exit #replay-exit-label { display: none; }
+    .pane-replay .btn-exit .label-short { display: inline; }
     .pane-replay .replay-nav {
         display: grid;
         grid-template-columns: repeat(5, 1fr) 1.4fr 1fr;
@@ -1196,7 +1221,6 @@ input[type="range"]:focus-visible { outline: 2px solid var(--periwinkle); outlin
     .pane-replay .replay-nav .speed { margin: 0; }
     .pane-replay .replay-nav .speed select { width: 100%; }
     .pane-replay .btn-nav { width: 100%; height: 2.2rem; }
-    .pane-replay #replay-exit { padding: 0.5rem; font-size: 0.85rem; }
 
     .games-modal { padding: 0.75rem; }
     .game-row { gap: 0.5rem; padding: 0.4rem; }
@@ -1205,10 +1229,15 @@ input[type="range"]:focus-visible { outline: 2px solid var(--periwinkle); outlin
     .modal-overlay { padding: 0.5rem; }
 }
 
-/* Very narrow phones: icon-only export buttons. */
-@media (max-width: 380px) {
-    .pane-replay .toolbar .btn-tool span { display: none; }
-    .pane-replay .toolbar .btn-tool .icon { width: 1.2rem; height: 1.2rem; }
+/* Narrow phones, and phones whose system font is large: the pane is a
+   container on phones and rem in a container query is the root font size,
+   so 24rem is 384px at the default size and 600px at a 1.5x font. Then the
+   export buttons show icons alone and the replay head keeps the score and
+   the players but not the termination. */
+@container pane (max-width: 24rem) {
+    .pane-replay .toolbar .btn-tool span, .pane-replay .btn-exit span, .pane-replay .btn-exit .label-short { display: none; }
+    .pane-replay .toolbar .btn-tool .icon, .pane-replay .btn-exit .icon { width: 1.2rem; height: 1.2rem; }
+    .pane-replay .replay-term { display: none; }
     .pane-live .controls .btn { font-size: 0.8rem; }
 }
 
