@@ -215,7 +215,7 @@ func runPGN(args []string) error {
 	if err != nil {
 		return fmt.Errorf("load game %s: %w", id, err)
 	}
-	pgn, err := replay.BuildPGN(record, moves, *ply)
+	pgn, err := replay.BuildPGN(record, moves, *ply, "")
 	if err != nil {
 		return err
 	}

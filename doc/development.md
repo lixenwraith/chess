@@ -40,7 +40,7 @@ go build ./cmd/chess-client-cli
 - `-web-api-url`: Browser-visible API origin for the embedded web client, set on its script element as `data-api`; useful when its public origin differs from the listen address
 - `-smtp-host`, `-smtp-port`, `-smtp-user`, `-smtp-password-file`, `-mail-from`: SMTP relay for password-reset email; without a transport, recovery is off
 - `-mail-dir`: Development: write email to `.eml` files in this directory instead of sending
-- `-public-url`: The web client's address that emailed links open (required with a transport)
+- `-public-url`: The web client's address: emailed links open it, and its host is the `Site` of exported PGN (required with a transport)
 
 ### Modes
 ```bash

@@ -52,8 +52,9 @@ type PGN struct {
 
 // BuildPGN exports a stored game. ply < 0 exports every move; otherwise the
 // first ply moves, with result "*" and no termination when that stops short
-// of the end of the line.
-func BuildPGN(record *storage.GameRecord, moves []storage.MoveRecord, ply int) (*PGN, error) {
+// of the end of the line. site is the Site tag of a game played on this
+// server (PGN's "?" when empty); an imported game keeps its own.
+func BuildPGN(record *storage.GameRecord, moves []storage.MoveRecord, ply int, site string) (*PGN, error) {
 	if ply > len(moves) {
 		return nil, fmt.Errorf("%w: game has %d plies", ErrPlyOutOfRange, len(moves))
 	}
@@ -75,7 +76,7 @@ func BuildPGN(record *storage.GameRecord, moves []storage.MoveRecord, ply int) (
 		}
 	}
 	start := record.StartTimeUTC.UTC()
-	event, site, round := "Casual game", "", ""
+	event, round := "Casual game", ""
 	if record.ImportedBy != "" {
 		event, site, round = record.Event, record.Site, record.Round
 		if event == "" {
