@@ -1,12 +1,8 @@
 /* Chess web client. Dark theme matching lixen.com. The board colours and
    piece glyph treatment are fixed (see pieceMap in app.js); everything else is
-   open. Styles live here: the host's CSP has style-src 'unsafe-inline', but
-   state is expressed through classes and data attributes, never inline style.
-
-   Two layouts share the markup: board beside the panel from 979px up, and
-   board over the panel below (the host's embed frame switches its height at
-   the same width). Both must fit the host's frame: 30rem tall side by side,
-   46rem (capped at 80svh) stacked. */
+   open. State is classes and data attributes, never inline style. Two layouts
+   share the markup: board beside the panel from 700px up, board over the
+   panel below; the host's embed frame switches its height at that width. */
 
 *, *::before, *::after { box-sizing: border-box; }
 
@@ -45,16 +41,14 @@
     --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
 
-    /* Side-by-side sizes: the board edge includes its coordinate margin. The
-       panel takes a quarter of the width between 260px and 420px; the board
-       takes everything else the window leaves beside it and under the top
-       bar, so the margins give way first, the board second, and the panel
-       is never pushed out of view. 3.5rem and 2rem are the app's padding and
-       gaps (8px each side, a gap of up to 2rem beside the board) plus 8px of
-       slack; the host's embed sizes its frame to this formula. */
+    /* Side by side, the board (its edge holds the coordinates) takes the
+       height under the top bar, or the width the panel's minimum leaves, and
+       the panel takes the rest of the row. 3.5rem and 2rem are the app's
+       padding and gaps (8px each side, a gap of up to 2rem) plus 8px of slack;
+       the host's embed sizes its frame to this formula. */
     --topbar-height: 2.5rem;
-    --panel-width: clamp(260px, 24vw, 420px);
-    --board-edge: clamp(280px, min(100vw - var(--panel-width) - 3.5rem, 100vh - var(--topbar-height) - 2rem), 840px);
+    --panel-min: 260px;
+    --board-edge: clamp(280px, min(100vw - var(--panel-min) - 3.5rem, 100vh - var(--topbar-height) - 2rem), 840px);
     --board-pad: clamp(14px, 1.04vw, 20px);
 }
 
@@ -399,9 +393,12 @@ body[data-mode="replay"] .square, .square.inert { cursor: default; }
 
 /* --- Panel ----------------------------------------------------------- */
 
+/* Up to 48rem: a full window on a large screen centres the pair rather than
+   stretching the controls across it. */
 .panel {
-    flex: none;
-    width: var(--panel-width);
+    flex: 1 1 0;
+    min-width: var(--panel-min);
+    max-width: 48rem;
     height: var(--board-edge);
     background: var(--surface);
     border: 1px solid var(--line);
@@ -1104,9 +1101,6 @@ input[type="range"]:focus-visible { outline: 2px solid var(--periwinkle); outlin
            than the controls dropping below the fold. */
         --board-edge: max(240px, min(100vw, calc(100svh - 15.75rem)));
         --board-pad: 14px;
-        --panel-width: 100%;
-        --panel-height: auto;
-        --topbar-height: 2.5rem;
     }
 
     body { overflow-y: auto; overflow-x: hidden; }
@@ -1154,6 +1148,8 @@ input[type="range"]:focus-visible { outline: 2px solid var(--periwinkle); outlin
         flex-direction: column;
         width: 100%;
         flex: 1 1 auto;
+        min-width: 0;
+        max-width: none;
         min-height: 0;
         height: auto;
         border-radius: 0;
