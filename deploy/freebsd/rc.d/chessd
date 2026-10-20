@@ -18,8 +18,9 @@
 #                          Default: ${chessd_home}/jwt.key
 # chessd_trusted_proxies:  Reverse-proxy address(es) whose X-Real-IP header is
 #                          trusted as the client address. Default: none
-# chessd_public_url:       The web client's public address, which emailed links
-#                          open. Default: none
+# chessd_public_url:       The web client's public address: emailed links open
+#                          it, and its host is the Site of exported PGN.
+#                          Default: none
 # chessd_smtp_host:        SMTP relay for password-reset email (the mail jail).
 #                          Unset leaves password recovery off. Default: none
 # chessd_smtp_port:        Relay port. Default: 25
@@ -33,8 +34,8 @@
 # Add the following to /etc/rc.conf to enable:
 #   chessd_enable="YES"
 #   chessd_trusted_proxies="<address nginx connects from>"
-# and, for password recovery by email, once the mail jail relays for this one:
 #   chessd_public_url="https://<site>/chess/web-client/"
+# and, for password recovery by email, once the mail jail relays for this one:
 #   chessd_smtp_host="<mail jail address>"
 #   chessd_mail_from="Chess <chess@<site>>"
 
@@ -105,11 +106,14 @@ chessd_start()
     if [ -n "${chessd_trusted_proxies}" ]; then
         set -- "$@" -trusted-proxies "${chessd_trusted_proxies}"
     fi
-    # Password recovery by email: relay, sender, and the client address the
-    # link opens. The server refuses a relay without the other two.
+    if [ -n "${chessd_public_url}" ]; then
+        set -- "$@" -public-url "${chessd_public_url}"
+    fi
+    # Password recovery by email: relay and sender; the link opens the public
+    # URL. The server refuses a relay without both and the URL.
     if [ -n "${chessd_smtp_host}" ]; then
         set -- "$@" -smtp-host "${chessd_smtp_host}" -smtp-port "${chessd_smtp_port}" \
-            -mail-from "${chessd_mail_from}" -public-url "${chessd_public_url}"
+            -mail-from "${chessd_mail_from}"
         if [ -n "${chessd_smtp_user}" ]; then
             set -- "$@" -smtp-user "${chessd_smtp_user}"
             secret="${chessd_smtp_password_file:-${chessd_home}/smtp.secret}"

@@ -120,7 +120,7 @@ file is kept next to it with a timestamp).
 | `CHESSD_DSN` | `"host=<socket dir> dbname=chess"` | Database over the socket as the OS account |
 | `CHESSD_JWT_KEY` | `/var/lib/chessd/jwt.key` | Stable signing key |
 | `CHESSD_TRUSTED_PROXIES` | `TRUSTED_PROXIES` | Comma-separated proxy addresses |
-| `CHESSD_FLAGS` | empty | Other server flags, e.g. `-max-users 500 -db-cleanup report`, or password recovery by email: `-smtp-host <relay> -mail-from "Chess <chess@example.com>" -public-url https://example.com/chess/web-client/` (see [deployment.md](deployment.md#password-recovery-by-email); the sandboxed unit can read a password file only under `/var/lib/chessd`) |
+| `CHESSD_FLAGS` | empty | Other server flags, e.g. `-max-users 500 -db-cleanup report -public-url https://example.com/chess/web-client/` (the URL's host is the `Site` of exported PGN), or password recovery by email, which also needs `-public-url`: `-smtp-host <relay> -mail-from "Chess <chess@example.com>"` (see [deployment.md](deployment.md#password-recovery-by-email); the sandboxed unit can read a password file only under `/var/lib/chessd`) |
 
 Server flags worth knowing: `-max-users` (registration cap, default 100),
 `-anonymous-game-ttl` (default `24h`), `-finished-game-ttl` (default `1h`),

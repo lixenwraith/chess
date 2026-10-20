@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -62,14 +63,15 @@ func main() {
 
 		// Password recovery by email: a transport (SMTP relay, or a directory
 		// of .eml files for development) and the web client's address, which
-		// the emailed link opens. Without a transport, recovery is off.
+		// the emailed link opens. Without a transport, recovery is off. The
+		// address's host also names this server in exported PGN (Site).
 		smtpHost     = flag.String("smtp-host", "", "SMTP relay for password-reset email (recovery is off when empty)")
 		smtpPort     = flag.Int("smtp-port", 25, "SMTP relay port")
 		smtpUser     = flag.String("smtp-user", "", "SMTP user name (optional; the password comes from -smtp-password-file)")
 		smtpPassFile = flag.String("smtp-password-file", "", "File holding the SMTP password, mode 0600")
 		mailFrom     = flag.String("mail-from", "", "Sender address of server email, e.g. \"Chess <chess@example.com>\"")
 		mailDir      = flag.String("mail-dir", "", "Write email to .eml files in this directory instead of sending (development)")
-		publicURL    = flag.String("public-url", "", "Web client address that emailed links open, e.g. https://example.com/chess/web-client/")
+		publicURL    = flag.String("public-url", "", "Web client address: emailed links open it, and its host is the Site of exported games, e.g. https://example.com/chess/web-client/")
 
 		// Web UI server flags
 		serve     = flag.Bool("serve", false, "Enable web UI server")
@@ -177,6 +179,14 @@ func main() {
 		log.Fatalf("-db-cleanup %s requires a database (-dsn)", integrity)
 	}
 	svc.SetIntegrityMode(integrity)
+
+	if *publicURL != "" {
+		u, err := url.Parse(*publicURL)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			log.Fatalf("Invalid -public-url %q: must be absolute (https://host/chess/web-client/)", *publicURL)
+		}
+		svc.SetSite(u.Hostname())
+	}
 
 	// Password recovery needs mail and the client's public address.
 	sender, err := mail.Config{

@@ -129,7 +129,7 @@ func TestBuildPGN(t *testing.T) {
 	rec := record(chess.StartFEN, "white_wins", "resignation")
 	rec.BlackType, rec.BlackLevel, rec.WhiteType, rec.WhiteName = 2, 4, 1, "alice"
 
-	pgn, err := BuildPGN(rec, moves, -1)
+	pgn, err := BuildPGN(rec, moves, -1, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,15 +143,35 @@ func TestBuildPGN(t *testing.T) {
 		t.Errorf("filename %q", pgn.Filename)
 	}
 
-	partial, err := BuildPGN(rec, moves, 1)
+	partial, err := BuildPGN(rec, moves, 1, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasSuffix(partial.Text, "\n\n1. e4 *\n") || partial.Filename != "chess-20260928-68007fd1-ply1.pgn" {
 		t.Errorf("partial %q:\n%s", partial.Filename, partial.Text)
 	}
-	if _, err := BuildPGN(rec, moves, 3); err == nil {
+	if _, err := BuildPGN(rec, moves, 3, ""); err == nil {
 		t.Error("ply beyond the line accepted")
+	}
+}
+
+// A game played here names the server's site; an imported game keeps its own.
+func TestBuildPGNSite(t *testing.T) {
+	moves := stored(t, chess.StartFEN, "e2e4")
+	rec := record(chess.StartFEN, "", "")
+	for _, tc := range []struct{ importedBy, recordSite, site, want string }{
+		{"", "", "lixen.com", "lixen.com"},
+		{"", "", "", "?"},
+		{"alice", "Linares ESP", "lixen.com", "Linares ESP"},
+	} {
+		rec.ImportedBy, rec.Site = tc.importedBy, tc.recordSite
+		pgn, err := BuildPGN(rec, moves, -1, tc.site)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := "[Site \"" + tc.want + "\"]\n"; !strings.Contains(pgn.Text, want) {
+			t.Errorf("site %q, imported by %q: PGN lacks %q:\n%s", tc.site, tc.importedBy, want, pgn.Text)
+		}
 	}
 }
 
@@ -161,7 +181,7 @@ func TestBuildPGNNotesContinuedConcession(t *testing.T) {
 	rec := record(chess.StartFEN, "", "")
 	rec.ConcessionResult, rec.ConcessionTermination, rec.ConcessionPly = "black_wins", "resignation", 2
 
-	pgn, err := BuildPGN(rec, moves, -1)
+	pgn, err := BuildPGN(rec, moves, -1, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +191,7 @@ func TestBuildPGNNotesContinuedConcession(t *testing.T) {
 
 	// The concession that is still the result needs no note.
 	rec.Result, rec.Termination, rec.ConcessionPly = "black_wins", "resignation", 3
-	if pgn, _ = BuildPGN(rec, moves, -1); strings.Contains(pgn.Text, "continued") {
+	if pgn, _ = BuildPGN(rec, moves, -1, ""); strings.Contains(pgn.Text, "continued") {
 		t.Errorf("standing resignation noted as continued:\n%s", pgn.Text)
 	}
 }

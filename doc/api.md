@@ -343,11 +343,12 @@ Same visibility, `ETag`, and error responses as the history. `ply` (optional,
 0 up to the number of stored plies) exports only the first N plies; the
 result is then `*`, the `Termination` tag is left out, and the filename ends
 `-ply<N>.pgn`. A `fetch` of the URL returns the text, so clients can copy it
-as well as download it.
+as well as download it. `Site` is the host of the server's `-public-url` (`?`
+without one); an imported game keeps its own.
 
 ```
 [Event "Casual game"]
-[Site "?"]
+[Site "example.com"]
 [Date "2026.09.27"]
 [Round "-"]
 [White "alice"]

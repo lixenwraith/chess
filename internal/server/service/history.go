@@ -79,7 +79,7 @@ func (s *Service) GetGamePGN(gameID string, ply int) (*replay.PGN, error) {
 	if err != nil {
 		return nil, err
 	}
-	pgn, err := replay.BuildPGN(record, moves, ply)
+	pgn, err := replay.BuildPGN(record, moves, ply, s.site)
 	if errors.Is(err, replay.ErrNotation) {
 		slog.Warn("stored game cannot be exported as PGN", "game_id", gameID, "error", err)
 	}

@@ -154,7 +154,7 @@ as `postgres`, list them with `\dt chess.*` and name them as `chess.games`.
 | `chessd_dsn` | `postgres:///chess?host=/tmp` | Database `chess` over the socket as the OS user |
 | `chessd_jwt_key` | `${chessd_home}/jwt.key` | JWT signing key; created (0600) on first start if missing |
 | `chessd_trusted_proxies` | empty | Proxy address(es) whose `X-Real-IP` is trusted |
-| `chessd_public_url` | empty | The web client's public address, which emailed reset links open (`https://<site>/chess/web-client/`) |
+| `chessd_public_url` | empty | The web client's public address (`https://<site>/chess/web-client/`): emailed reset links open it, and its host is the `Site` of exported PGN |
 | `chessd_smtp_host`, `chessd_smtp_port` | empty, `25` | SMTP relay for password-reset email; unset leaves recovery off |
 | `chessd_smtp_user`, `chessd_smtp_password_file` | empty, `${chessd_home}/smtp.secret` if present | Relay credentials, when the relay authenticates this host; the file is mode 0600 |
 | `chessd_mail_from` | empty | Sender address, e.g. `Chess <chess@<site>>` |
@@ -182,7 +182,7 @@ Server flags:
 | `-smtp-user`, `-smtp-password-file` | | Relay credentials, optional; the file is mode 0600 and only sent over TLS |
 | `-mail-from` | | Sender address of server email |
 | `-mail-dir` | | Development: write email to `.eml` files here instead of a relay |
-| `-public-url` | | The web client's address that emailed links open; required with a transport |
+| `-public-url` | | The web client's address: emailed links open it, and its host is the `Site` of exported PGN; required with a transport |
 
 Administrative CLI commands run as `chess` so peer authentication selects the
 right role; root may use `su -m` although the account has no shell:

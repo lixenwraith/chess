@@ -43,6 +43,7 @@ type Service struct {
 	integrityCursor string // last game ID the integrity sweep verified; cleanup goroutine only
 
 	mail *mailer // password recovery; nil when no transport is configured
+	site string  // Site tag of exported games played here; empty is PGN's "?"
 }
 
 // New creates a service with optional storage. jwtSecret signs session tokens
@@ -91,6 +92,12 @@ func (s *Service) SetAnonymousGameTTL(ttl time.Duration) {
 	s.mu.Lock()
 	s.anonymousTTL = ttl
 	s.mu.Unlock()
+}
+
+// SetSite names this server in the Site tag of the games it exports, from
+// the web client's public address; call it before serving.
+func (s *Service) SetSite(site string) {
+	s.site = site
 }
 
 // SetMaxUsers caps the number of accounts public registration may create;
