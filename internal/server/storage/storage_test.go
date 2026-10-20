@@ -341,7 +341,7 @@ func TestQueryPlansUsePurposeBuiltIndexes(t *testing.T) {
 		{
 			name: "anonymous purge candidates",
 			query: `SELECT game_id FROM games g
-				WHERE g.white_claimed_by IS NULL AND g.black_claimed_by IS NULL
+				WHERE g.white_claimed_by IS NULL AND g.black_claimed_by IS NULL AND g.imported_by IS NULL
 				AND g.start_time_utc < $1`,
 			args: []any{time.Now()},
 			want: []string{"games_anonymous_start_idx"},

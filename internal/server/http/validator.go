@@ -28,6 +28,8 @@ func validationMiddleware(c *fiber.Ctx) error {
 	var requestType any
 
 	switch {
+	case strings.HasSuffix(path, "/games/import") && method == fiber.MethodPost:
+		requestType = &core.ImportGameRequest{}
 	case strings.HasSuffix(path, "/games") && method == fiber.MethodPost:
 		requestType = &core.CreateGameRequest{}
 	case strings.HasSuffix(path, "/players") && method == fiber.MethodPut:

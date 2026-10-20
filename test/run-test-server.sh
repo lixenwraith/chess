@@ -6,7 +6,32 @@ set -e
 CHESS_SERVER_EXEC=${1:-"bin/chess-server"}
 # A DISPOSABLE database: every chess table in it is dropped on start and exit.
 # Use a libpq-compatible DSN; test-db.sh also passes it to psql.
-: "${CHESS_TEST_DSN:?set CHESS_TEST_DSN to a disposable PostgreSQL database}"
+if [ -z "${CHESS_TEST_DSN:-}" ]; then
+    cat >&2 <<'HELP'
+CHESS_TEST_DSN is not set. It names a DISPOSABLE PostgreSQL database: every
+chess table in it is dropped when this server starts and stops.
+
+One-time setup, pick one:
+
+  # a) your own OS account owns a test database (peer authentication over the
+  #    local socket; no password; the account must exist as a PostgreSQL role:
+  #    sudo -u postgres createuser "$USER" if it does not)
+  createdb chess_test
+  export CHESS_TEST_DSN='dbname=chess_test'
+
+  # b) a dedicated role with a password, over TCP
+  sudo -u postgres psql -c "CREATE ROLE chess_test LOGIN PASSWORD 'chess_test'" \
+                        -c "CREATE DATABASE chess_test OWNER chess_test"
+  export CHESS_TEST_DSN='postgres://chess_test:chess_test@localhost:5432/chess_test?sslmode=disable'
+
+The same variable enables the Go database tests (go test ./...). Do not point
+it at a database with real games. Then run this script again, with WEB_PORT
+and MAIL_DIR to also serve the web client and enable password recovery:
+
+  WEB_PORT=9090 MAIL_DIR=/tmp/chess-mail test/run-test-server.sh
+HELP
+    exit 1
+fi
 export CHESS_DSN="$CHESS_TEST_DSN"
 PID_FILE="/tmp/chess-server_test.pid"
 API_PORT=${API_PORT:-8080}

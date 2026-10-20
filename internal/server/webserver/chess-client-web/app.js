@@ -124,7 +124,7 @@ function setModalMessage(elementId, message, type = 'error') {
     const el = $(elementId);
     if (!el) return;
     el.textContent = message;
-    el.classList.remove('error', 'success');
+    el.classList.remove('error', 'success', 'hint');
     el.classList.add('show', type);
 }
 
@@ -132,7 +132,7 @@ function clearModalMessage(elementId) {
     const el = $(elementId);
     if (!el) return;
     el.textContent = '';
-    el.classList.remove('show', 'error', 'success');
+    el.classList.remove('show', 'error', 'success', 'hint');
 }
 
 function anyModalOpen() {
@@ -377,7 +377,15 @@ function setStorageStatus(status) {
 
 function setMailStatus(status) {
     ui.mail = status;
-    $('forgot-row').classList.toggle('hidden', status !== 'ok');
+}
+
+// A neutral hint fills a modal's message slot until a result replaces it.
+function setModalHint(elementId, text) {
+    const el = $(elementId);
+    if (!el) return;
+    el.textContent = text;
+    el.classList.remove('error', 'success');
+    el.classList.add('show', 'hint');
 }
 
 function startHealthCheck() {
@@ -467,7 +475,7 @@ function showAccountModal() {
     $('account-username').textContent = auth.username || '';
     $('delete-account').open = false;
     $('delete-password').value = '';
-    clearModalMessage('account-modal-message');
+    setModalHint('account-modal-message', 'Signing out keeps your games; deleting the account removes your name from them.');
     $('account-overlay').classList.add('show');
     document.removeEventListener('keydown', handleAccountKeydown);
     document.addEventListener('keydown', handleAccountKeydown);
@@ -624,7 +632,11 @@ function switchAuthTab(tab) {
     $('login-form').classList.toggle('hidden', tab !== 'login');
     $('register-form').classList.toggle('hidden', tab !== 'register');
     $('recover-form').classList.toggle('hidden', tab !== 'recover');
-    clearModalMessage('auth-modal-message');
+    setModalHint('auth-modal-message', {
+        login: 'Your games are kept under your account.',
+        register: 'A username and a password; the email is optional and lets you reset a forgotten password.',
+        recover: ui.mail === 'ok' ? 'The link in the email works for an hour.' : 'This server may not send email yet; the administrator can give you a reset link.',
+    }[tab]);
     $({ login: 'login-identifier', register: 'register-username', recover: 'recover-identifier' }[tab]).focus();
 }
 
@@ -1070,6 +1082,7 @@ function setNewGameModalBusy(busy) {
 
 function showNewGameModal() {
     if (replay.active) return;
+    setModalHint('new-game-modal-message', 'Level 0 is a beginner, 20 is full strength; the search time is how long it thinks per move.');
     $('modal-overlay').classList.add('show');
     document.addEventListener('keydown', handleModalKeydown);
     $('start-game-btn').focus();
@@ -1744,6 +1757,7 @@ function renderGamesSections() {
     $('games-filters').classList.toggle('hidden', !signedIn);
     $('account-games-heading').textContent = 'Your games';
     $('games-list').classList.toggle('hidden', !signedIn);
+    $('games-import-btn').classList.toggle('hidden', !signedIn);
     $('games-more').classList.toggle('hidden', !signedIn || !games.cursor);
     if (!signedIn) $('games-status').textContent = '';
     renderLocalGames();
@@ -1855,6 +1869,7 @@ function renderLocalGames() {
 // affordance. The whole row is a button.
 function renderGameRow(summary) {
     const li = document.createElement('li');
+    li.className = 'game-item';
     const row = document.createElement('button');
     row.type = 'button';
     row.className = 'game-row';
@@ -1886,7 +1901,16 @@ function renderGameRow(summary) {
         : `${terminationLabel(summary.termination) || describeResult(summary.result, summary.termination)} · ${moves} move${moves === 1 ? '' : 's'}`));
     const when = document.createElement('div');
     when.className = 'game-when';
-    when.textContent = formatDate(summary.startTimeUtc) + (summary.gameId === live.gameId ? ' · this game' : '');
+    const notes = [formatDate(summary.startTimeUtc)];
+    if (summary.origin === 'imported') {
+        const origin = document.createElement('span');
+        origin.className = 'game-origin';
+        origin.textContent = summary.event ? `imported · ${summary.event}` : 'imported';
+        when.append(document.createTextNode(notes[0] + ' · '), origin);
+    } else {
+        if (summary.gameId === live.gameId) notes.push('this game');
+        when.textContent = notes.join(' · ');
+    }
     info.append(players, outcome, when);
 
     const go = document.createElement('span');
@@ -1898,7 +1922,201 @@ function renderGameRow(summary) {
     row.setAttribute('aria-label', `Replay ${players.textContent}, ${outcome.textContent}, ${when.textContent}`);
     row.addEventListener('click', () => enterReplay(summary.gameId, summary.moveCount || 0));
     li.appendChild(row);
+
+    // Delete, with an in-row confirmation.
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'btn game-delete';
+    del.title = summary.local ? 'Forget this game on this device' : 'Delete this game';
+    del.setAttribute('aria-label', `${del.title}: ${players.textContent}`);
+    del.innerHTML = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    del.addEventListener('click', () => confirmDeleteRow(li, del, summary));
+    li.appendChild(del);
     return li;
+}
+
+// Replaces the row's delete button with Yes/No for one decision.
+function confirmDeleteRow(li, del, summary) {
+    const confirm = document.createElement('div');
+    confirm.className = 'game-confirm';
+    confirm.setAttribute('role', 'group');
+    confirm.setAttribute('aria-label', 'Confirm deletion');
+    const yes = document.createElement('button');
+    yes.type = 'button';
+    yes.className = 'btn btn-danger';
+    yes.textContent = summary.local ? 'Forget' : 'Delete';
+    const no = document.createElement('button');
+    no.type = 'button';
+    no.className = 'btn btn-secondary';
+    no.textContent = 'Keep';
+    const restore = () => { confirm.replaceWith(del); del.focus(); };
+    no.addEventListener('click', restore);
+    yes.addEventListener('click', async () => {
+        yes.disabled = true;
+        no.disabled = true;
+        const ok = await deleteGame(summary);
+        if (!ok) restore();
+    });
+    confirm.append(yes, no);
+    del.replaceWith(confirm);
+    yes.focus();
+}
+
+// Deletes a game from the account list, or forgets a device entry. Returns
+// whether the row is gone.
+async function deleteGame(summary) {
+    if (summary.local) {
+        saveRecentGames(loadRecentGames().filter(g => g.gameId !== summary.gameId));
+        renderLocalGames();
+        toast('Game forgotten on this device', 'success');
+        return true;
+    }
+    let response;
+    try {
+        response = await apiJSON('DELETE', `/api/users/me/games/${summary.gameId}`);
+    } catch (error) {
+        handleApiError('delete game', error);
+        return false;
+    }
+    if (response.status === 401) {
+        clearAuthState();
+        return false;
+    }
+    if (!response.ok) {
+        handleApiError('delete game', null, response);
+        return false;
+    }
+    let outcome = 'game';
+    try {
+        outcome = (await response.json()).removed || 'game';
+    } catch { /* the row is gone either way */ }
+    games.items = games.items.filter(g => g.gameId !== summary.gameId);
+    renderGamesList();
+    toast(outcome === 'claim' ? 'Removed from your games; the other player keeps it' : 'Game deleted', 'success', 2500);
+    if (replay.gameId === summary.gameId && outcome === 'game') exitReplay({ push: false });
+    if (live.gameId === summary.gameId && outcome === 'game') dropLiveGame();
+    ui.historyCache.delete(summary.gameId);
+    return true;
+}
+
+// The live game was deleted from storage: the board returns to no game.
+function dropLiveGame() {
+    stopPolling();
+    live.gameId = null;
+    live.fen = null;
+    live.state = null;
+    live.moves = [];
+    live.san = [];
+    live.lastMove = null;
+    live.isLocked = false;
+    live.selectedSquare = null;
+    if (!replay.active) renderPosition(START_FEN);
+    renderLiveMoves();
+    updateTurnStrip();
+    updateGameControls();
+}
+
+// --- import: a PGN pasted or picked from a file, stored under the account
+
+const importState = { busy: false };
+
+function openImportModal() {
+    if (!auth.token) {
+        showAuthModal();
+        return;
+    }
+    importState.busy = false;
+    $('import-pgn').value = '';
+    $('import-file').value = '';
+    setModalHint('import-modal-message', 'One game: tags in brackets, then the moves. Comments and variations are dropped; every move is checked.');
+    $('import-overlay').classList.add('show');
+    document.removeEventListener('keydown', handleImportKeydown);
+    document.addEventListener('keydown', handleImportKeydown);
+    $('import-pgn').focus();
+}
+
+function closeImportModal() {
+    if (importState.busy) return;
+    $('import-overlay').classList.remove('show');
+    document.removeEventListener('keydown', handleImportKeydown);
+}
+
+function handleImportKeydown(e) {
+    if (e.key === 'Escape') {
+        e.preventDefault();
+        closeImportModal();
+    } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        submitImport();
+    }
+}
+
+function setImportBusy(busy) {
+    importState.busy = busy;
+    for (const id of ['import-pgn', 'import-file', 'import-submit-btn', 'import-cancel-btn']) $(id).disabled = busy;
+}
+
+// A picked file fills the text box; the size limit is the server's.
+function readImportFile() {
+    const file = $('import-file').files?.[0];
+    if (!file) return;
+    if (file.size > 65536) {
+        setModalMessage('import-modal-message', 'That file is larger than 64 KiB; one game is a few kilobytes', 'error');
+        return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+        $('import-pgn').value = String(reader.result || '');
+        setModalHint('import-modal-message', `${file.name} loaded; press Import.`);
+    };
+    reader.onerror = () => setModalMessage('import-modal-message', 'Could not read the file', 'error');
+    reader.readAsText(file);
+}
+
+async function submitImport() {
+    if (importState.busy) return;
+    const pgn = $('import-pgn').value.trim();
+    if (!pgn) {
+        setModalMessage('import-modal-message', 'Paste a PGN or pick a file', 'error');
+        $('import-pgn').focus();
+        return;
+    }
+    setImportBusy(true);
+    clearModalMessage('import-modal-message');
+    let response;
+    try {
+        response = await apiJSON('POST', '/api/games/import', { pgn });
+    } catch (error) {
+        setImportBusy(false);
+        setModalMessage('import-modal-message', handleApiError('import', error).statusMessage, 'error');
+        return;
+    }
+    setImportBusy(false);
+    if (response.status === 401) {
+        clearAuthState();
+        setModalMessage('import-modal-message', 'Sign in again to import', 'error');
+        return;
+    }
+    if (!response.ok) {
+        const err = await parseErrorResponse(response);
+        setModalMessage('import-modal-message', response.status === 400
+            ? `Not a valid game: ${err.details || err.error}`
+            : response.status === 429 ? 'Too many imports; wait a minute' : (err.error || `Server error (${response.status})`), 'error');
+        $('import-pgn').focus();
+        return;
+    }
+    let result;
+    try {
+        result = await response.json();
+    } catch {
+        setModalMessage('import-modal-message', 'Unexpected response from server', 'error');
+        return;
+    }
+    closeImportModal();
+    toast(`Imported, ${Math.ceil((result.moveCount || 0) / 2)} moves`, 'success', 2500);
+    games.cursor = '';
+    await loadGames(true, true);
+    enterReplay(result.gameId, 0);
 }
 
 // A side's name in the list, "You" for the signed-in user's claim.
@@ -2039,6 +2257,7 @@ function renderReplayHead() {
     $('replay-players').title = `White: ${sideLabel(h.players?.white)} · Black: ${sideLabel(h.players?.black)}`;
     const plies = h.moves.length;
     const meta = [formatDate(h.startTimeUtc), `${plies} ${plies === 1 ? 'ply' : 'plies'}`];
+    if (h.origin === 'imported') meta.unshift(h.event || 'imported');
     if (h.concession && h.concession.termination) {
         meta.push(h.concession.termination === 'agreement'
             ? `draw agreed at ply ${h.concession.ply}`
@@ -2352,6 +2571,19 @@ function bindEvents() {
     $('promotion-overlay').addEventListener('click', (e) => {
         if (e.target === e.currentTarget) closePromotion(null);
     });
+    // A click on a backdrop closes the dialog, unless a request is in flight.
+    const backdrop = (id, close) => $(id).addEventListener('click', (e) => { if (e.target === e.currentTarget) close(); });
+    backdrop('auth-modal-overlay', () => { if (!auth.busy) hideAuthModal(); });
+    backdrop('account-overlay', hideAccountModal);
+    backdrop('modal-overlay', () => { if (!live.newGameBusy) hideNewGameModal(); });
+    backdrop('resign-overlay', hideResignModal);
+    backdrop('reset-overlay', closeResetModal);
+    backdrop('import-overlay', closeImportModal);
+
+    $('games-import-btn').addEventListener('click', openImportModal);
+    $('import-submit-btn').addEventListener('click', submitImport);
+    $('import-cancel-btn').addEventListener('click', closeImportModal);
+    $('import-file').addEventListener('change', readImportFile);
 
     $('games-btn').addEventListener('click', () => { if (games.open) closeGames(); else openGames(); });
     $('games-close').addEventListener('click', () => closeGames());

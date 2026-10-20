@@ -131,6 +131,10 @@ type GameHistoryResponse struct {
 	StartTimeUTC time.Time       `json:"startTimeUtc"`
 	EndTimeUTC   *time.Time      `json:"endTimeUtc,omitempty"`
 	Concession   *Concession     `json:"concession,omitempty"` // Result in stored form ("black_wins")
+	Origin       string          `json:"origin,omitempty"`
+	Event        string          `json:"event,omitempty"`
+	Site         string          `json:"site,omitempty"`
+	Round        string          `json:"round,omitempty"`
 	Players      PlayersResponse `json:"players"`
 	Moves        []HistoryMove   `json:"moves"`
 }
@@ -154,7 +158,24 @@ type GameSummary struct {
 	StartTimeUTC time.Time       `json:"startTimeUtc"`
 	EndTimeUTC   *time.Time      `json:"endTimeUtc,omitempty"`
 	MoveCount    int             `json:"moveCount"`
+	Origin       string          `json:"origin,omitempty"`
+	Event        string          `json:"event,omitempty"`
 	Players      PlayersResponse `json:"players"`
+}
+
+type ImportGameRequest struct {
+	PGN string `json:"pgn"`
+}
+
+type ImportGameResponse struct {
+	GameID    string `json:"gameId"`
+	MoveCount int    `json:"moveCount"`
+	Result    string `json:"result,omitempty"`
+	PGNResult string `json:"pgnResult"`
+}
+
+type RemoveGameResponse struct {
+	Removed string `json:"removed"` // "game" or "claim"
 }
 
 type GameListResponse struct {

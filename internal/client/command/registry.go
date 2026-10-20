@@ -152,6 +152,7 @@ func (r *Registry) helpHandler(s *session.Session, args []string) error {
 		{"draw", "", ""},
 		{"games", "g", ""},
 		{"pgn", "", ""},
+		{"import", "", ""},
 	}
 
 	replayCommands := []cmdInfo{

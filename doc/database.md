@@ -137,6 +137,14 @@ one-time password-reset link (valid an hour) to hand to someone who cannot
 receive the recovery email. CLI-created accounts are identical to site
 registrations, and the CLI ignores the registration cap.
 
+A game imported from PGN (`POST /api/games/import`, `db game import`) has
+`imported_by` set to its owner, no claims, the PGN's `event`, `site` and
+`round`, and both sides human with the tag names as snapshots. It is listed
+for its owner, never purged as anonymous, and deleted with its moves when the
+owner removes it (`DELETE /api/users/me/games/{id}`) or by `db game delete
+-gameId <id|prefix> -confirm`. A player removes a game they share with
+another registered player by releasing their own claim instead.
+
 Pending password resets live in `password_resets`: the SHA-256 of the token
 in the emailed link, one per account, deleted when used, expired, or by the
 hourly cleanup. The token itself is never stored.

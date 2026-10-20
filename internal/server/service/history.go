@@ -43,6 +43,10 @@ func (s *Service) GetGameHistory(gameID string) (*core.GameHistoryResponse, erro
 		Termination:  record.Termination,
 		StartTimeUTC: record.StartTimeUTC,
 		EndTimeUTC:   record.EndTimeUTC,
+		Origin:       record.Origin(),
+		Event:        record.Event,
+		Site:         record.Site,
+		Round:        record.Round,
 		Players:      playersResponse(*record),
 		Moves:        make([]core.HistoryMove, 0, len(moves)),
 	}
@@ -177,6 +181,8 @@ func (s *Service) GetUserGames(userID string, opts UserGamesOptions) (*core.Game
 			EndTimeUTC:   record.EndTimeUTC,
 			MoveCount:    record.MoveCount,
 			FinalFEN:     record.FinalFEN,
+			Origin:       record.Origin(),
+			Event:        record.Event,
 			Players:      playersResponse(record.GameRecord),
 		})
 	}

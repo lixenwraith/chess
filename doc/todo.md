@@ -141,9 +141,11 @@ Constraints from the host's security headers:
 - `connect-src 'self'`: all requests go to the same origin under `/chess/`
   (the board's default API base, or the host's `data-api`); no CDN or
   cross-origin API.
-- `frame-ancestors 'self'` and `X-Frame-Options: SAMEORIGIN`: the iframe host
-  page must stay on the same origin. Downloads from `blob:` URLs and
-  `navigator.clipboard` work in a same-origin frame.
+- `frame-ancestors 'self'`: the iframe host page must stay on the same
+  origin. No `X-Frame-Options` beside it: browsers that read
+  `frame-ancestors` ignore the header and warn in the console on every page
+  load. Downloads from `blob:` URLs and `navigator.clipboard` work in a
+  same-origin frame.
 
 Test gate:
 
@@ -152,7 +154,10 @@ Test gate:
   step backward and forward with buttons and keys, autoplay to the end,
   compare the exported FEN and PGN with the API, download, copy a link,
   browser back through replay and list; a deep link to a checkmate; the
-  device list for an anonymous visitor.
+  device list for an anonymous visitor; a PGN import replayed and deleted
+  from its row; a phone viewport that holds the board and the controls,
+  with a long replay scrolling inside its move list; a password reset
+  through the emailed link.
 - [x] Keyboard-only navigation and labels: every control is a button with a
   name, the move list is a list of buttons, the current ply has
   `aria-current` and is announced; `prefers-reduced-motion` disables the
@@ -204,14 +209,25 @@ Later for the replay clients:
 - [ ] Email verification at registration and on `set-email`; today an
   address is taken as typed, so a typo sends nobody a link.
 
-## Phase R5 — Curated Archive (later)
+## Phase R5 — Imported and Curated Games
 
-- [ ] Schema: game origin (`player`, `curated`), archive metadata (event, site,
-  date, round, names, Elo, ECO, source URL, license, attribution), publication
-  state, featured order; no user ownership.
-- [ ] `chess-server db archive import <pgn|dir>` using the R1 SAN decoder:
-  validate every move, import each game in one transaction, idempotent by
-  content hash, dry-run and per-file summary.
+Done, per user: a signed-in user imports one PGN game (`POST
+/api/games/import`, **Import PGN** in My games, `import <file>` in the CLI,
+`db game import` for an administrator) into their own list. Schema v5 adds
+`imported_by`, `event`, `site`, `round`; the strict parser
+(`chess.ParsePGN`, fuzzed) refuses anything but one well-formed game, every
+move is replayed by the rules core, and the result must agree with the
+final position. Imported games are never purged as anonymous and are
+deleted by their owner (`DELETE /api/users/me/games/{id}`, the row's delete
+button, `games delete`), as are played games the user alone holds; a game
+shared with another player is released instead.
+
+Later, a curated archive:
+
+- [ ] No user ownership: publication state, featured order, archive metadata
+  (Elo, ECO, source URL, license, attribution).
+- [ ] Bulk import of a PGN file with many games or a directory, idempotent
+  by content hash, dry-run and per-file summary.
 - [ ] Public, bounded, cacheable list endpoint; replay through the same
   history/PGN endpoints.
 - [ ] Verify redistribution rights for every bundled collection.
@@ -223,7 +239,8 @@ Later for the replay clients:
 - [ ] Degraded-mode recovery without a restart (replay missing writes from
   memory or fail gameplay closed); today recovery requires a restart.
 - [ ] Live-game restoration after restart (unfinished games are replay-only).
-- [ ] Retention and user-initiated deletion or anonymization of games.
+- [x] User-initiated deletion of games (R5); retention of played games is
+  the anonymous purge only.
 - [ ] Thread request contexts from HTTP handlers into storage calls; today each
   call carries its own deadline.
 - [x] Draw and resign flows (D5) for live play.

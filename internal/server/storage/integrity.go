@@ -62,9 +62,10 @@ func (s *Store) GameIDsAfter(after string, limit int) ([]string, error) {
 	return ids, collectIDs(rows, func(id string) { ids = append(ids, id) })
 }
 
-// OrphanedGames returns games that registered users claimed but whose
-// claimants were all deleted, idle since cutoff by the anonymous-game rule
-// (start, last move, and end all before it), excluding live games.
+// OrphanedGames returns games that registered users claimed or imported but
+// whose claimants and importer were all deleted, idle since cutoff by the
+// anonymous-game rule (start, last move, and end all before it), excluding
+// live games.
 func (s *Store) OrphanedGames(cutoff time.Time, live []string) ([]string, error) {
 	if live == nil {
 		live = []string{}
@@ -72,10 +73,10 @@ func (s *Store) OrphanedGames(cutoff time.Time, live []string) ([]string, error)
 	ctx, cancel := opContext()
 	defer cancel()
 	rows, err := s.db.QueryContext(ctx, `SELECT g.game_id FROM games g
-		WHERE (g.white_claimed_by IS NOT NULL OR g.black_claimed_by IS NOT NULL)
+		WHERE (g.white_claimed_by IS NOT NULL OR g.black_claimed_by IS NOT NULL OR g.imported_by IS NOT NULL)
 			AND NOT EXISTS (
 				SELECT 1 FROM users u
-				WHERE u.user_id IN (g.white_claimed_by, g.black_claimed_by)
+				WHERE u.user_id IN (g.white_claimed_by, g.black_claimed_by, g.imported_by)
 			)
 			AND g.start_time_utc < $1
 			AND (g.end_time_utc IS NULL OR g.end_time_utc < $1)

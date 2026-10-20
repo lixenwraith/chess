@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"flag"
@@ -26,7 +27,7 @@ const dsnEnv = "CHESS_DSN"
 // Run is the entry point for the CLI mini-app
 func Run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("subcommand required: init, delete, query, pgn, verify, user")
+		return fmt.Errorf("subcommand required: init, delete, query, pgn, verify, game, user")
 	}
 
 	switch args[0] {
@@ -40,6 +41,11 @@ func Run(args []string) error {
 		return runPGN(args[1:])
 	case "verify":
 		return runVerify(args[1:])
+	case "game":
+		if len(args) < 2 {
+			return fmt.Errorf("game subcommand required: delete, import")
+		}
+		return runGame(args[1], args[2:])
 	case "user":
 		if len(args) < 2 {
 			return fmt.Errorf("user subcommand required: add, delete, set-password, set-hash, set-email, set-username, reset-link, list")
@@ -265,6 +271,93 @@ func runVerify(args []string) error {
 	if problems > 0 {
 		return fmt.Errorf("%d problem(s) found", problems)
 	}
+	return nil
+}
+
+func runGame(subcommand string, args []string) error {
+	switch subcommand {
+	case "delete":
+		return runGameDelete(args)
+	case "import":
+		return runGameImport(args)
+	default:
+		return fmt.Errorf("unknown game subcommand: %s", subcommand)
+	}
+}
+
+// runGameDelete removes a stored game and its moves outright, whoever holds
+// it. A live copy in a running server keeps playing in memory until it is
+// unloaded; its later writes find no row and are dropped.
+func runGameDelete(args []string) error {
+	fs, dsn := newFlagSet("game delete")
+	gameID := fs.String("gameId", "", "Game ID or unique prefix of at least 8 hex digits (required)")
+	confirm := fs.Bool("confirm", false, "Confirm deleting the game and its moves")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *gameID == "" {
+		return errors.New("-gameId is required")
+	}
+	if !*confirm {
+		return errors.New("refusing to delete a game without -confirm")
+	}
+
+	store, err := openStore(*dsn, true)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	id, err := resolveGameID(store, *gameID)
+	if err != nil {
+		return err
+	}
+	if err := store.DeleteGames([]string{id}); err != nil {
+		return fmt.Errorf("delete game: %w", err)
+	}
+	if err := store.Flush(context.Background()); err != nil {
+		return fmt.Errorf("delete game: %w", err)
+	}
+	fmt.Printf("Deleted game %s\n", id)
+	return nil
+}
+
+// runGameImport stores a PGN file as a game of the named account, as the
+// API's import does: every move is checked by the rules core.
+func runGameImport(args []string) error {
+	fs, dsn := newFlagSet("game import")
+	file := fs.String("file", "", "PGN file holding one game (required)")
+	username := fs.String("username", "", "Account that will own the game (required)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *file == "" || *username == "" {
+		return errors.New("-file and -username are required")
+	}
+	text, err := os.ReadFile(*file)
+	if err != nil {
+		return err
+	}
+
+	store, err := openStore(*dsn, true)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	ownerID, err := lookupUser(store, *username, "")
+	if err != nil {
+		return err
+	}
+	svc, err := service.New(store, []byte(strings.Repeat("x", 32))) // no tokens are minted here
+	if err != nil {
+		return err
+	}
+	imported, err := svc.ImportGame(ownerID, string(text))
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Imported game %s (%d plies) for %s\n", imported.GameID, imported.Plies, *username)
 	return nil
 }
 
