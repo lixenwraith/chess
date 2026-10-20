@@ -2202,6 +2202,14 @@ function defaultFlip(history) {
     return white?.type === 2 && black?.type !== 2;
 }
 
+// The exit button's text, its short form for a phone's row, and its
+// accessible name for the row that shows the icon alone.
+function setReplayExitLabel(text, short) {
+    $('replay-exit-label').textContent = text;
+    $('replay-exit-short').textContent = short;
+    $('replay-exit').setAttribute('aria-label', text);
+}
+
 function exitReplay({ push = true } = {}) {
     if (!replay.active) return;
     stopAutoplay();
@@ -2221,7 +2229,8 @@ function exitReplay({ push = true } = {}) {
 }
 
 function renderReplayLoading() {
-    $('replay-result').textContent = '';
+    $('replay-score').textContent = '';
+    $('replay-term').textContent = '';
     $('replay-ply').textContent = '';
     $('replay-players').textContent = 'Loading game…';
     $('replay-meta').textContent = replay.gameId || '';
@@ -2229,7 +2238,7 @@ function renderReplayLoading() {
     grid.innerHTML = '';
     $('replay-moves-empty').textContent = 'Loading…';
     setReplayNavEnabled(false);
-    $('replay-exit').textContent = live.gameId ? 'Back to live game' : 'Close replay';
+    setReplayExitLabel(live.gameId ? 'Back to live game' : 'Close replay', live.gameId ? 'Live' : 'Close');
 }
 
 function renderReplayError(message) {
@@ -2250,9 +2259,11 @@ function setReplayNavEnabled(enabled) {
 function renderReplayHead() {
     const h = replay.history;
     const finished = !!h.result;
-    $('replay-result').textContent = finished
-        ? `${h.pgnResult} · ${terminationLabel(h.termination) || describeResult(h.result, h.termination)}`
-        : 'Ongoing';
+    // Score and termination apart: a large-font phone shows the score alone.
+    $('replay-score').textContent = finished ? h.pgnResult : 'Ongoing';
+    $('replay-term').textContent = finished
+        ? ` · ${terminationLabel(h.termination) || describeResult(h.result, h.termination)}`
+        : '';
     $('replay-players').textContent = `${sideLabel(h.players?.white)} vs ${sideLabel(h.players?.black)}`;
     $('replay-players').title = `White: ${sideLabel(h.players?.white)} · Black: ${sideLabel(h.players?.black)}`;
     const plies = h.moves.length;
@@ -2264,7 +2275,7 @@ function renderReplayHead() {
             : `resignation at ply ${h.concession.ply}`);
     }
     $('replay-meta').textContent = meta.join(' · ');
-    $('replay-exit').textContent = live.gameId ? 'Back to live game' : 'Close replay';
+    setReplayExitLabel(live.gameId ? 'Back to live game' : 'Close replay', live.gameId ? 'Live' : 'Close');
     setReplayNavEnabled(true);
 }
 

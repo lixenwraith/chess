@@ -167,7 +167,7 @@ test.describe('web replay', () => {
         await expect(page.locator('#replay-ply')).toHaveText('2 / 4');
         await expect(page.locator('#replay-result')).toContainText('0-1');
         await expect(page.locator('#replay-result')).toContainText('Checkmate');
-        await expect(page.locator('#replay-exit')).toHaveText('Close replay');
+        await expect(page.locator('#replay-exit-label')).toHaveText('Close replay');
         await expect(page.locator('#replay-moves .move').nth(3)).toHaveText('Qh4#');
         await page.keyboard.press('End');
         await expect(page.locator('[data-square="e1"]')).toHaveClass(/mated-king/);
@@ -267,6 +267,16 @@ test.describe('web replay', () => {
         await expect(page.locator('#replay-exit')).toBeInViewport();
         const box = await page.locator('#replay-moves-box').evaluate(el => ({ scrolls: el.scrollHeight > el.clientHeight, atEnd: el.scrollTop > 0 }));
         expect(box).toEqual({ scrolls: true, atEnd: true });
+        // A 1.5x system font (Android font scaling raises the root size): the
+        // board keeps a usable size, the export row shows icons alone and
+        // nothing overflows its button.
+        await page.evaluate(() => { document.documentElement.style.fontSize = '25px'; });
+        expect(await fits()).toEqual({ w: true, h: true });
+        await expect(page.locator('#replay-exit')).toBeInViewport();
+        expect((await page.locator('.board-wrapper').boundingBox()).width).toBeGreaterThanOrEqual(280);
+        await expect(page.locator('#replay-exit-label')).toBeHidden();
+        const clipped = await page.locator('.pane-replay .toolbar > *').evaluateAll(els => els.filter(el => el.scrollWidth > el.clientWidth + 1).length);
+        expect(clipped).toBe(0);
         await context.close();
     });
 
