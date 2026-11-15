@@ -45,7 +45,8 @@ jobs:
           GOOS=js GOARCH=wasm go build -trimpath -o /dev/null ./cmd/chess-client-cli
 
   e2e:
-    runs-on: ubuntu-latest
+    # Playwright 1.57.0 installs no Chromium on ubuntu-26.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     services:
       postgres:
