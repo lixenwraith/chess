@@ -1,6 +1,6 @@
 module github.com/lixenwraith/chess
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/go-playground/validator/v10 v10.30.5
