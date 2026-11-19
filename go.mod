@@ -1,14 +1,14 @@
 module github.com/lixenwraith/chess
 
-go 1.27.3
+go 1.27.4
 
 require (
-	github.com/go-playground/validator/v10 v10.30.5
+	github.com/go-playground/validator/v10 v10.30.6
 	github.com/gofiber/fiber/v2 v2.52.16
 	github.com/google/uuid v1.6.0
-	github.com/jackc/pgx/v5 v5.11.0
-	github.com/lixenwraith/auth v0.5.1
-	golang.org/x/term v0.47.0
+	github.com/jackc/pgx/v5 v5.13.0
+	github.com/lixenwraith/auth v0.5.3
+	golang.org/x/term v0.48.0
 )
 
 require (
@@ -19,8 +19,8 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
-	github.com/jackc/puddle/v2 v2.2.3 // indirect
-	github.com/klauspost/compress v1.20.3 // indirect
+	github.com/jackc/puddle/v2 v2.2.4 // indirect
+	github.com/klauspost/compress v1.20.4 // indirect
 	github.com/leodido/go-urn v1.5.0 // indirect
 	github.com/mattn/go-colorable v0.1.16 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
@@ -29,9 +29,9 @@ require (
 	github.com/philhofer/fwd v1.2.1 // indirect
 	github.com/tinylib/msgp v1.6.5 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
-	github.com/valyala/fasthttp v1.77.0 // indirect
-	golang.org/x/crypto v0.58.0 // indirect
-	golang.org/x/sync v0.24.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
+	github.com/valyala/fasthttp v1.79.0 // indirect
+	golang.org/x/crypto v0.59.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 )
