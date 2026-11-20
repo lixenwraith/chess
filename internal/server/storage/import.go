@@ -29,8 +29,6 @@ func (s *Store) ImportGame(ctx context.Context, record GameRecord, moves []MoveR
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, flushTimeout+writeTimeout)
-	defer cancel()
 	return s.enqueueWait(ctx, "import_game", func(ctx context.Context, tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO games (
 			game_id, initial_fen,
@@ -82,8 +80,6 @@ func (s *Store) RemoveGameForUser(ctx context.Context, gameID, userID string) (R
 		return "", sql.ErrNoRows
 	}
 	var outcome RemovalOutcome
-	ctx, cancel := context.WithTimeout(ctx, flushTimeout+writeTimeout)
-	defer cancel()
 	// A missing row or a game the user holds nothing in is an answer, not a
 	// failed write: the transaction then changes nothing and outcome stays
 	// empty, so the writer is never degraded by it.

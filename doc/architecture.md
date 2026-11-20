@@ -54,13 +54,15 @@ error, or a full queue marks storage degraded; live play remains available in
 memory and `/health` reports that durable history may be incomplete.
 
 Synchronous operations run under the caller's context (a request's, the
-cleanup job's) and are bounded to five seconds each; queued writes keep the
-writer's own deadline, so a request that ends cannot abort a write it
-caused. The pool holds at most ten
-connections (five idle). The schema is resolved through `search_path`, so the
-role default (`chess`) or a DSN parameter selects it. `InitDB` applies ordered,
-transactional migrations under an advisory lock and issues no DDL when the
-schema is current, which lets a DML-only runtime role start the server.
+cleanup job's): five seconds a query, ten for the sweep's flush and account
+purge. Queued writes keep the writer's own deadline. A caller that has ended
+queues nothing; once queued, a write runs and its caller (import, removal,
+account deletion) waits up to fifteen seconds for the outcome. The pool holds
+at most ten connections (five idle). The schema is resolved through
+`search_path`, so the role default (`chess`) or a DSN parameter selects it.
+`InitDB` applies ordered, transactional migrations under an advisory lock and
+issues no DDL when the schema is current, which lets a DML-only runtime role
+start the server.
 
 ### Supporting Modules
 - **Engine** (`internal/server/engine`): UCI protocol wrapper for Stockfish process communication

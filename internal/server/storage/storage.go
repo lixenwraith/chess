@@ -284,8 +284,9 @@ func (s *Store) enqueue(operation, gameID string, fn func(context.Context, *sql.
 }
 
 // enqueueWait queues fn on the ordered writer and waits for its own outcome,
-// for a write that must be ordered after queued gameplay writes and must also
-// report success only once it is durable.
+// for a write ordered after queued gameplay writes that reports success only
+// once durable. ctx decides whether it is queued; a queued write runs anyway,
+// so the wait for it ends at the writer's bound, never at a cancel.
 func (s *Store) enqueueWait(ctx context.Context, operation string, fn func(context.Context, *sql.Tx) error) error {
 	s.enqueueMu.RLock()
 	if s.closed.Load() {
@@ -295,6 +296,10 @@ func (s *Store) enqueueWait(ctx context.Context, operation string, fn func(conte
 	if !s.healthStatus.Load() {
 		s.enqueueMu.RUnlock()
 		return ErrStorageDegraded
+	}
+	if err := ctx.Err(); err != nil {
+		s.enqueueMu.RUnlock()
+		return err
 	}
 
 	done := make(chan error, 1)
@@ -306,11 +311,13 @@ func (s *Store) enqueueWait(ctx context.Context, operation string, fn func(conte
 		return ctx.Err()
 	}
 
+	timer := time.NewTimer(flushTimeout + writeTimeout)
+	defer timer.Stop()
 	select {
 	case err := <-done:
 		return err
-	case <-ctx.Done():
-		return ctx.Err()
+	case <-timer.C:
+		return fmt.Errorf("%s: %w", operation, context.DeadlineExceeded)
 	}
 }
 

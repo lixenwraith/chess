@@ -250,6 +250,11 @@ func (h *HTTPHandler) GetCurrentUserHandler(c *fiber.Ctx) error {
 	}
 
 	user, err := h.svc.GetUserByID(c.UserContext(), userID)
+	if errors.Is(err, service.ErrStorageUnavailable) {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+			Error: "account storage unavailable", Code: core.ErrStorageUnavailable,
+		})
+	}
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(core.ErrorResponse{
 			Error: "user not found",
@@ -276,7 +281,13 @@ func (h *HTTPHandler) LogoutHandler(c *fiber.Ctx) error {
 		})
 	}
 
-	if err := h.svc.InvalidateSession(c.UserContext(), sessionID); err != nil {
+	err := h.svc.InvalidateSession(c.UserContext(), sessionID)
+	if errors.Is(err, service.ErrStorageUnavailable) {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+			Error: "account storage unavailable", Code: core.ErrStorageUnavailable,
+		})
+	}
+	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
 			Error: "failed to logout",
 			Code:  core.ErrInternalError,

@@ -52,8 +52,9 @@ type Options struct {
 	ProxyHeader string
 	// Version is the build identifier /health reports.
 	Version string
-	// Context is the server's lifetime: cancelling it ends the database work
-	// of every request still running. Nil means context.Background().
+	// Context is the server's lifetime: cancelling it ends the storage calls
+	// of every request still running, not writes already queued. Nil means
+	// context.Background().
 	Context context.Context
 }
 

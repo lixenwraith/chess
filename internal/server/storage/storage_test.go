@@ -906,6 +906,49 @@ func TestDeleteAccountClearsClaimsAndNames(t *testing.T) {
 	}
 }
 
+// TestCallerContextGatesQueuingNotAQueuedWrite: an ended caller queues no
+// write, and one cancelled while its write waits still learns its outcome.
+func TestCallerContextGatesQueuingNotAQueuedWrite(t *testing.T) {
+	store := openStore(t, pgtest.DSN(t))
+	insert := func(ctx context.Context, tx *sql.Tx) error {
+		id := uuid.NewString()
+		_, err := tx.ExecContext(ctx, `INSERT INTO users (user_id, username, password_hash, created_at)
+			VALUES ($1, $2, 'hash', now())`, id, "u"+id[:8])
+		return err
+	}
+	users := func() (n int) {
+		if err := store.db.QueryRow(`SELECT count(*) FROM users`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	ended, cancel := context.WithCancel(t.Context())
+	cancel()
+	for range 20 {
+		if err := store.enqueueWait(ended, "ended", insert); !errors.Is(err, context.Canceled) {
+			t.Fatalf("ended caller: %v", err)
+		}
+	}
+	if err := store.Flush(t.Context()); err != nil || users() != 0 {
+		t.Fatalf("an ended caller queued writes: %d users, %v", users(), err)
+	}
+
+	lock, err := store.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lock.Exec(`LOCK TABLE users IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	time.AfterFunc(300*time.Millisecond, func() { lock.Rollback() })
+	if err := store.enqueueWait(ctx, "cancelled", insert); err != nil || users() != 1 {
+		t.Fatalf("cancelled caller of a committed write: %v, %d users", err, users())
+	}
+}
+
 func timePointer(value time.Time) *time.Time {
 	return &value
 }

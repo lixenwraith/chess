@@ -139,9 +139,6 @@ func (s *Store) DeleteAccount(ctx context.Context, userID string) error {
 	// barrier channel orders the two. A missing row is an answer, not a
 	// failed write, so it must not degrade the writer.
 	var deleted int64
-	// Behind the queue, then its own transaction.
-	ctx, cancel := context.WithTimeout(ctx, flushTimeout+writeTimeout)
-	defer cancel()
 	err := s.enqueueWait(ctx, "delete_account", func(ctx context.Context, tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `UPDATE games SET
 				white_claimed_by = CASE WHEN white_claimed_by = $1 THEN NULL ELSE white_claimed_by END,
