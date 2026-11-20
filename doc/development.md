@@ -165,38 +165,31 @@ run against a missing or outdated schema.
 ```
 chess/
 ├── cmd/
-│   ├── chess-server/            # Server app
-│   │   ├── main.go              # Server entry point
-│   │   ├── pid.go               # PID file management
-│   │   └── cli/                 # Database and user CLI
-│   └── chess-client/            # Client app
-│       └── main.go              # Interactive debugging client
+│   ├── chess-server/            # Server: entry point, PID file, proxies, JWT key
+│   │   └── cli/                 # db subcommands: schema, users, games, PGN
+│   └── chess-client-cli/        # Terminal client, native and WASM
 ├── internal/
-│   ├── client/                  # Client components
-│   │   ├── api/                 # HTTP client for server API
-│   │   ├── commands/            # Command registry and handlers
-│   │   ├── display/             # Terminal output formatting
-│   │   └── session/             # Session state management
-│   └── server/                  # Server components
-│       ├── board/               # FEN/ASCII operations
-│       ├── core/                # Shared types and API models
+│   ├── client/                  # Terminal client
+│   │   ├── api/                 # HTTP client for the server API
+│   │   ├── command/             # Command registry and handlers
+│   │   ├── display/             # Terminal output, board, pager
+│   │   ├── replay/              # Stepping through a stored game
+│   │   └── session/             # Session state
+│   └── server/
+│       ├── chess/               # Rules core: FEN, moves, SAN, PGN, draw rules
+│       ├── core/                # Shared types, API models, error codes
 │       ├── engine/              # Stockfish UCI wrapper
-│       ├── game/                # Game state with player associations
-│       ├── http/                # Fiber handlers and auth endpoints
-│       │   ├── handler.go       # Game endpoints
-│       │   ├── auth.go          # Authentication endpoints
-│       │   └── middleware.go    # JWT validation
-│       ├── processor/           # Command processing with user context
-│       ├── service/             # State and user management
-│       │   ├── service.go       # Core service
-│       │   ├── game.go          # Game operations
-│       │   └── user.go          # User and auth operations
-│       └── storage/             # PostgreSQL persistence (pgtest: per-test schemas)
-│           ├── storage.go       # Async writer for games
-│           ├── game.go          # Game persistence
-│           ├── user.go          # User persistence (synchronous)
-│           └── schema.go        # Database schema
-└── test/                        # Test scripts
+│       ├── game/                # Live game state and claims
+│       ├── http/                # Fiber routes, handlers, auth, middleware
+│       ├── mail/                # Password-reset email
+│       ├── processor/           # Command execution, engine queue
+│       ├── replay/              # Stored games: SAN, PGN, verification
+│       ├── service/             # Live games, users, sessions, cleanup
+│       ├── storage/             # PostgreSQL persistence (pgtest: per-test schemas)
+│       └── webserver/           # Embedded web client
+├── web/chess-client-wasm/       # Page that runs the WASM terminal client
+├── deploy/                      # FreeBSD jail, Linux systemd, nginx, PostgreSQL
+└── test/                        # Shell suites and Playwright end-to-end
 ```
 
 ## Testing
@@ -233,18 +226,18 @@ CHESS_E2E_MAIL_DIR=/tmp/chess-mail make test-e2e                 # terminal 2
 ## Configuration
 
 ### Fixed Values
-- Engine path: `"stockfish"` (internal/engine/engine.go)
-- Worker count: 2 (internal/processor/processor.go)
-- Queue capacity: 100 (internal/processor/queue.go)
-- Min search time: 100ms (internal/processor/processor.go)
+- Engine path: `"stockfish"` (internal/server/engine/engine.go)
+- Worker count: 2 (internal/server/processor/processor.go)
+- Queue capacity: 100 (internal/server/processor/queue.go)
+- Min search time: 100ms (internal/server/processor/processor.go)
 - Write queue: 1000 operations (internal/server/storage/storage.go)
 - DB connections: 10 max, 5 idle (internal/server/storage/storage.go)
 - DB operation deadline: 5 seconds; write transactions 10 seconds
 - Transient write retries: 6 attempts, 100 ms doubling backoff
-- JWT expiration: 7 days (internal/service/user.go)
-- Concurrent Argon2id derivations: 4, five-second wait (internal/service/user.go)
+- JWT expiration: 7 days (internal/server/service/service.go)
+- Concurrent Argon2id derivations: 4, five-second wait (internal/server/service/user.go)
 - Long-poll timeout: 30 seconds (internal/server/service/waiter.go)
-- Long-poll channel buffer: 1 (internal/service/waiter.go)
+- Long-poll channel buffer: 1 (internal/server/service/waiter.go)
 
 ### Authentication Configuration
 - Password minimum: 8 characters with letter and number

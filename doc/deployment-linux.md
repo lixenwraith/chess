@@ -217,7 +217,7 @@ test/run-test-server.sh bin/chess-server     # then test/test-*.sh in another te
 systemctl is-active chessd                                  # active
 curl -s http://127.0.0.1:8080/health                        # "storage":"ok"
 ps -o user= -C chess-server                                 # chess
-sudo -u postgres psql -X -d chess -c '\dt chess.*'          # five tables
+sudo -u postgres psql -X -d chess -c '\dt chess.*'          # six tables
 sudo chess-db verify                                        # 0 problem(s)
 sudo -u chess psql -X -d chess -Atc 'SHOW search_path'     # chess
 ```

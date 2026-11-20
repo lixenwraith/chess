@@ -263,8 +263,9 @@ entry is empty only for a move it cannot notate, which the server logs).
 
 **Timeout behavior:**
 - Returns current state after 30 seconds even if no changes
-- Client disconnection cancels wait immediately
-- Game deletion notifies all waiting clients
+- Game deletion notifies all waiting clients; server shutdown ends the wait
+- A client that disconnects is not noticed: the server holds its wait until
+  one of the above
 
 ### Get Durable Game History
 `GET /games/{gameId}/history`

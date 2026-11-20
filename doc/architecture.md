@@ -17,10 +17,10 @@ games leave memory after an hour while their durable rows remain; games with
 no registered player leave memory and the database 24 hours after their last
 activity (see Retention below).
 
-#### Long-Polling Registry (`internal/service/waiter.go`)
+#### Long-Polling Registry (`internal/server/service/waiter.go`)
 Manages clients waiting for game state changes via HTTP long-polling. Tracks move counts per client, sends notifications on state changes, enforces 30-second timeout. Non-blocking notification pattern handles slow clients gracefully. Coordinates with service layer for game updates and deletion events.
 
-#### Authentication Module (`internal/service/user.go`, `internal/http/auth.go`)
+#### Authentication Module (`internal/server/service/user.go`, `internal/server/http/auth.go`)
 - **Password Hashing**: Argon2id (`lixenwraith/auth`), at most four concurrent
   derivations; unknown accounts verify against a dummy hash for equal timing
 - **JWT Management**: one scoped `auth.JWT` manager (HS256, issuer
@@ -55,8 +55,8 @@ transactional migrations under an advisory lock and issues no DDL when the
 schema is current, which lets a DML-only runtime role start the server.
 
 ### Supporting Modules
-- **Engine** (`internal/engine`): UCI protocol wrapper for Stockfish process communication
-- **Game** (`internal/game`): Game state with snapshot history and player associations
+- **Engine** (`internal/server/engine`): UCI protocol wrapper for Stockfish process communication
+- **Game** (`internal/server/game`): Game state with snapshot history and player associations
 - **Rules core** (`internal/server/chess`): dependency-free position model,
   legal move generation, SAN, PGN, ASCII board, dead-material and repetition
   detection. It validates custom starting FENs, applies the automatic draw
@@ -65,7 +65,11 @@ schema is current, which lets a DML-only runtime role start the server.
 - **Replay** (`internal/server/replay`): works on stored game records: SAN
   for every ply, PGN assembly with the termination comment, and verification
   against the rules (used by `db verify`, `db pgn`, and the integrity sweep)
-- **Core** (`internal/core`): Shared types, API models, error constants
+- **Mail** (`internal/server/mail`): password-reset email through an SMTP
+  relay, or `.eml` files in development
+- **Web server** (`internal/server/webserver`): serves the embedded web client
+  (`-serve`)
+- **Core** (`internal/server/core`): Shared types, API models, error constants
 - **CLI** (`cmd/chess-server/cli`): Database and user management commands
 - **Client** (`cmd/chess-client-cli`, `internal/client`): Interactive debugging client with command registry, session management, and colored terminal output
 
@@ -131,13 +135,14 @@ schema is current, which lets a DML-only runtime role start the server.
 
 ### Long-Polling Flow
 1. Client sends `GET /games/{id}?wait=true&moveCount=N`
-2. Handler creates context from HTTP connection
-3. Registers wait with WaitRegistry using game ID and move count
-4. If game state unchanged, blocks up to 30 seconds
-5. On any game update, NotifyGame sends to all waiters
-6. Returns immediately with current state
-7. Client disconnection cancels wait via context
-8. Game deletion notifies and removes all waiters
+2. Registers wait with WaitRegistry using game ID and move count
+3. If game state unchanged, blocks up to 30 seconds
+4. On any game update, NotifyGame sends to all waiters
+5. Returns immediately with current state
+6. Game deletion notifies and removes all waiters; server shutdown ends the
+   wait
+7. A client that disconnects is not noticed (fasthttp reports no disconnect
+   to a running handler): its wait ends by one of the above
 
 ### Durable Replay Read
 1. Client requests `GET /api/games/{id}/history`
@@ -237,7 +242,7 @@ Commands encapsulate operations with type, arguments, and optional user ID for a
 ### Player Configuration
 Players identified by UUID (authenticated users) or generated IDs (anonymous), configured with type (human/computer), skill level, and search time.
 
-### Storage Schema (version 3)
+### Storage Schema (version 5)
 ```sql
 users (
     user_id uuid PRIMARY KEY,
@@ -274,7 +279,16 @@ games (
     concession_result text,                 -- first resignation (win) or agreed draw,
     concession_termination text,            --   kept when an undo continues play
     concession_ply integer,                 --   against the computer; all four set
-    concession_time_utc timestamptz         --   together or all NULL
+    concession_time_utc timestamptz,        --   together or all NULL
+    imported_by uuid,                       -- account that imported it from PGN
+    event text, site text, round text       -- the imported PGN's tags
+)
+
+password_resets (
+    user_id uuid PRIMARY KEY REFERENCES users ON DELETE CASCADE,
+    token_hash bytea NOT NULL UNIQUE,       -- SHA-256 of the emailed token
+    created_at timestamptz NOT NULL,
+    expires_at timestamptz NOT NULL         -- an hour after creation
 )
 
 moves (
@@ -292,9 +306,12 @@ moves (
 `termination`, constrained to be set exactly with `result` and to fit it
 (wins by checkmate or resignation, draws by a draw rule or agreement).
 Version 3 added the `concession_*` columns: a rewind clears `result` and
-`termination` but keeps them, and the first concession is never overwritten. Indexes cover session expiry,
-each claim column ordered by `(start_time_utc DESC, game_id DESC)` for the game
-listing, and the start time of unclaimed games for the anonymous-game purge.
+`termination` but keeps them, and the first concession is never overwritten.
+Version 4 added `password_resets`, one pending reset per account; version 5
+the import columns. Indexes cover session and reset expiry, each claim column
+and `imported_by` ordered by `(start_time_utc DESC, game_id DESC)` for the
+game listing, and the start time of games with neither claim nor importer for
+the anonymous-game purge.
 Claims and player IDs deliberately have no foreign key to `users`: history
 outlives deleted accounts, and the name snapshot keeps it readable.
 

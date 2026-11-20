@@ -336,13 +336,11 @@ Each storage call makes its own deadline from `context.Background()`
 never reaches the database. Under Fiber v2 the request context is fasthttp's
 `RequestCtx`, whose `Done` closes only at server shutdown: a disconnecting
 client cancels nothing, and an abandoned long-poll holds its waiter for the
-full 30 seconds. architecture.md (Long-Polling Flow, step 7) and api.md (Get
-Game) say a disconnect cancels the wait; it does not.
+full 30 seconds.
 
 - A context from the handler through `processor.Command`, the service and
   storage, replacing `opContext` at each call; the handler's context carries
   a per-request deadline and shutdown.
-- Correct the two doc claims now, independently of the refactor.
 - Cancellation on disconnect needs net/http, whose request context ends with
   the connection; leaving Fiber is its own decision, not part of this item.
 
