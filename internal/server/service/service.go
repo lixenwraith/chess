@@ -30,7 +30,6 @@ const (
 	IdleGameTTL = 7 * 24 * time.Hour
 )
 
-// Service coordinates game state, user management, and storage
 type Service struct {
 	games        map[string]*game.Game
 	mu           sync.RWMutex
@@ -120,7 +119,6 @@ func (s *Service) SetMaxUsers(limit int) {
 	s.maxUsers.Store(int64(max(limit, 0)))
 }
 
-// GetStorageHealth returns the storage component status
 func (s *Service) GetStorageHealth() string {
 	if s.store == nil {
 		return "disabled"
@@ -131,7 +129,6 @@ func (s *Service) GetStorageHealth() string {
 	return "degraded"
 }
 
-// RegisterWait registers a client to wait for game state changes
 func (s *Service) RegisterWait(gameID string, moveCount int, ctx context.Context) <-chan struct{} {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -149,7 +146,6 @@ func (s *Service) EndWaits(timeout time.Duration) error {
 	return s.waiter.Shutdown(timeout)
 }
 
-// Shutdown gracefully shuts down the service
 func (s *Service) Shutdown(timeout time.Duration) error {
 	var errs []error
 

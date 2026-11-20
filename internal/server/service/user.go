@@ -43,7 +43,6 @@ var dummyPasswordHash = sync.OnceValues(func() (string, error) {
 	return auth.HashPassword(uuid.NewString())
 })
 
-// User represents a registered user account
 type User struct {
 	UserID    string
 	Username  string
@@ -193,7 +192,6 @@ func (s *Service) AuthenticateUser(ctx context.Context, identifier, password str
 	}, sessionID, nil
 }
 
-// InvalidateSession removes a session (logout)
 func (s *Service) InvalidateSession(ctx context.Context, sessionID string) error {
 	if s.store == nil {
 		return ErrStorageDisabled
@@ -251,7 +249,6 @@ func (s *Service) releaseClaims(userID string) int {
 	return released
 }
 
-// GetUserByID retrieves user information by user ID
 func (s *Service) GetUserByID(ctx context.Context, userID string) (*User, error) {
 	if s.store == nil {
 		return nil, ErrStorageDisabled
@@ -280,7 +277,7 @@ func (s *Service) GenerateUserToken(userID, sessionID string) (string, error) {
 	return s.jwt.GenerateToken(userID, map[string]any{"session_id": sessionID})
 }
 
-// ValidateToken verifies JWT token and session validity
+// ValidateToken also requires a live session that belongs to the token's subject.
 func (s *Service) ValidateToken(ctx context.Context, token string) (string, map[string]any, error) {
 	userID, claims, err := s.jwt.ValidateToken(token)
 	if err != nil {

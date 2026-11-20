@@ -32,7 +32,6 @@ func (s *Store) CreateSession(ctx context.Context, record SessionRecord) error {
 	return nil
 }
 
-// GetSession retrieves a session by ID
 func (s *Store) GetSession(ctx context.Context, sessionID string) (*SessionRecord, error) {
 	if !validUUID(sessionID) {
 		return nil, sql.ErrNoRows
@@ -67,7 +66,6 @@ func (s *Store) DeleteSession(ctx context.Context, sessionID string) error {
 	return nil
 }
 
-// DeleteExpiredSessions removes expired sessions
 func (s *Store) DeleteExpiredSessions(ctx context.Context) (int64, error) {
 	ctx, cancel := opContext(ctx)
 	defer cancel()

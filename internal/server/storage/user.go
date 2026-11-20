@@ -19,7 +19,6 @@ const userCreateLockKey int64 = 0x6368657375 // "chesu"
 
 const userSelectColumns = `user_id, username, email, password_hash, created_at, last_login_at`
 
-// UserLimits defines public-registration constraints.
 type UserLimits struct {
 	MaxUsers int // total accounts at which registration closes
 }
@@ -166,7 +165,6 @@ func (s *Store) DeleteAccount(ctx context.Context, userID string) error {
 	return nil
 }
 
-// UpdateUserPassword updates user password hash
 func (s *Store) UpdateUserPassword(ctx context.Context, userID, passwordHash string) error {
 	return s.execUserUpdate(ctx, `UPDATE users SET password_hash = $2 WHERE user_id = $1`,
 		userID, passwordHash)
@@ -178,7 +176,6 @@ func (s *Store) UpdateUserEmail(ctx context.Context, userID, email string) error
 		userID, nullableString(email))
 }
 
-// UpdateUserUsername updates username
 func (s *Store) UpdateUserUsername(ctx context.Context, userID, username string) error {
 	return s.execUserUpdate(ctx, `UPDATE users SET username = lower($2) WHERE user_id = $1`,
 		userID, username)
@@ -238,7 +235,6 @@ func (s *Store) GetUserByEmail(ctx context.Context, email string) (*UserRecord, 
 	return s.getUser(ctx, `email = lower($1)`, email)
 }
 
-// GetUserByID retrieves user by unique user ID
 func (s *Store) GetUserByID(ctx context.Context, userID string) (*UserRecord, error) {
 	if !validUUID(userID) {
 		return nil, sql.ErrNoRows

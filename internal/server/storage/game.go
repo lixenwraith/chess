@@ -623,12 +623,12 @@ func isValidResult(result string) bool {
 	}
 }
 
-// validTermination mirrors the games_termination_check constraint.
 // isConcession reports a result the players chose (core.Termination.IsConcession).
 func isConcession(termination string) bool {
 	return termination == "resignation" || termination == "agreement"
 }
 
+// validTermination mirrors the games_termination_check constraint.
 func validTermination(result, termination string) bool {
 	switch result {
 	case "white_wins", "black_wins":

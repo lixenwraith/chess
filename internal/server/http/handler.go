@@ -28,7 +28,6 @@ const (
 	requestTimeout = 35 * time.Second
 )
 
-// HTTPHandler handles HTTP requests and routes them to the processor
 type HTTPHandler struct {
 	proc    *processor.Processor
 	svc     *service.Service
@@ -39,7 +38,6 @@ func NewHTTPHandler(proc *processor.Processor, svc *service.Service, version str
 	return &HTTPHandler{proc: proc, svc: svc, version: version}
 }
 
-// Options configures the API application.
 type Options struct {
 	DevMode     bool
 	LogRequests bool
@@ -87,11 +85,9 @@ func clientIP(c *fiber.Ctx) string {
 }
 
 func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) *fiber.App {
-	// Create handler
 	h := NewHTTPHandler(proc, svc, opts.Version)
 	devMode := opts.DevMode
 
-	// Initialize Fiber app
 	app := fiber.New(appConfig(opts))
 
 	// fasthttp's own context ends only at shutdown, and a disconnect cancels
@@ -126,16 +122,12 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 		ExposeHeaders: "ETag,Content-Disposition",
 	}))
 
-	// Health check (no rate limit)
 	app.Get("/health", h.Health)
 
-	// API routes
 	api := app.Group("/api")
 
-	// Auth routes with specific rate limiting
 	auth := api.Group("/auth")
 
-	// Register: 5 req/min per IP
 	auth.Post("/register", limiter.New(limiter.Config{
 		Max:          5,
 		Expiration:   1 * time.Minute,
@@ -149,7 +141,6 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 		},
 	}), h.RegisterHandler)
 
-	// Login: 10 req/min per IP
 	auth.Post("/login", limiter.New(limiter.Config{
 		Max:          10,
 		Expiration:   1 * time.Minute,
@@ -190,18 +181,14 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 		},
 	}), h.ResetPasswordHandler)
 
-	// Create token validator closure
 	validateToken := svc.ValidateToken
 
-	// Current user (requires auth)
 	auth.Get("/me", AuthRequired(validateToken), h.GetCurrentUserHandler)
 
-	// Logout
 	auth.Post("/logout", AuthRequired(validateToken), h.LogoutHandler)
 
-	// Delete own account: 5 req/min per IP. It takes a password, so it is
-	// limited like login; authentication runs first, so only a signed-in
-	// caller reaches the password check.
+	// It takes a password, so it is limited like login; authentication runs
+	// first, so only a signed-in caller reaches the password check.
 	auth.Delete("/me", AuthRequired(validateToken), limiter.New(limiter.Config{
 		Max:          5,
 		Expiration:   1 * time.Minute,
@@ -215,7 +202,6 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 		},
 	}), h.DeleteAccountHandler)
 
-	// Game routes with standard rate limiting
 	maxReq := rateLimitRate
 	if devMode {
 		maxReq = rateLimitRate * 2
@@ -233,13 +219,10 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 		},
 	}))
 
-	// Content-Type validation for POST and PUT requests
 	api.Use(contentTypeValidator)
 
-	// Middleware validation for sanitization
 	api.Use(validationMiddleware)
 
-	// Register game routes with auth middleware
 	api.Post("/games", OptionalAuth(validateToken), h.CreateGame) // Optional auth for player ID association
 	api.Get("/games/:gameId/history", h.GetGameHistory)
 	api.Get("/games/:gameId/pgn", h.GetGamePGN)
@@ -270,7 +253,6 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 	return app
 }
 
-// contentTypeValidator ensures POST and PUT requests have application/json
 func contentTypeValidator(c *fiber.Ctx) error {
 	method := c.Method()
 	if method == fiber.MethodPost || method == fiber.MethodPut {
@@ -286,7 +268,6 @@ func contentTypeValidator(c *fiber.Ctx) error {
 	return c.Next()
 }
 
-// customErrorHandler provides consistent error responses
 func customErrorHandler(c *fiber.Ctx, err error) error {
 	code := fiber.StatusInternalServerError
 	response := core.ErrorResponse{
@@ -294,12 +275,10 @@ func customErrorHandler(c *fiber.Ctx, err error) error {
 		Code:  core.ErrInternalError,
 	}
 
-	// Check if it's a Fiber error
 	if e, ok := err.(*fiber.Error); ok {
 		code = e.Code
 		response.Error = e.Message
 
-		// Map HTTP status to error codes
 		// An unknown route is not a missing game: a client newer than the
 		// server must not report "game not found" for an endpoint the server
 		// predates.
@@ -316,7 +295,6 @@ func customErrorHandler(c *fiber.Ctx, err error) error {
 	return c.Status(code).JSON(response)
 }
 
-// Health check endpoint with storage status
 func (h *HTTPHandler) Health(c *fiber.Ctx) error {
 	storageHealth := h.svc.GetStorageHealth()
 	status := "healthy"
@@ -332,9 +310,7 @@ func (h *HTTPHandler) Health(c *fiber.Ctx) error {
 	})
 }
 
-// CreateGame creates a new game with specified player types
 func (h *HTTPHandler) CreateGame(c *fiber.Ctx) error {
-	// Ensure middleware validation ran
 	validated, ok := c.Locals("validated").(bool)
 	if !ok || !validated {
 		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
@@ -343,7 +319,6 @@ func (h *HTTPHandler) CreateGame(c *fiber.Ctx) error {
 		})
 	}
 
-	// Retrieve validated parsed body
 	validatedBody := c.Locals("validatedBody")
 	if validatedBody == nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
@@ -354,16 +329,13 @@ func (h *HTTPHandler) CreateGame(c *fiber.Ctx) error {
 	var req core.CreateGameRequest
 	req = *(validatedBody.(*core.CreateGameRequest))
 
-	// Retrieve authenticated user ID if available
 	userID, _ := c.Locals("userID").(string)
 
-	// Generate game ID via service with optional user context
 	cmd := processor.NewCreateGameCommand(req)
-	cmd.UserID = userID // Add user ID to command if authenticated
+	cmd.UserID = userID
 
 	resp := h.proc.Execute(cmd)
 
-	// Return appropriate HTTP response
 	if !resp.Success {
 		return c.Status(fiber.StatusBadRequest).JSON(resp.Error)
 	}
@@ -371,11 +343,9 @@ func (h *HTTPHandler) CreateGame(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(resp.Data)
 }
 
-// ConfigurePlayers updates player configuration mid-game
 func (h *HTTPHandler) ConfigurePlayers(c *fiber.Ctx) error {
 	gameID := c.Params("gameId")
 
-	// Validate UUID format
 	if !isValidUUID(gameID) {
 		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
 			Error:   "invalid game ID format",
@@ -384,7 +354,6 @@ func (h *HTTPHandler) ConfigurePlayers(c *fiber.Ctx) error {
 		})
 	}
 
-	// Ensure middleware validation ran
 	validated, ok := c.Locals("validated").(bool)
 	if !ok || !validated {
 		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
@@ -393,7 +362,6 @@ func (h *HTTPHandler) ConfigurePlayers(c *fiber.Ctx) error {
 		})
 	}
 
-	// Retrieve validated parsed body
 	validatedBody := c.Locals("validatedBody")
 	if validatedBody == nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
@@ -404,12 +372,10 @@ func (h *HTTPHandler) ConfigurePlayers(c *fiber.Ctx) error {
 	var req core.ConfigurePlayersRequest
 	req = *(validatedBody.(*core.ConfigurePlayersRequest))
 
-	// Create command and execute
 	cmd := processor.NewConfigurePlayersCommand(gameID, req)
 	cmd.UserID, _ = c.Locals("userID").(string)
 	resp := h.proc.Execute(cmd)
 
-	// Return appropriate HTTP response
 	if !resp.Success {
 		return c.Status(statusForCode(resp.Error.Code)).JSON(resp.Error)
 	}
@@ -417,11 +383,9 @@ func (h *HTTPHandler) ConfigurePlayers(c *fiber.Ctx) error {
 	return c.JSON(resp.Data)
 }
 
-// GetGame retrieves current game state
 func (h *HTTPHandler) GetGame(c *fiber.Ctx) error {
 	gameID := c.Params("gameId")
 
-	// Validate UUID format
 	if !isValidUUID(gameID) {
 		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
 			Error:   "invalid game ID format",
@@ -430,17 +394,13 @@ func (h *HTTPHandler) GetGame(c *fiber.Ctx) error {
 		})
 	}
 
-	// Check for long-polling parameters
 	waitStr := c.Query("wait", "false")
 	moveCountStr := c.Query("moveCount", "-1")
 
-	// Non-wait path - existing behavior
 	if waitStr != "true" {
-		// Create command and execute
 		cmd := processor.NewGetGameCommand(gameID)
 		resp := h.proc.Execute(cmd)
 
-		// Return appropriate HTTP response
 		if !resp.Success {
 			return c.Status(fiber.StatusNotFound).JSON(resp.Error)
 		}
@@ -448,13 +408,11 @@ func (h *HTTPHandler) GetGame(c *fiber.Ctx) error {
 		return c.JSON(resp.Data)
 	}
 
-	// Long-polling path
 	moveCount, err := strconv.Atoi(moveCountStr)
 	if err != nil {
 		moveCount = -1
 	}
 
-	// First check if game exists and get current state
 	g, err := h.svc.GetGameView(gameID)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(core.ErrorResponse{
@@ -466,7 +424,6 @@ func (h *HTTPHandler) GetGame(c *fiber.Ctx) error {
 	currentMoveCount := len(g.Moves)
 	st := g.State
 	settled := st != core.StateOngoing && st != core.StatePending
-	// If move count already different, return immediately
 	if moveCount != currentMoveCount || settled {
 		cmd := processor.NewGetGameCommand(gameID)
 		resp := h.proc.Execute(cmd)
@@ -482,7 +439,6 @@ func (h *HTTPHandler) GetGame(c *fiber.Ctx) error {
 	// notify closes on a change, after 30 s, or when shutdown ends the waits.
 	select {
 	case <-notify:
-		// State changed or timeout, get fresh game state
 		cmd := processor.NewGetGameCommand(gameID)
 		resp := h.proc.Execute(cmd)
 
@@ -498,7 +454,6 @@ func (h *HTTPHandler) GetGame(c *fiber.Ctx) error {
 	}
 }
 
-// MakeMove submits a move
 func (h *HTTPHandler) MakeMove(c *fiber.Ctx) error {
 	gameID := c.Params("gameId")
 
@@ -528,11 +483,10 @@ func (h *HTTPHandler) MakeMove(c *fiber.Ctx) error {
 	var req core.MoveRequest
 	req = *(validatedBody.(*core.MoveRequest))
 
-	// Get authenticated user ID if present
 	userID, _ := c.Locals("userID").(string)
 
 	cmd := processor.NewMakeMoveCommand(gameID, req)
-	cmd.UserID = userID // Pass user context for authorization
+	cmd.UserID = userID
 
 	resp := h.proc.Execute(cmd)
 
@@ -554,11 +508,9 @@ func (h *HTTPHandler) MakeMove(c *fiber.Ctx) error {
 	return c.JSON(resp.Data)
 }
 
-// UndoMove undoes one or more moves
 func (h *HTTPHandler) UndoMove(c *fiber.Ctx) error {
 	gameID := c.Params("gameId")
 
-	// Validate UUID format
 	if !isValidUUID(gameID) {
 		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
 			Error:   "invalid game ID format",
@@ -567,7 +519,6 @@ func (h *HTTPHandler) UndoMove(c *fiber.Ctx) error {
 		})
 	}
 
-	// Ensure middleware validation ran
 	validated, ok := c.Locals("validated").(bool)
 	if !ok || !validated {
 		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
@@ -576,7 +527,6 @@ func (h *HTTPHandler) UndoMove(c *fiber.Ctx) error {
 		})
 	}
 
-	// Retrieve validated parsed body
 	validatedBody := c.Locals("validatedBody")
 	if validatedBody == nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
@@ -587,12 +537,10 @@ func (h *HTTPHandler) UndoMove(c *fiber.Ctx) error {
 	var req core.UndoRequest
 	req = *(validatedBody.(*core.UndoRequest))
 
-	// Create command and execute
 	cmd := processor.NewUndoMoveCommand(gameID, req)
 	cmd.UserID, _ = c.Locals("userID").(string)
 	resp := h.proc.Execute(cmd)
 
-	// Return appropriate HTTP response
 	if !resp.Success {
 		return c.Status(statusForCode(resp.Error.Code)).JSON(resp.Error)
 	}
@@ -600,7 +548,6 @@ func (h *HTTPHandler) UndoMove(c *fiber.Ctx) error {
 	return c.JSON(resp.Data)
 }
 
-// Resign ends the game in the opponent's favor.
 func (h *HTTPHandler) Resign(c *fiber.Ctx) error {
 	return h.executeWithBody(c, func(gameID string, body any) processor.Command {
 		return processor.NewResignCommand(gameID, *body.(*core.ResignRequest))
@@ -637,7 +584,6 @@ func (h *HTTPHandler) executeWithBody(c *fiber.Ctx, build func(gameID string, bo
 	return c.JSON(resp.Data)
 }
 
-// statusForCode maps processor error codes to HTTP statuses.
 func statusForCode(code string) int {
 	switch code {
 	case core.ErrGameNotFound:
@@ -656,7 +602,6 @@ func statusForCode(code string) int {
 func (h *HTTPHandler) DeleteGame(c *fiber.Ctx) error {
 	gameID := c.Params("gameId")
 
-	// Validate UUID format
 	if !isValidUUID(gameID) {
 		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
 			Error:   "invalid game ID format",
@@ -665,12 +610,10 @@ func (h *HTTPHandler) DeleteGame(c *fiber.Ctx) error {
 		})
 	}
 
-	// Create command and execute
 	cmd := processor.NewDeleteGameCommand(gameID)
 	cmd.UserID, _ = c.Locals("userID").(string)
 	resp := h.proc.Execute(cmd)
 
-	// Return appropriate HTTP response
 	if !resp.Success {
 		return c.Status(statusForCode(resp.Error.Code)).JSON(resp.Error)
 	}
@@ -678,11 +621,9 @@ func (h *HTTPHandler) DeleteGame(c *fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
-// GetBoard returns ASCII representation of the board
 func (h *HTTPHandler) GetBoard(c *fiber.Ctx) error {
 	gameID := c.Params("gameId")
 
-	// Validate UUID format
 	if !isValidUUID(gameID) {
 		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
 			Error:   "invalid game ID format",
@@ -691,11 +632,9 @@ func (h *HTTPHandler) GetBoard(c *fiber.Ctx) error {
 		})
 	}
 
-	// Create command and execute
 	cmd := processor.NewGetBoardCommand(gameID)
 	resp := h.proc.Execute(cmd)
 
-	// Return appropriate HTTP response
 	if !resp.Success {
 		return c.Status(fiber.StatusNotFound).JSON(resp.Error)
 	}

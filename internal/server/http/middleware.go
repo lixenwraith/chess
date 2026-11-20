@@ -11,10 +11,8 @@ import (
 	"github.com/lixenwraith/auth"
 )
 
-// TokenValidator validates JWT tokens
 type TokenValidator func(ctx context.Context, token string) (userID string, claims map[string]any, err error)
 
-// AuthRequired enforces JWT authentication for protected endpoints
 func AuthRequired(validateToken TokenValidator) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		header := c.Get(fiber.HeaderAuthorization)

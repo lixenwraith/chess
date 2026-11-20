@@ -24,7 +24,6 @@ import (
 
 const dsnEnv = "CHESS_DSN"
 
-// Run is the entry point for the CLI mini-app
 func Run(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("subcommand required: init, delete, query, pgn, verify, game, user")
@@ -158,7 +157,6 @@ func runQuery(args []string) error {
 		return nil
 	}
 
-	// Print results in tabular format
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "Game ID\tWhite Player\tBlack Player\tResult\tStarted\tEnded")
 	fmt.Fprintln(w, strings.Repeat("-", 130))
@@ -783,7 +781,6 @@ func runUserList(args []string) error {
 		return nil
 	}
 
-	// Print results in tabular format
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "User ID\tUsername\tEmail\tCreated\tLast Login")
 	fmt.Fprintln(w, strings.Repeat("-", 100))

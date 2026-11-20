@@ -17,14 +17,12 @@ import (
 var emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
 var usernameRegex = regexp.MustCompile(`^[a-zA-Z0-9_]{1,40}$`)
 
-// RegisterRequest defines the user registration payload
 type RegisterRequest struct {
 	Username string `json:"username" validate:"required,min=1,max=40"`
 	Email    string `json:"email" validate:"omitempty,max=255"`
 	Password string `json:"password" validate:"required,min=8,max=128"`
 }
 
-// LoginRequest defines the authentication payload
 type LoginRequest struct {
 	Identifier string `json:"identifier" validate:"required"` // username or email
 	Password   string `json:"password" validate:"required"`
@@ -46,7 +44,6 @@ type ResetPasswordRequest struct {
 	Password string `json:"password" validate:"required"`
 }
 
-// AuthResponse contains JWT token and user information
 type AuthResponse struct {
 	Token     string    `json:"token"`
 	UserID    string    `json:"userId"`
@@ -55,7 +52,6 @@ type AuthResponse struct {
 	ExpiresAt time.Time `json:"expiresAt"`
 }
 
-// UserResponse contains current user information
 type UserResponse struct {
 	UserID    string    `json:"userId"`
 	Username  string    `json:"username"`
@@ -63,7 +59,6 @@ type UserResponse struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-// RegisterHandler creates a new user account
 func (h *HTTPHandler) RegisterHandler(c *fiber.Ctx) error {
 	var req RegisterRequest
 	if err := c.BodyParser(&req); err != nil {
@@ -74,7 +69,6 @@ func (h *HTTPHandler) RegisterHandler(c *fiber.Ctx) error {
 		})
 	}
 
-	// Validate username format
 	if !usernameRegex.MatchString(req.Username) {
 		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
 			Error:   "invalid username format",
@@ -83,7 +77,6 @@ func (h *HTTPHandler) RegisterHandler(c *fiber.Ctx) error {
 		})
 	}
 
-	// Validate email format if provided
 	if req.Email != "" && !emailRegex.MatchString(req.Email) {
 		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
 			Error:   "invalid email format",
@@ -92,7 +85,6 @@ func (h *HTTPHandler) RegisterHandler(c *fiber.Ctx) error {
 		})
 	}
 
-	// Validate password strength
 	if err := validatePassword(req.Password); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
 			Error:   "weak password",
@@ -135,7 +127,6 @@ func (h *HTTPHandler) RegisterHandler(c *fiber.Ctx) error {
 		})
 	}
 
-	// Generate JWT token
 	token, err := h.svc.GenerateUserToken(user.UserID, sessionID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
@@ -153,7 +144,6 @@ func (h *HTTPHandler) RegisterHandler(c *fiber.Ctx) error {
 	})
 }
 
-// validatePassword checks password strength requirements
 func validatePassword(password string) error {
 	const (
 		minPasswordLength = 8
@@ -166,7 +156,6 @@ func validatePassword(password string) error {
 		return fmt.Errorf("password must not exceed 128 characters")
 	}
 
-	// Check for at least one letter and one number
 	hasLetter := false
 	hasNumber := false
 	for _, r := range password {
@@ -188,7 +177,6 @@ func validatePassword(password string) error {
 	return nil
 }
 
-// LoginHandler authenticates user and returns JWT token
 func (h *HTTPHandler) LoginHandler(c *fiber.Ctx) error {
 	var req LoginRequest
 	if err := c.BodyParser(&req); err != nil {
@@ -221,7 +209,6 @@ func (h *HTTPHandler) LoginHandler(c *fiber.Ctx) error {
 		})
 	}
 
-	// Generate JWT token with session ID
 	token, err := h.svc.GenerateUserToken(user.UserID, sessionID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
@@ -239,7 +226,6 @@ func (h *HTTPHandler) LoginHandler(c *fiber.Ctx) error {
 	})
 }
 
-// GetCurrentUserHandler returns authenticated user information
 func (h *HTTPHandler) GetCurrentUserHandler(c *fiber.Ctx) error {
 	userID, ok := c.Locals("userID").(string)
 	if !ok || userID == "" {
@@ -270,9 +256,7 @@ func (h *HTTPHandler) GetCurrentUserHandler(c *fiber.Ctx) error {
 	})
 }
 
-// LogoutHandler invalidates the current session
 func (h *HTTPHandler) LogoutHandler(c *fiber.Ctx) error {
-	// Extract session ID from token claims
 	sessionID, ok := c.Locals("sessionID").(string)
 	if !ok || sessionID == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{

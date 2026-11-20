@@ -58,7 +58,6 @@ func (s *Service) ImportGame(ctx context.Context, userID, text string) (*Importe
 		startFEN = normalized
 	}
 
-	// Replay the moves, keeping the position after each ply.
 	pos, err := chess.ParseFEN(startFEN)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidPGN, err)

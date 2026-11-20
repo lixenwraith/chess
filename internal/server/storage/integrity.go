@@ -9,9 +9,6 @@ import (
 	"time"
 )
 
-// Queries for the integrity sweep. None of them change data except the two
-// Delete methods.
-
 // ExistingGames reports which of ids have a games row. Flush first when ids
 // include games whose insert may still be queued.
 func (s *Store) ExistingGames(ctx context.Context, ids []string) (map[string]bool, error) {

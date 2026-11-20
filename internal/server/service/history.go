@@ -113,8 +113,8 @@ type UserGamesOptions struct {
 	Status string // "", "ongoing", or "finished"
 }
 
-// GetUserGames returns a bounded page of games associated either at creation
-// or by a later slot claim.
+// GetUserGames returns a bounded page of games associated at creation, by a
+// later slot claim, or by import.
 func (s *Service) GetUserGames(ctx context.Context, userID string, opts UserGamesOptions) (*core.GameListResponse, error) {
 	if s.store == nil {
 		return nil, ErrStorageDisabled

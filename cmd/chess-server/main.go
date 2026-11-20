@@ -34,7 +34,6 @@ const (
 var version = "dev"
 
 func main() {
-	// Check for CLI database commands
 	if len(os.Args) > 1 && os.Args[1] == "db" {
 		if err := cli.Run(os.Args[2:]); err != nil {
 			log.Fatalf("CLI error: %v", err)
@@ -42,9 +41,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Command-line flags
 	var (
-		// API server flags (renamed)
 		apiHost     = flag.String("api-host", "localhost", "API server host")
 		apiPort     = flag.Int("api-port", 8080, "API server port")
 		dev         = flag.Bool("dev", false, "Development mode (relaxed rate limits)")
@@ -74,7 +71,6 @@ func main() {
 		mailDir      = flag.String("mail-dir", "", "Write email to .eml files in this directory instead of sending (development)")
 		publicURL    = flag.String("public-url", "", "Web client address: emailed links open it, and its host is the Site of exported games, e.g. https://example.com/chess/web-client/")
 
-		// Web UI server flags
 		serve     = flag.Bool("serve", false, "Enable web UI server")
 		webHost   = flag.String("web-host", "localhost", "Web UI server host")
 		webPort   = flag.Int("web-port", 9090, "Web UI server port")
@@ -112,12 +108,10 @@ func main() {
 		log.Fatalf("Invalid -trusted-proxies: %v", err)
 	}
 
-	// Validate PID flags
 	if *pidLock && *pidPath == "" {
 		log.Fatal("Error: -pid-lock flag requires the -pid flag to be set")
 	}
 
-	// Manage PID file if requested
 	if *pidPath != "" {
 		cleanup, err := managePIDFile(*pidPath, *pidLock)
 		if err != nil {
@@ -127,8 +121,8 @@ func main() {
 		log.Printf("PID file created at: %s (lock: %v)", *pidPath, *pidLock)
 	}
 
-	// 1. Initialize Storage (optional). The DSN is never logged: it may carry a
-	// password when peer or .pgpass authentication is not used.
+	// The DSN is never logged: it may carry a password when peer or .pgpass
+	// authentication is not used.
 	var store *storage.Store
 	if *dsn != "" {
 		log.Printf("Initializing PostgreSQL storage")
@@ -163,7 +157,6 @@ func main() {
 		log.Printf("JWT secret generated (sessions valid until restart; use -jwt-secret-file to persist)")
 	}
 
-	// 2. Initialize the Service with optional storage and auth
 	svc, err := service.New(store, jwtSecret)
 	clear(jwtSecret) // the JWT manager keeps its own copy
 	if err != nil {
@@ -219,7 +212,6 @@ func main() {
 		svc.RunCleanupJob(serverCtx, service.CleanupJobInterval)
 	}()
 
-	// 3. Initialize the Processor (Orchestrator), injecting the service
 	proc, err := processor.New(svc)
 	if err != nil {
 		serverCancel()
@@ -228,7 +220,6 @@ func main() {
 		log.Fatalf("Failed to initialize processor: %v", err)
 	}
 
-	// 4. Initialize the Fiber App/HTTP Handler, injecting processor and service
 	app := http.NewFiberApp(proc, svc, http.Options{
 		DevMode:        *dev,
 		LogRequests:    *logHTTP,
@@ -238,10 +229,8 @@ func main() {
 		Context:        serverCtx,
 	})
 
-	// API Server configuration
 	apiAddr := fmt.Sprintf("%s:%d", *apiHost, *apiPort)
 
-	// Start API server in a goroutine
 	go func() {
 		log.Printf("Chess API Server %s starting...", version)
 		log.Printf("API Listening on: http://%s", apiAddr)
@@ -270,7 +259,6 @@ func main() {
 		}
 	}()
 
-	// 5. Start Web UI server (optional)
 	if *serve {
 		webAddr := fmt.Sprintf("%s:%d", *webHost, *webPort)
 		apiURL := fmt.Sprintf("http://%s", apiAddr)
@@ -289,14 +277,12 @@ func main() {
 		}()
 	}
 
-	// Wait for an interrupt signal to gracefully shut down
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 	<-quit
 
 	log.Println("Shutting down servers...")
 
-	// Graceful shutdown of service (includes wait registry)
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), gracefulShutdownTimeout)
 	defer shutdownCancel()
 
@@ -317,7 +303,6 @@ func main() {
 		log.Printf("Processor close error: %v", err)
 	}
 
-	// Shutdown service (wait registry, accepted storage writes, database).
 	if err = svc.Shutdown(gracefulShutdownTimeout); err != nil {
 		log.Printf("Service shutdown error: %v", err)
 	}

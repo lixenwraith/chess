@@ -176,8 +176,8 @@ func (s *Service) sendPasswordResets(m *mailer) {
 }
 
 // sendPasswordReset mails a reset link to the account named by identifier
-// when it has an email address and no link was mailed to it within the
-// cooldown. A link that cannot be sent is revoked, so a retry is not held back.
+// when it has an email address and no pending link within the cooldown. A link
+// that cannot be sent is revoked, so a retry is not held back.
 func (s *Service) sendPasswordReset(m *mailer, identifier string) {
 	// Shutdown cuts only the send short: the store calls, each bounded, finish,
 	// so a link is never left stored unsent.

@@ -29,10 +29,8 @@ const (
 	drawAcceptMaxScore = 0 // centipawns
 )
 
-// FEN validation regex
 var fenPattern = regexp.MustCompile(`^[rnbqkpRNBQKP1-8/]+ [wb] [KQkq-]+ [a-h1-8-]+ \d+ \d+$`)
 
-// Processor handles command execution and coordinates between service and engine layers
 type Processor struct {
 	svc           *service.Service
 	queue         *EngineQueue
@@ -40,9 +38,7 @@ type Processor struct {
 	mu            sync.RWMutex
 }
 
-// New creates a processor with its own engine instances
 func New(svc *service.Service) (*Processor, error) {
-	// Create validation engine
 	validationEng, err := engine.New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create validation engine: %v", err)
@@ -50,7 +46,7 @@ func New(svc *service.Service) (*Processor, error) {
 
 	return &Processor{
 		svc:           svc,
-		queue:         NewEngineQueue(2), // 2 workers for computer moves
+		queue:         NewEngineQueue(2),
 		validationEng: validationEng,
 	}, nil
 }
@@ -80,35 +76,28 @@ func (p *Processor) Execute(cmd Command) ProcessorResponse {
 	}
 }
 
-// isFENSafe check for control characters that could inject UCI commands and FEN pattern match
+// isFENSafe refuses control characters, which could inject UCI commands.
 func (p *Processor) isFENSafe(fen string) bool {
-	// Check for control characters
 	for _, r := range fen {
 		if unicode.IsControl(r) && r != ' ' {
 			return false
 		}
 	}
 
-	// Validate FEN format
 	return fenPattern.MatchString(fen)
 }
 
 func (p *Processor) isMoveSafe(move string) bool {
-	// Check for control characters
 	for _, r := range move {
 		if unicode.IsControl(r) {
 			return false
 		}
 	}
 
-	// UCI valid moves are 4-5 characters only
-	// Examples: e2e4 / e1g1 (castle) / a7a8q (promotion)
-	// UCI moves: [a-h][1-8][a-h][1-8][qrbn]?
 	if len(move) < 4 || len(move) > 5 {
 		return false
 	}
 
-	// Check each character
 	if move[0] < 'a' || move[0] > 'h' ||
 		move[1] < '1' || move[1] > '8' ||
 		move[2] < 'a' || move[2] > 'h' ||
@@ -116,7 +105,6 @@ func (p *Processor) isMoveSafe(move string) bool {
 		return false
 	}
 
-	// Promotion piece if present
 	if len(move) == 5 {
 		promotion := move[4]
 		if promotion != 'q' && promotion != 'r' && promotion != 'b' && promotion != 'n' {
@@ -136,7 +124,6 @@ func (p *Processor) handleCreateGame(cmd Command) ProcessorResponse {
 		return p.errorResponse("invalid arguments", core.ErrInvalidRequest)
 	}
 
-	// Enforce minimum searchTime for computer players
 	if args.White.Type == core.PlayerComputer && args.White.SearchTime < minSearchTime {
 		args.White.SearchTime = minSearchTime
 	}
@@ -146,7 +133,6 @@ func (p *Processor) handleCreateGame(cmd Command) ProcessorResponse {
 
 	gameID := p.svc.GenerateGameID()
 
-	// Validate FEN safety, then classify via engine
 	initialFEN := chess.StartFEN
 	if args.FEN != "" {
 		if !p.isFENSafe(args.FEN) {
@@ -177,13 +163,11 @@ func (p *Processor) handleCreateGame(cmd Command) ProcessorResponse {
 		initialState, termination = adjudicateDraw(nil, validatedFEN)
 	}
 
-	// Parse canonical FEN to get starting turn
 	start, err := chess.ParseFEN(validatedFEN)
 	if err != nil {
 		return p.errorResponse(fmt.Sprintf("FEN parse error: %v", err), core.ErrInvalidRequest)
 	}
 
-	// Create players with appropriate IDs
 	whitePlayer := core.NewPlayer(args.White, core.ColorWhite)
 	blackPlayer := core.NewPlayer(args.Black, core.ColorBlack)
 
@@ -235,16 +219,13 @@ func (p *Processor) handleConfigurePlayers(cmd Command) ProcessorResponse {
 		return p.errorResponse("game not found", core.ErrGameNotFound)
 	}
 
-	// Block configuration changes during computer move
 	if g.State == core.StatePending {
 		return p.errorResponse("cannot change players while computer is calculating", core.ErrInvalidRequest)
 	}
 
-	// Create new player instances
 	whitePlayer := core.NewPlayer(args.White, core.ColorWhite)
 	blackPlayer := core.NewPlayer(args.Black, core.ColorBlack)
 
-	// Update players in service
 	if err = p.svc.UpdatePlayers(cmd.GameID, whitePlayer, blackPlayer, cmd.UserID); err != nil {
 		switch {
 		case errors.Is(err, service.ErrGameNotFound):
@@ -255,7 +236,6 @@ func (p *Processor) handleConfigurePlayers(cmd Command) ProcessorResponse {
 		return p.errorResponse(fmt.Sprintf("failed to update players: %v", err), core.ErrInternalError)
 	}
 
-	// Get updated game
 	g, _ = p.svc.GetGameView(cmd.GameID)
 	response := p.buildGameResponse(cmd.GameID, g)
 
@@ -265,7 +245,6 @@ func (p *Processor) handleConfigurePlayers(cmd Command) ProcessorResponse {
 	}
 }
 
-// handleGetGame retrieves game state and triggers computer move if needed
 func (p *Processor) handleGetGame(cmd Command) ProcessorResponse {
 	g, err := p.svc.GetGameView(cmd.GameID)
 	if err != nil {
@@ -296,7 +275,6 @@ func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 		return p.errorResponse("game not found", core.ErrGameNotFound)
 	}
 
-	// Validate game state
 	switch g.State {
 	case core.StatePending:
 		return p.errorResponse("computer move in progress", core.ErrInvalidRequest)
@@ -316,7 +294,6 @@ func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 		return p.errorResponse("current player is missing", core.ErrInternalError)
 	}
 
-	// Handle computer move trigger
 	if strings.TrimSpace(args.Move) == "cccc" {
 		if currentPlayer.Type != core.PlayerComputer {
 			return p.errorResponse("not computer player's turn", core.ErrNotHumanTurn)
@@ -347,7 +324,6 @@ func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 		}
 	}
 
-	// Human move - validate authorization
 	if currentPlayer.Type != core.PlayerHuman {
 		return p.errorResponse("not human player's turn", core.ErrNotHumanTurn)
 	}
@@ -365,7 +341,6 @@ func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 		return p.errorResponse("slot claimed - authentication required", core.ErrUnauthorized)
 	}
 
-	// Normalize and validate move format
 	move := strings.ToLower(strings.TrimSpace(args.Move))
 	if !p.isMoveSafe(move) {
 		return p.errorResponse("invalid move format", core.ErrInvalidMove)
@@ -401,7 +376,6 @@ func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 		finalState, termination = adjudicateDraw(g.FENs, newFEN)
 	}
 
-	// Atomic commit: move + state + metadata, single notification
 	if err = p.svc.ApplyMoveWithState(cmd.GameID, service.MoveCommit{
 		ExpectedFEN: currentFEN, ExpectedState: core.StateOngoing, ExpectedTurn: currentColor,
 		ActorUserID: cmd.UserID, MoveUCI: move, NewFEN: newFEN, State: finalState, Termination: termination,
@@ -424,13 +398,11 @@ func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 	}
 }
 
-// handleUndoMove reverts game state. StateStuck is deliberately permitted:
-// undo -> StateOngoing is the recovery path for engine failures. Terminal
-// states are also permitted so a finished game can be rewound, except a
+// handleUndoMove reverts game state. Stuck and terminal states may be undone:
+// undo recovers from engine failures and rewinds a finished game, except a
 // resignation or agreed draw between two humans; another user's claim refuses
-// an undo. Any reverted-to snapshot had legal moves made from it, so resetting
-// to Ongoing is sound
-// without re-classification.
+// it. A reverted-to snapshot had legal moves made from it, so Ongoing needs no
+// re-classification.
 func (p *Processor) handleUndoMove(cmd Command) ProcessorResponse {
 	g, err := p.svc.GetGameView(cmd.GameID)
 	if err != nil {
@@ -473,7 +445,6 @@ func (p *Processor) handleDeleteGame(cmd Command) ProcessorResponse {
 		return p.errorResponse("game not found", core.ErrGameNotFound)
 	}
 
-	// Only block deletion if actively computing
 	if g.State == core.StatePending {
 		return p.errorResponse("cannot delete game while computer move is in progress", core.ErrInvalidRequest)
 	}
@@ -493,7 +464,6 @@ func (p *Processor) handleDeleteGame(cmd Command) ProcessorResponse {
 	}
 }
 
-// handleGetBoard returns board visualization
 func (p *Processor) handleGetBoard(cmd Command) ProcessorResponse {
 	g, err := p.svc.GetGameView(cmd.GameID)
 	if err != nil {
@@ -616,12 +586,11 @@ func (p *Processor) classifyLocked(fen string) (string, core.State, core.Termina
 	return p.classifyCurrentLocked()
 }
 
-// adjudicateDraw applies the draw rules that end a game without a claim, as
-// most online servers do: dead material, threefold repetition, and the
-// fifty-move rule (a claimable draw under FIDE rules). history holds the
-// positions before fen, oldest first. It returns StateOngoing when no rule
-// applies. The engine has already ruled out mate and stalemate, which take
-// precedence.
+// adjudicateDraw applies the draw rules that end a game without a claim:
+// dead material, threefold repetition and the fifty-move rule (claimable
+// under FIDE). history holds the positions before fen, oldest first. It
+// returns StateOngoing when no rule applies; the engine has already ruled out
+// mate and stalemate, which take precedence.
 func adjudicateDraw(history []string, fen string) (core.State, core.Termination) {
 	pos, err := chess.ParseFEN(fen)
 	if err != nil {
@@ -657,7 +626,6 @@ func coreColor(c chess.Color) core.Color {
 	return core.ColorBlack
 }
 
-// buildGameResponse constructs standard game response
 func (p *Processor) buildGameResponse(gameID string, g game.View) core.GameResponse {
 	resp := core.GameResponse{
 		GameID:      gameID,
@@ -681,7 +649,6 @@ func (p *Processor) buildGameResponse(gameID string, g game.View) core.GameRespo
 		}
 	}
 
-	// Include last move if available
 	if result := g.LastResult; result != nil {
 		resp.LastMove = &core.MoveInfo{
 			Move:        result.Move,
@@ -694,7 +661,6 @@ func (p *Processor) buildGameResponse(gameID string, g game.View) core.GameRespo
 	return resp
 }
 
-// errorResponse creates error response
 func (p *Processor) errorResponse(message, code string) ProcessorResponse {
 	return ProcessorResponse{
 		Success: false,
@@ -705,7 +671,6 @@ func (p *Processor) errorResponse(message, code string) ProcessorResponse {
 	}
 }
 
-// Close cleans up resources
 func (p *Processor) Close() error {
 	queueErr := p.queue.Shutdown(5 * time.Second)
 	p.mu.Lock()
@@ -856,7 +821,6 @@ func (p *Processor) handleDraw(cmd Command) ProcessorResponse {
 		return p.drawResponse(cmd.GameID, "declined")
 	}
 
-	// Offer.
 	switch {
 	case g.DrawOffer == opponent:
 		return accept()

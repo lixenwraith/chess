@@ -83,7 +83,6 @@ type EndCommit struct {
 	OfferFrom core.Color
 }
 
-// CreateGame registers a new game with pre-constructed players
 func (s *Service) CreateGame(
 	id string,
 	whitePlayer, blackPlayer *core.Player,
@@ -104,7 +103,6 @@ func (s *Service) CreateGame(
 	g.SetOutcome(initialState, termination, now)
 	s.games[id] = g
 
-	// Persist if storage enabled
 	if s.store != nil {
 		result, _ := initialState.Result()
 		record := storage.GameRecord{
@@ -184,7 +182,6 @@ func (s *Service) UpdatePlayers(gameID string, whitePlayer, blackPlayer *core.Pl
 	return nil
 }
 
-// GetGameView retrieves an immutable game snapshot by ID.
 func (s *Service) GetGameView(gameID string) (game.View, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -222,12 +219,10 @@ func (s *Service) BeginComputerMove(gameID, expectedFEN string, expectedTurn cor
 	return nil
 }
 
-// GenerateGameID creates a new unique game ID
 func (s *Service) GenerateGameID() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	// Ensure UUID uniqueness (handle potential conflicts)
 	for {
 		id := uuid.New().String()
 		if _, exists := s.games[id]; !exists {
@@ -547,10 +542,8 @@ func (s *Service) UndoMoves(gameID string, count int, actor string) error {
 	}
 	g.Touch(time.Now().UTC())
 
-	// Notify waiting clients about the undo
 	s.waiter.NotifyGame(gameID, len(g.Moves()), g.State())
 
-	// Delete undone moves from storage if enabled
 	if s.store != nil {
 		remainingMoves := originalMoveCount - count
 		if err := s.store.RewindGame(gameID, remainingMoves); err != nil {
@@ -577,7 +570,6 @@ func (s *Service) UnloadGame(gameID string, actor string) error {
 	return s.deleteGameLocked(gameID, g)
 }
 
-// DeleteGame removes a game from the service
 func (s *Service) DeleteGame(gameID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -594,7 +586,6 @@ func (s *Service) deleteGameLocked(gameID string, g *game.Game) error {
 		return errors.New("cannot delete game while computer move is in progress")
 	}
 
-	// Remove from wait registry
 	s.waiter.RemoveGame(gameID)
 
 	delete(s.games, gameID)

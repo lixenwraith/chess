@@ -128,12 +128,10 @@ func NewStore(dsn string) (*Store, error) {
 	return s, nil
 }
 
-// IsHealthy returns true if the storage is operational
 func (s *Store) IsHealthy() bool {
 	return s.healthStatus.Load()
 }
 
-// writerLoop processes async write operations
 func (s *Store) writerLoop() {
 	defer s.wg.Done()
 	slog.Debug("storage writer started")

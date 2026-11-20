@@ -81,7 +81,6 @@ func (s *Store) ConsumePasswordReset(ctx context.Context, tokenHash []byte, now 
 	return userID, nil
 }
 
-// DeleteExpiredPasswordResets removes resets past their expiry.
 func (s *Store) DeleteExpiredPasswordResets(ctx context.Context) (int64, error) {
 	ctx, cancel := opContext(ctx)
 	defer cancel()
