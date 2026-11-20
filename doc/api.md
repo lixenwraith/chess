@@ -121,10 +121,10 @@ hashing is saturated or `STORAGE_UNAVAILABLE` when storage is down.
 
 Emails a one-time reset link to the account's address. The request is
 answered before the account is looked up, so the response, and how soon it
-comes, is the same whether or not the account exists or has an email. One
-link is mailed to an account per 5 minutes; a request within that time mails
-nothing and the last link keeps working. A message the relay refuses is
-logged, and its link revoked.
+comes, is the same whether or not the account exists or has an email. While
+a link is pending, a request within 5 minutes of it mails nothing and that
+link keeps working. A message the relay refuses is logged, and its link
+revoked.
 
 **Request:**
 ```json

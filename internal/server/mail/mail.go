@@ -86,6 +86,9 @@ func (s *SMTP) Send(ctx context.Context, m Message) error {
 	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
 		return err
 	}
+	// The dial alone watches ctx: a cancel ends the exchange at once instead.
+	stop := context.AfterFunc(ctx, func() { conn.SetDeadline(time.Now()) })
+	defer stop()
 
 	client, err := smtp.NewClient(conn, s.Host)
 	if err != nil {

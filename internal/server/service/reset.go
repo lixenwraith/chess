@@ -23,8 +23,9 @@ import (
 const (
 	// PasswordResetTTL is how long a reset link works.
 	PasswordResetTTL = time.Hour
-	// PasswordResetCooldown spaces reset emails to one account, so requests
-	// from many addresses cannot flood its inbox; the last link keeps working.
+	// PasswordResetCooldown: while an account's link is this new, a request
+	// mails nothing and that link keeps working, so requests from many
+	// addresses cannot flood its inbox.
 	PasswordResetCooldown = 5 * time.Minute
 	resetTokenBytes       = 32
 	resetQueueCapacity    = 64
@@ -82,8 +83,9 @@ func (s *Service) SetMailer(sender mail.Sender, publicURL string) error {
 	return nil
 }
 
-// close stops taking requests and waits up to timeout for the queued ones;
-// past it the rest are dropped.
+// close stops taking requests and waits up to timeout for the queued ones.
+// Past it the rest are dropped and the send under way is cut short; close
+// still waits for that link's revocation, which needs the store.
 func (m *mailer) close(timeout time.Duration) {
 	m.mu.Lock()
 	if !m.closed {
@@ -98,6 +100,8 @@ func (m *mailer) close(timeout time.Duration) {
 	case <-m.done:
 	case <-timer.C:
 		slog.Warn("password recovery stopped before every queued email was sent")
+		m.cancel()
+		<-m.done
 	}
 }
 
@@ -175,13 +179,16 @@ func (s *Service) sendPasswordResets(m *mailer) {
 // when it has an email address and no link was mailed to it within the
 // cooldown. A link that cannot be sent is revoked, so a retry is not held back.
 func (s *Service) sendPasswordReset(m *mailer, identifier string) {
+	// Shutdown cuts only the send short: the store calls, each bounded, finish,
+	// so a link is never left stored unsent.
+	persist := context.WithoutCancel(m.ctx)
 	identifier = strings.ToLower(strings.TrimSpace(identifier))
 	var record *storage.UserRecord
 	var err error
 	if strings.Contains(identifier, "@") {
-		record, err = s.store.GetUserByEmail(m.ctx, identifier)
+		record, err = s.store.GetUserByEmail(persist, identifier)
 	} else {
-		record, err = s.store.GetUserByUsername(m.ctx, identifier)
+		record, err = s.store.GetUserByUsername(persist, identifier)
 	}
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -201,7 +208,7 @@ func (s *Service) sendPasswordReset(m *mailer, identifier string) {
 		return
 	}
 	now := time.Now().UTC()
-	err = s.store.CreatePasswordReset(m.ctx, storage.PasswordResetRecord{
+	err = s.store.CreatePasswordReset(persist, storage.PasswordResetRecord{
 		UserID: record.UserID, TokenHash: hash, CreatedAt: now, ExpiresAt: now.Add(PasswordResetTTL),
 	}, m.cooldown)
 	switch {
@@ -232,8 +239,8 @@ it is and nobody else can use the link without this email.
 	})
 	if err != nil {
 		slog.Error("password reset email failed", "user_id", record.UserID, "error", err)
-		// Revoke even when shutdown cut the send short, or the cooldown blocks a retry.
-		if _, err := s.store.ConsumePasswordReset(context.WithoutCancel(m.ctx), hash, now); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		// Revoked, or the cooldown would hold back a retry for a link never sent.
+		if _, err := s.store.ConsumePasswordReset(persist, hash, now); err != nil && !errors.Is(err, sql.ErrNoRows) {
 			slog.Error("unsent password reset not revoked", "user_id", record.UserID, "error", err)
 		}
 		return

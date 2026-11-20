@@ -25,6 +25,7 @@ batch under Done says what it delivered.
   - R9.3 P3: human against human in the web client (D8), after R6.2
   - R10.1 P3: metrics
   - R9.2 P3: analysis on a replay
+  - R8.4 P3: recovery timing through the sender
   - R5.1–R5.4 P3: the curated archive, rights first
 
 ## Done
@@ -42,8 +43,8 @@ batch under Done says what it delivered.
   stored games by their owner; schema v5.
 - Accounts: password recovery by email (schema v4), administrative reset
   links, self-service account deletion. R8.3: a recovery request is answered
-  before the lookup and mailed from a queue, one email per account per 5
-  minutes.
+  before the lookup and mailed from a queue, at most one email per account
+  per 5 minutes while its link is pending.
 - Operations: transient write retries, degraded mode reported by `/health`,
   the integrity sweep (`-db-cleanup`), draw and resign flows.
 - R6, in part: no cap on computer games; the engine queue takes two moves a
@@ -425,6 +426,21 @@ Email changes only through the CLI.
   account dialog shows the state, and `/auth/me` carries it.
 - Decide how the migration marks existing addresses: unverified, which is
   accurate, or verified, which spares current users a step.
+
+### R8.4 Recovery timing through the sender
+
+- Priority: P3, small: `/auth/register` already tells a taken username or
+  email apart (409)
+- Affected files: `internal/server/service/reset.go`
+- Guide: [Request a Password Reset](api.md#request-a-password-reset)
+
+One sender mails recovery requests in order, and an account with an email
+costs it more work than one without. A caller who fills its queue (503) or
+times their own reset mail can tell whether a username's account has an
+email.
+
+- Closing it needs the sender's work per request to be the same for every
+  account.
 
 ## R9 Clients
 

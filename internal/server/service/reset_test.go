@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -170,6 +171,44 @@ func TestPasswordResetMailsAnAccountOncePerCooldown(t *testing.T) {
 	resetToken(t, mails[1], "carol@example.test")
 	if _, _, err := svc.ResetPassword(t.Context(), token, "Password2"); err != nil {
 		t.Fatalf("first link after a request within the cooldown: %v", err)
+	}
+}
+
+// TestShutdownRevokesALinkWhoseEmailItCutShort: a link left stored unsent
+// would hold back the account's next request for the cooldown.
+func TestShutdownRevokesALinkWhoseEmailItCutShort(t *testing.T) {
+	svc, dsn := newPersistentTestServiceDSN(t)
+	if _, _, err := svc.RegisterUser(t.Context(), "alice", "alice@example.test", "Password1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.SetMailer(&heldSender{release: make(chan struct{})}, "https://example.test/chess/web-client/"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RequestPasswordReset("alice"); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	links := func() (n int) {
+		if err := db.QueryRow(`SELECT count(*) FROM password_resets`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	for deadline := time.Now().Add(10 * time.Second); links() == 0; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("reset link never stored")
+		}
+	}
+
+	if err := svc.Shutdown(100 * time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if n := links(); n != 0 {
+		t.Fatalf("%d unsent links left after shutdown", n)
 	}
 }
 

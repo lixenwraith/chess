@@ -3,10 +3,12 @@ package mail
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestFormatIsRFC5322WithCRLF(t *testing.T) {
@@ -87,5 +89,37 @@ func TestConfigBuild(t *testing.T) {
 	}
 	if d, err := (Config{Dir: "x", From: "a@b.c"}).Build(); err != nil || d.(*Dir).Path != "x" {
 		t.Errorf("dir = %v, %v", d, err)
+	}
+}
+
+// TestSMTPSendStopsWhenCancelled holds the exchange on a relay that never
+// greets: shutdown waits for a cut-short send, so it must end at the cancel.
+func TestSMTPSendStopsWhenCancelled(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		if c, err := ln.Accept(); err == nil {
+			accepted <- c
+		}
+	}()
+	defer func() {
+		select {
+		case c := <-accepted:
+			c.Close()
+		default:
+		}
+	}()
+
+	relay := &SMTP{Host: "127.0.0.1", Port: ln.Addr().(*net.TCPAddr).Port, From: "chess@example.test", Timeout: 3 * time.Second}
+	ctx, cancel := context.WithCancel(t.Context())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	started := time.Now()
+	err = relay.Send(ctx, Message{To: "alice@example.test", Subject: "s", Body: "b"})
+	if err == nil || time.Since(started) > 2*time.Second {
+		t.Fatalf("cancelled send returned %v after %v", err, time.Since(started))
 	}
 }
