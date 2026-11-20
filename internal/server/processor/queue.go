@@ -2,6 +2,7 @@ package processor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -11,16 +12,17 @@ import (
 	"github.com/lixenwraith/chess/internal/server/engine"
 )
 
-// EngineTask contains computer move calculation request and response channel
+// errEngineBusy refuses a task the queue cannot take now; the caller may retry.
+var errEngineBusy = errors.New("engine busy")
+
 type EngineTask struct {
 	GameID   string
 	FEN      string
 	Color    core.Color
-	Player   *core.Player // Full player config including engine configuration
+	Player   *core.Player
 	Response chan<- EngineResult
 }
 
-// EngineResult contains the outcome of an engine calculation
 type EngineResult struct {
 	GameID string
 	Move   string
@@ -31,7 +33,6 @@ type EngineResult struct {
 	Error  error
 }
 
-// EngineQueue manages async engine computations
 type EngineQueue struct {
 	tasks        chan EngineTask
 	workers      int
@@ -44,16 +45,17 @@ type EngineQueue struct {
 	shutdownOnce sync.Once
 }
 
-// NewEngineQueue creates a queue with specified worker count
 func NewEngineQueue(workerCount int) *EngineQueue {
 	if workerCount < 1 {
-		workerCount = 2 // Default
+		workerCount = 2
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 
 	q := &EngineQueue{
-		tasks:   make(chan EngineTask, 100), // Buffered for queueing
+		// Two waiting tasks a worker: the last one admitted starts within two of
+		// the longest searches, so it meets its deadline (SubmitAsync).
+		tasks:   make(chan EngineTask, 2*workerCount),
 		workers: workerCount,
 		ctx:     ctx,
 		cancel:  cancel,
@@ -63,7 +65,6 @@ func NewEngineQueue(workerCount int) *EngineQueue {
 	return q
 }
 
-// start initializes the worker pool
 func (q *EngineQueue) start() {
 	for i := 0; i < q.workers; i++ {
 		q.wg.Add(1)
@@ -71,7 +72,6 @@ func (q *EngineQueue) start() {
 	}
 }
 
-// worker processes engine tasks
 func (q *EngineQueue) worker(id int) {
 	defer q.wg.Done()
 	var eng *engine.UCI
@@ -102,7 +102,6 @@ func (q *EngineQueue) worker(id int) {
 	}
 }
 
-// processTask executes a single engine calculation
 func (q *EngineQueue) processTask(eng *engine.UCI, task EngineTask) EngineResult {
 	started := time.Now()
 	defer func() {
@@ -141,7 +140,6 @@ func (q *EngineQueue) processTask(eng *engine.UCI, task EngineTask) EngineResult
 	return result
 }
 
-// Submit adds a task to the queue
 func (q *EngineQueue) Submit(task EngineTask) error {
 	q.submitMu.RLock()
 	defer q.submitMu.RUnlock()
@@ -150,20 +148,20 @@ func (q *EngineQueue) Submit(task EngineTask) error {
 
 func (q *EngineQueue) submitLocked(task EngineTask) error {
 	if q.closed {
-		return fmt.Errorf("queue is shutting down")
+		return fmt.Errorf("%w: shutting down", errEngineBusy)
 	}
 	select {
 	case q.tasks <- task:
 		slog.Debug("engine task queued", "game_id", task.GameID, "queue_depth", len(q.tasks))
 		return nil
 	case <-q.ctx.Done():
-		return fmt.Errorf("queue is shutting down")
+		return fmt.Errorf("%w: shutting down", errEngineBusy)
 	default:
-		return fmt.Errorf("queue is full")
+		return fmt.Errorf("%w: queue is full", errEngineBusy)
 	}
 }
 
-// SubmitAsync submits a task without blocking for result
+// SubmitAsync queues a task and returns; callback gets its result, or a timeout.
 func (q *EngineQueue) SubmitAsync(gameID, fen string, color core.Color, player *core.Player, callback func(EngineResult)) error {
 	if player == nil {
 		return fmt.Errorf("computer player is missing")
@@ -208,7 +206,6 @@ func (q *EngineQueue) SubmitAsync(gameID, fen string, color core.Color, player *
 	return nil
 }
 
-// Shutdown gracefully stops the queue
 func (q *EngineQueue) Shutdown(timeout time.Duration) error {
 	q.shutdownOnce.Do(func() {
 		q.submitMu.Lock()

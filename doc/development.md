@@ -229,7 +229,7 @@ CHESS_E2E_MAIL_DIR=/tmp/chess-mail make test-e2e                 # terminal 2
 ### Fixed Values
 - Engine path: `"stockfish"` (internal/server/engine/engine.go)
 - Worker count: 2 (internal/server/processor/processor.go)
-- Queue capacity: 100 (internal/server/processor/queue.go)
+- Engine queue: two waiting tasks a worker, so each meets its deadline (internal/server/processor/queue.go)
 - Min search time: 100ms (internal/server/processor/processor.go)
 - Write queue: 1000 operations (internal/server/storage/storage.go)
 - DB connections: 10 max, 5 idle (internal/server/storage/storage.go)

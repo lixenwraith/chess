@@ -133,8 +133,10 @@ schema is current, which lets a DML-only runtime role start the server.
 
 ### Computer Move
 1. HTTP handler receives `POST /games/{id}/moves` with `{"move": "cccc"}`
-2. Processor sets game state to `pending`
-3. Submits task to EngineQueue, returns immediately
+2. Processor queues a task on EngineQueue and sets the game `pending`, under
+   the service lock; a full queue (two tasks a worker) answers 503
+   `RESOURCE_LIMIT` and leaves the game `ongoing`
+3. Returns immediately
 4. Worker goroutine calculates move with dedicated Stockfish instance
 5. Callback re-validates the move on the validation engine, applies the
    automatic draw rules, and commits via the service

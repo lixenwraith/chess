@@ -544,6 +544,8 @@ func (h *HTTPHandler) MakeMove(c *fiber.Ctx) error {
 			statusCode = fiber.StatusForbidden
 		case core.ErrConflict:
 			statusCode = fiber.StatusConflict
+		case core.ErrResourceLimit:
+			statusCode = fiber.StatusServiceUnavailable
 		}
 		return c.Status(statusCode).JSON(resp.Error)
 	}

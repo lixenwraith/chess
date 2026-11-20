@@ -199,8 +199,8 @@ func TestCleanupDeletesIdleAnonymousGamesAndUnloadsIdleClaimedOnes(t *testing.T)
 		t.Fatalf("claimed game deleted: %v", err)
 	}
 
-	// Past the idle TTL the unfinished claimed game leaves memory, which no
-	// longer holds it against anything, and stays stored for replay.
+	// Past the idle TTL the unfinished claimed game leaves memory and stays
+	// stored for replay.
 	svc.cleanupGames(time.Now().UTC().Add(IdleGameTTL + time.Hour))
 	if _, err := svc.GetGameView(claimed); !errors.Is(err, ErrGameNotFound) {
 		t.Fatalf("idle claimed game still loaded: %v", err)

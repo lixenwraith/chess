@@ -322,15 +322,16 @@ func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 			return p.errorResponse("not computer player's turn", core.ErrNotHumanTurn)
 		}
 
-		if err := p.svc.BeginComputerMove(cmd.GameID, g.FEN, currentColor); err != nil {
-			if errors.Is(err, service.ErrGameChanged) {
-				return p.errorResponse("game changed; refresh and retry", core.ErrConflict)
-			}
+		err := p.svc.BeginComputerMove(cmd.GameID, g.FEN, currentColor, func() error {
+			return p.triggerComputerMove(cmd.GameID, g)
+		})
+		switch {
+		case errors.Is(err, service.ErrGameChanged):
+			return p.errorResponse("game changed; refresh and retry", core.ErrConflict)
+		case errors.Is(err, errEngineBusy):
+			return p.errorResponse(err.Error(), core.ErrResourceLimit)
+		case err != nil:
 			return p.errorResponse(fmt.Sprintf("failed to start computer move: %v", err), core.ErrInternalError)
-		}
-		if err := p.triggerComputerMove(cmd.GameID, g); err != nil {
-			p.svc.UpdateGameState(cmd.GameID, core.StateStuck, core.TermNone)
-			return p.errorResponse(fmt.Sprintf("failed to queue computer move: %v", err), core.ErrResourceLimit)
 		}
 
 		g, _ = p.svc.GetGameView(cmd.GameID)

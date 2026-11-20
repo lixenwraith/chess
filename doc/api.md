@@ -502,6 +502,9 @@ last rank without the piece returns 400 `INVALID_MOVE` with
 {"move": "cccc"}
 ```
 
+When the engine already has two moves a worker waiting, the trigger returns
+503 `RESOURCE_LIMIT` and the game stays `ongoing`; repeat it shortly.
+
 A move that ends the game (mate, stalemate, or an automatic draw) returns the
 terminal state and `termination` in the same response.
 

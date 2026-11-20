@@ -429,11 +429,3 @@ func (g *Game) GetSlotOwner(color core.Color) string {
 	}
 	return player.ClaimedBy
 }
-
-// HasComputerPlayer returns true if at least one player is computer
-func (g *Game) HasComputerPlayer() bool {
-	white := g.players[core.ColorWhite]
-	black := g.players[core.ColorBlack]
-	return (white != nil && white.Type == core.PlayerComputer) ||
-		(black != nil && black.Type == core.PlayerComputer)
-}

@@ -46,7 +46,8 @@ batch under Done says what it delivered.
   minutes.
 - Operations: transient write retries, degraded mode reported by `/health`,
   the integrity sweep (`-db-cleanup`), draw and resign flows.
-- R6, in part: no cap on computer games, whose engine work the queue bounds;
+- R6, in part: no cap on computer games; the engine queue takes two moves a
+  worker and refuses more with 503, the game left `ongoing` for a retry;
   unfinished claimed games leave memory after a week idle (`-idle-game-ttl`);
   a request's 35-second deadline and the server's lifetime reach its storage
   calls, while queued writes keep the writer's own (the processor needs none:

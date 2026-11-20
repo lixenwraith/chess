@@ -196,9 +196,10 @@ func (s *Service) GetGameView(gameID string) (game.View, error) {
 	return g.View(), nil
 }
 
-// BeginComputerMove is an optimistic state transition: only the request that
-// observed the current ongoing position may enqueue engine work.
-func (s *Service) BeginComputerMove(gameID, expectedFEN string, expectedTurn core.Color) error {
+// BeginComputerMove marks the observed ongoing position pending once queue has
+// taken its engine task. Both happen under the lock the task's result needs, so
+// a refused task leaves the game ongoing and no result finds it before pending.
+func (s *Service) BeginComputerMove(gameID, expectedFEN string, expectedTurn core.Color, queue func() error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -211,6 +212,9 @@ func (s *Service) BeginComputerMove(gameID, expectedFEN string, expectedTurn cor
 	}
 	if player := g.NextPlayer(); player == nil || player.Type != core.PlayerComputer {
 		return errors.New("current player is not a computer")
+	}
+	if err := queue(); err != nil {
+		return err
 	}
 	g.SetStateAt(core.StatePending, time.Now().UTC())
 	s.waiter.NotifyGame(gameID, len(g.Moves()), core.StatePending)

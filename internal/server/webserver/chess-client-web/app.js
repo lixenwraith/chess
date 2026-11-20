@@ -1313,9 +1313,17 @@ async function handleHumanMove(from, to) {
 
 async function triggerComputerMove() {
     lockBoard();
+    const gameId = live.gameId;
     try {
-        const response = await apiJSON('POST', `/api/games/${live.gameId}/moves`, { move: 'cccc' });
+        const response = await apiJSON('POST', `/api/games/${gameId}/moves`, { move: 'cccc' });
         if (!response.ok) {
+            // A busy engine refuses the trigger and leaves the game ongoing: ask again.
+            if (response.status === 503 && (await parseErrorResponse(response)).code === 'RESOURCE_LIMIT') {
+                setTimeout(() => {
+                    if (live.gameId === gameId && isPlayable(live.state)) triggerComputerMove();
+                }, 2000);
+                return;
+            }
             handleApiError('trigger computer move', null, response);
             unlockBoard();
             return;
