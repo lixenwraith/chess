@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -83,7 +84,7 @@ func (s *Service) verifyPassword(password, hash string) error {
 // RegisterUser creates the account and its initial session in one database
 // transaction, so a successful registration always returns a usable account.
 // Registered accounts are identical to CLI-created ones and never expire.
-func (s *Service) RegisterUser(username, email, password string) (*User, string, error) {
+func (s *Service) RegisterUser(ctx context.Context, username, email, password string) (*User, string, error) {
 	if s.store == nil {
 		return nil, "", ErrStorageDisabled
 	}
@@ -124,7 +125,7 @@ func (s *Service) RegisterUser(username, email, password string) (*User, string,
 		ExpiresAt: now.Add(SessionTTL),
 	}
 	limits := storage.UserLimits{MaxUsers: int(s.maxUsers.Load())}
-	if err = s.store.CreateUserWithinLimits(record, session, limits); err != nil {
+	if err = s.store.CreateUserWithinLimits(ctx, record, session, limits); err != nil {
 		switch {
 		case errors.Is(err, storage.ErrUserAlreadyExists):
 			return nil, "", ErrUserExists
@@ -142,7 +143,7 @@ func (s *Service) RegisterUser(username, email, password string) (*User, string,
 // AuthenticateUser verifies credentials and creates a new session. Unknown
 // identifiers and wrong passwords both return ErrInvalidCredentials after the
 // same Argon2id work.
-func (s *Service) AuthenticateUser(identifier, password string) (*User, string, error) {
+func (s *Service) AuthenticateUser(ctx context.Context, identifier, password string) (*User, string, error) {
 	if s.store == nil {
 		return nil, "", ErrStorageDisabled
 	}
@@ -150,9 +151,9 @@ func (s *Service) AuthenticateUser(identifier, password string) (*User, string, 
 	var userRecord *storage.UserRecord
 	var err error
 	if strings.Contains(identifier, "@") {
-		userRecord, err = s.store.GetUserByEmail(identifier)
+		userRecord, err = s.store.GetUserByEmail(ctx, identifier)
 	} else {
-		userRecord, err = s.store.GetUserByUsername(identifier)
+		userRecord, err = s.store.GetUserByUsername(ctx, identifier)
 	}
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, "", fmt.Errorf("%w: look up user: %v", ErrStorageUnavailable, err)
@@ -174,7 +175,7 @@ func (s *Service) AuthenticateUser(identifier, password string) (*User, string, 
 	now := time.Now().UTC()
 	// Replaces any existing session and records the login time.
 	sessionID := uuid.NewString()
-	if err := s.store.CreateSession(storage.SessionRecord{
+	if err := s.store.CreateSession(ctx, storage.SessionRecord{
 		SessionID: sessionID,
 		UserID:    userRecord.UserID,
 		CreatedAt: now,
@@ -193,11 +194,11 @@ func (s *Service) AuthenticateUser(identifier, password string) (*User, string, 
 }
 
 // InvalidateSession removes a session (logout)
-func (s *Service) InvalidateSession(sessionID string) error {
+func (s *Service) InvalidateSession(ctx context.Context, sessionID string) error {
 	if s.store == nil {
 		return ErrStorageDisabled
 	}
-	if err := s.store.DeleteSession(sessionID); err != nil {
+	if err := s.store.DeleteSession(ctx, sessionID); err != nil {
 		return fmt.Errorf("%w: invalidate session: %v", ErrStorageUnavailable, err)
 	}
 	return nil
@@ -205,16 +206,13 @@ func (s *Service) InvalidateSession(sessionID string) error {
 
 // DeleteAccount deletes the caller's own account after re-checking the
 // password, so a token left on an unattended device is not enough. The
-// session goes first, so no new request can act for the account; then the
-// account's claims are released on every game in memory, then the store
-// clears them from stored games and deletes the account, behind any gameplay
-// write already queued. Games nobody else claimed are anonymous from then on
-// and are purged after the usual inactivity window.
-func (s *Service) DeleteAccount(userID, sessionID, password string) error {
+// session goes first, so no new request can act for the account; then its
+// claims are released in memory, and the store clears them from stored games.
+func (s *Service) DeleteAccount(ctx context.Context, userID, sessionID, password string) error {
 	if s.store == nil {
 		return ErrStorageDisabled
 	}
-	record, err := s.store.GetUserByID(userID)
+	record, err := s.store.GetUserByID(ctx, userID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrInvalidCredentials
@@ -228,11 +226,11 @@ func (s *Service) DeleteAccount(userID, sessionID, password string) error {
 		return ErrInvalidCredentials
 	}
 
-	if err := s.store.DeleteSession(sessionID); err != nil {
+	if err := s.store.DeleteSession(ctx, sessionID); err != nil {
 		return fmt.Errorf("%w: end session: %v", ErrStorageUnavailable, err)
 	}
 	released := s.releaseClaims(userID)
-	if err := s.store.DeleteAccount(userID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := s.store.DeleteAccount(ctx, userID); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("%w: delete account: %v", ErrStorageUnavailable, err)
 	}
 	slog.Info("account deleted by its owner", "user_id", userID, "live_games_released", released)
@@ -254,12 +252,12 @@ func (s *Service) releaseClaims(userID string) int {
 }
 
 // GetUserByID retrieves user information by user ID
-func (s *Service) GetUserByID(userID string) (*User, error) {
+func (s *Service) GetUserByID(ctx context.Context, userID string) (*User, error) {
 	if s.store == nil {
 		return nil, ErrStorageDisabled
 	}
 
-	userRecord, err := s.store.GetUserByID(userID)
+	userRecord, err := s.store.GetUserByID(ctx, userID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("user not found")
@@ -283,7 +281,7 @@ func (s *Service) GenerateUserToken(userID, sessionID string) (string, error) {
 }
 
 // ValidateToken verifies JWT token and session validity
-func (s *Service) ValidateToken(token string) (string, map[string]any, error) {
+func (s *Service) ValidateToken(ctx context.Context, token string) (string, map[string]any, error) {
 	userID, claims, err := s.jwt.ValidateToken(token)
 	if err != nil {
 		return "", nil, err
@@ -296,7 +294,7 @@ func (s *Service) ValidateToken(token string) (string, map[string]any, error) {
 	if !ok || sessionID == "" {
 		return "", nil, fmt.Errorf("token has no persisted session")
 	}
-	valid, err := s.store.IsSessionValidForUser(sessionID, userID)
+	valid, err := s.store.IsSessionValidForUser(ctx, sessionID, userID)
 	if err != nil {
 		return "", nil, fmt.Errorf("%w: validate token session: %v", ErrStorageUnavailable, err)
 	}

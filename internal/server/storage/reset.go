@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -24,14 +25,14 @@ var ErrResetPending = errors.New("a password reset was created within the cooldo
 // created at least cooldown earlier, so only the latest link works. It
 // returns ErrResetPending when a newer one stands, and sql.ErrNoRows for an
 // unknown user.
-func (s *Store) CreatePasswordReset(record PasswordResetRecord, cooldown time.Duration) error {
+func (s *Store) CreatePasswordReset(ctx context.Context, record PasswordResetRecord, cooldown time.Duration) error {
 	if !validUUID(record.UserID) {
 		return sql.ErrNoRows
 	}
 	if len(record.TokenHash) != 32 {
 		return errors.New("token hash must be 32 bytes")
 	}
-	ctx, cancel := opContext()
+	ctx, cancel := opContext(ctx)
 	defer cancel()
 	result, err := s.db.ExecContext(ctx, `INSERT INTO password_resets (user_id, token_hash, created_at, expires_at)
 		SELECT user_id, $2, $3, $4 FROM users WHERE user_id = $1
@@ -64,11 +65,11 @@ func (s *Store) CreatePasswordReset(record PasswordResetRecord, cooldown time.Du
 // ConsumePasswordReset deletes the reset matching tokenHash and returns its
 // user, or sql.ErrNoRows when none is pending or it has expired. A token
 // works once.
-func (s *Store) ConsumePasswordReset(tokenHash []byte, now time.Time) (string, error) {
+func (s *Store) ConsumePasswordReset(ctx context.Context, tokenHash []byte, now time.Time) (string, error) {
 	if len(tokenHash) != 32 {
 		return "", sql.ErrNoRows
 	}
-	ctx, cancel := opContext()
+	ctx, cancel := opContext(ctx)
 	defer cancel()
 	var userID string
 	err := s.db.QueryRowContext(ctx,
@@ -81,8 +82,8 @@ func (s *Store) ConsumePasswordReset(tokenHash []byte, now time.Time) (string, e
 }
 
 // DeleteExpiredPasswordResets removes resets past their expiry.
-func (s *Store) DeleteExpiredPasswordResets() (int64, error) {
-	ctx, cancel := opContext()
+func (s *Store) DeleteExpiredPasswordResets(ctx context.Context) (int64, error) {
+	ctx, cancel := opContext(ctx)
 	defer cancel()
 	result, err := s.db.ExecContext(ctx, `DELETE FROM password_resets WHERE expires_at < $1`, time.Now().UTC())
 	if err != nil {
@@ -98,11 +99,11 @@ func (s *Store) DeleteExpiredPasswordResets() (int64, error) {
 // ResetUserPassword sets a new password hash and ends the user's sessions in
 // one transaction: whoever held the old password is signed out everywhere.
 // It returns sql.ErrNoRows for an unknown user.
-func (s *Store) ResetUserPassword(userID, passwordHash string) error {
+func (s *Store) ResetUserPassword(ctx context.Context, userID, passwordHash string) error {
 	if !validUUID(userID) {
 		return sql.ErrNoRows
 	}
-	ctx, cancel := opContext()
+	ctx, cancel := opContext(ctx)
 	defer cancel()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

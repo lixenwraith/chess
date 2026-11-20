@@ -287,7 +287,7 @@ func (s *Store) DeleteAnonymousGames(cutoff time.Time, live []string) error {
 
 // QueryGames is the administrative game lookup. Either filter may be empty or
 // "*" for all; a player filter matches creation-time player IDs and claims.
-func (s *Store) QueryGames(gameID, playerID string) ([]GameRecord, error) {
+func (s *Store) QueryGames(ctx context.Context, gameID, playerID string) ([]GameRecord, error) {
 	query := `SELECT ` + gameSelectColumns + ` FROM games g WHERE true`
 	var args []any
 	if gameID != "" && gameID != "*" {
@@ -307,10 +307,10 @@ func (s *Store) QueryGames(gameID, playerID string) ([]GameRecord, error) {
 	}
 	query += " ORDER BY g.start_time_utc DESC, g.game_id DESC"
 
-	if err := s.flushBeforeRead(); err != nil {
+	if err := s.flushBeforeRead(ctx); err != nil {
 		return nil, err
 	}
-	ctx, cancel := opContext()
+	ctx, cancel := opContext(ctx)
 	defer cancel()
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -335,15 +335,15 @@ func (s *Store) QueryGames(gameID, playerID string) ([]GameRecord, error) {
 // GetGameHistory returns the game row and its ordered moves after every
 // previously accepted write has committed. Both reads share one REPEATABLE READ
 // snapshot, so a concurrent move or rewind cannot produce a mixed history.
-func (s *Store) GetGameHistory(gameID string) (*GameRecord, []MoveRecord, error) {
+func (s *Store) GetGameHistory(ctx context.Context, gameID string) (*GameRecord, []MoveRecord, error) {
 	if !validUUID(gameID) {
 		return nil, nil, sql.ErrNoRows
 	}
-	if err := s.flushBeforeRead(); err != nil {
+	if err := s.flushBeforeRead(ctx); err != nil {
 		return nil, nil, err
 	}
 	started := time.Now()
-	ctx, cancel := opContext()
+	ctx, cancel := opContext(ctx)
 	defer cancel()
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
@@ -408,7 +408,7 @@ type GameCursor struct {
 // The last move is read through a LATERAL probe of the moves primary key, so
 // the summary costs one index lookup per game rather than a move count over
 // the whole line.
-func (s *Store) QueryGamesForUser(userID string, q UserGamesQuery) ([]GameSummaryRecord, error) {
+func (s *Store) QueryGamesForUser(ctx context.Context, userID string, q UserGamesQuery) ([]GameSummaryRecord, error) {
 	if userID == "" || q.Limit < 1 || q.Limit > MaxUserGamesPage || q.Offset < 0 {
 		return nil, fmt.Errorf("user ID, limit from 1 to %d, and non-negative offset are required",
 			MaxUserGamesPage)
@@ -446,7 +446,7 @@ func (s *Store) QueryGamesForUser(userID string, q UserGamesQuery) ([]GameSummar
 		where += " AND (g.start_time_utc, g.game_id) < ($4, $5)"
 	}
 
-	if err := s.flushBeforeRead(); err != nil {
+	if err := s.flushBeforeRead(ctx); err != nil {
 		return nil, err
 	}
 	started := time.Now()
@@ -462,7 +462,7 @@ func (s *Store) QueryGamesForUser(userID string, q UserGamesQuery) ([]GameSummar
 		WHERE ` + where + `
 		ORDER BY g.start_time_utc DESC, g.game_id DESC
 		LIMIT $2 OFFSET $3`
-	ctx, cancel := opContext()
+	ctx, cancel := opContext(ctx)
 	defer cancel()
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -494,7 +494,7 @@ func (s *Store) QueryGamesForUser(userID string, q UserGamesQuery) ([]GameSummar
 
 // ResolveGameID expands a game ID prefix of at least 8 hexadecimal digits,
 // as printed by administrative listings, to the unique full ID.
-func (s *Store) ResolveGameID(prefix string) (string, error) {
+func (s *Store) ResolveGameID(ctx context.Context, prefix string) (string, error) {
 	prefix = strings.ToLower(prefix)
 	if validUUID(prefix) {
 		return prefix, nil
@@ -502,10 +502,10 @@ func (s *Store) ResolveGameID(prefix string) (string, error) {
 	if len(prefix) < 8 || len(prefix) > 36 || strings.Trim(prefix, "0123456789abcdef-") != "" {
 		return "", fmt.Errorf("game ID or a prefix of at least 8 hex digits required, got %q", prefix)
 	}
-	if err := s.flushBeforeRead(); err != nil {
+	if err := s.flushBeforeRead(ctx); err != nil {
 		return "", err
 	}
-	ctx, cancel := opContext()
+	ctx, cancel := opContext(ctx)
 	defer cancel()
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT game_id FROM games WHERE game_id::text LIKE $1 || '%' ORDER BY game_id LIMIT 2`, prefix)

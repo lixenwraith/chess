@@ -146,8 +146,9 @@ func runQuery(args []string) error {
 		return err
 	}
 	defer store.Close()
+	ctx := context.Background()
 
-	games, err := store.QueryGames(*gameID, *playerID)
+	games, err := store.QueryGames(ctx, *gameID, *playerID)
 	if err != nil {
 		return fmt.Errorf("query failed: %w", err)
 	}
@@ -206,12 +207,13 @@ func runPGN(args []string) error {
 		return err
 	}
 	defer store.Close()
+	ctx := context.Background()
 
-	id, err := resolveGameID(store, *gameID)
+	id, err := resolveGameID(ctx, store, *gameID)
 	if err != nil {
 		return err
 	}
-	record, moves, err := store.GetGameHistory(id)
+	record, moves, err := store.GetGameHistory(ctx, id)
 	if err != nil {
 		return fmt.Errorf("load game %s: %w", id, err)
 	}
@@ -237,16 +239,17 @@ func runVerify(args []string) error {
 		return err
 	}
 	defer store.Close()
+	ctx := context.Background()
 
 	var ids []string
 	if *gameID != "" {
-		id, err := resolveGameID(store, *gameID)
+		id, err := resolveGameID(ctx, store, *gameID)
 		if err != nil {
 			return err
 		}
 		ids = []string{id}
 	} else {
-		games, err := store.QueryGames("", "")
+		games, err := store.QueryGames(ctx, "", "")
 		if err != nil {
 			return fmt.Errorf("list games: %w", err)
 		}
@@ -257,7 +260,7 @@ func runVerify(args []string) error {
 
 	plies, problems := 0, 0
 	for _, id := range ids {
-		record, moves, err := store.GetGameHistory(id)
+		record, moves, err := store.GetGameHistory(ctx, id)
 		if err != nil {
 			return fmt.Errorf("load game %s: %w", id, err)
 		}
@@ -307,15 +310,16 @@ func runGameDelete(args []string) error {
 		return err
 	}
 	defer store.Close()
+	ctx := context.Background()
 
-	id, err := resolveGameID(store, *gameID)
+	id, err := resolveGameID(ctx, store, *gameID)
 	if err != nil {
 		return err
 	}
 	if err := store.DeleteGames([]string{id}); err != nil {
 		return fmt.Errorf("delete game: %w", err)
 	}
-	if err := store.Flush(context.Background()); err != nil {
+	if err := store.Flush(ctx); err != nil {
 		return fmt.Errorf("delete game: %w", err)
 	}
 	fmt.Printf("Deleted game %s\n", id)
@@ -344,8 +348,9 @@ func runGameImport(args []string) error {
 		return err
 	}
 	defer store.Close()
+	ctx := context.Background()
 
-	ownerID, err := lookupUser(store, *username, "")
+	ownerID, err := lookupUser(ctx, store, *username, "")
 	if err != nil {
 		return err
 	}
@@ -353,7 +358,7 @@ func runGameImport(args []string) error {
 	if err != nil {
 		return err
 	}
-	imported, err := svc.ImportGame(ownerID, string(text))
+	imported, err := svc.ImportGame(ctx, ownerID, string(text))
 	if err != nil {
 		return err
 	}
@@ -361,8 +366,8 @@ func runGameImport(args []string) error {
 	return nil
 }
 
-func resolveGameID(store *storage.Store, prefix string) (string, error) {
-	id, err := store.ResolveGameID(prefix)
+func resolveGameID(ctx context.Context, store *storage.Store, prefix string) (string, error) {
+	id, err := store.ResolveGameID(ctx, prefix)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", fmt.Errorf("no game matches %q", prefix)
 	}
@@ -429,8 +434,9 @@ func runUserResetLink(args []string) error {
 		return err
 	}
 	defer store.Close()
+	ctx := context.Background()
 
-	targetID, err := lookupUser(store, *username, *userID)
+	targetID, err := lookupUser(ctx, store, *username, *userID)
 	if err != nil {
 		return err
 	}
@@ -439,7 +445,7 @@ func runUserResetLink(args []string) error {
 		return err
 	}
 	now := time.Now().UTC()
-	if err := store.CreatePasswordReset(storage.PasswordResetRecord{
+	if err := store.CreatePasswordReset(ctx, storage.PasswordResetRecord{
 		UserID: targetID, TokenHash: hash, CreatedAt: now, ExpiresAt: now.Add(service.PasswordResetTTL),
 	}, 0); err != nil {
 		return fmt.Errorf("failed to create reset: %w", err)
@@ -521,6 +527,7 @@ func runUserAdd(args []string) error {
 		return err
 	}
 	defer store.Close()
+	ctx := context.Background()
 
 	userID := uuid.NewString()
 	record := storage.UserRecord{
@@ -531,7 +538,7 @@ func runUserAdd(args []string) error {
 		CreatedAt:    time.Now().UTC(),
 	}
 
-	if err := store.CreateUser(record); err != nil {
+	if err := store.CreateUser(ctx, record); err != nil {
 		return fmt.Errorf("failed to create user: %w", err)
 	}
 
@@ -545,19 +552,19 @@ func runUserAdd(args []string) error {
 }
 
 // lookupUser resolves -username or -id to a user ID.
-func lookupUser(store *storage.Store, username, userID string) (string, error) {
+func lookupUser(ctx context.Context, store *storage.Store, username, userID string) (string, error) {
 	switch {
 	case username == "" && userID == "":
 		return "", fmt.Errorf("either -username or -id required")
 	case username != "" && userID != "":
 		return "", fmt.Errorf("specify either -username or -id, not both")
 	case userID != "":
-		if _, err := store.GetUserByID(userID); err != nil {
+		if _, err := store.GetUserByID(ctx, userID); err != nil {
 			return "", userLookupError(userID, err)
 		}
 		return userID, nil
 	default:
-		user, err := store.GetUserByUsername(username)
+		user, err := store.GetUserByUsername(ctx, username)
 		if err != nil {
 			return "", userLookupError(username, err)
 		}
@@ -585,12 +592,13 @@ func runUserDelete(args []string) error {
 		return err
 	}
 	defer store.Close()
+	ctx := context.Background()
 
-	targetID, err := lookupUser(store, *username, *userID)
+	targetID, err := lookupUser(ctx, store, *username, *userID)
 	if err != nil {
 		return err
 	}
-	if err := store.DeleteUser(targetID); err != nil {
+	if err := store.DeleteUser(ctx, targetID); err != nil {
 		return fmt.Errorf("failed to delete user: %w", err)
 	}
 
@@ -636,12 +644,13 @@ func runUserSetPassword(args []string) error {
 		return err
 	}
 	defer store.Close()
+	ctx := context.Background()
 
-	targetID, err := lookupUser(store, *username, "")
+	targetID, err := lookupUser(ctx, store, *username, "")
 	if err != nil {
 		return err
 	}
-	if err := store.UpdateUserPassword(targetID, passwordHash); err != nil {
+	if err := store.UpdateUserPassword(ctx, targetID, passwordHash); err != nil {
 		return fmt.Errorf("failed to update password: %w", err)
 	}
 
@@ -671,12 +680,13 @@ func runUserSetHash(args []string) error {
 		return err
 	}
 	defer store.Close()
+	ctx := context.Background()
 
-	targetID, err := lookupUser(store, *username, "")
+	targetID, err := lookupUser(ctx, store, *username, "")
 	if err != nil {
 		return err
 	}
-	if err := store.UpdateUserPassword(targetID, *hash); err != nil {
+	if err := store.UpdateUserPassword(ctx, targetID, *hash); err != nil {
 		return fmt.Errorf("failed to update password hash: %w", err)
 	}
 
@@ -703,12 +713,13 @@ func runUserSetEmail(args []string) error {
 		return err
 	}
 	defer store.Close()
+	ctx := context.Background()
 
-	targetID, err := lookupUser(store, *username, "")
+	targetID, err := lookupUser(ctx, store, *username, "")
 	if err != nil {
 		return err
 	}
-	if err := store.UpdateUserEmail(targetID, *email); err != nil {
+	if err := store.UpdateUserEmail(ctx, targetID, *email); err != nil {
 		return fmt.Errorf("failed to update email: %w", err)
 	}
 
@@ -735,12 +746,13 @@ func runUserSetUsername(args []string) error {
 		return err
 	}
 	defer store.Close()
+	ctx := context.Background()
 
-	targetID, err := lookupUser(store, *current, "")
+	targetID, err := lookupUser(ctx, store, *current, "")
 	if err != nil {
 		return err
 	}
-	if err := store.UpdateUserUsername(targetID, *newName); err != nil {
+	if err := store.UpdateUserUsername(ctx, targetID, *newName); err != nil {
 		return fmt.Errorf("failed to update username: %w", err)
 	}
 
@@ -759,8 +771,9 @@ func runUserList(args []string) error {
 		return err
 	}
 	defer store.Close()
+	ctx := context.Background()
 
-	users, err := store.GetAllUsers()
+	users, err := store.GetAllUsers(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to list users: %w", err)
 	}

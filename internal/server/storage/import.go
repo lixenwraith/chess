@@ -12,7 +12,7 @@ import (
 // transaction, behind every gameplay write already queued, and returns once
 // it has committed. The record's ImportedBy names the owner; names, event,
 // site and round come from the PGN's tags.
-func (s *Store) ImportGame(record GameRecord, moves []MoveRecord) error {
+func (s *Store) ImportGame(ctx context.Context, record GameRecord, moves []MoveRecord) error {
 	if record.GameID == "" || record.InitialFEN == "" || record.WhitePlayerID == "" || record.BlackPlayerID == "" {
 		return errors.New("game ID, initial FEN, and player IDs are required")
 	}
@@ -29,7 +29,7 @@ func (s *Store) ImportGame(record GameRecord, moves []MoveRecord) error {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), flushTimeout+writeTimeout)
+	ctx, cancel := context.WithTimeout(ctx, flushTimeout+writeTimeout)
 	defer cancel()
 	return s.enqueueWait(ctx, "import_game", func(ctx context.Context, tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO games (
@@ -77,12 +77,12 @@ const (
 // user's own claim so the game leaves their list but not the other's. It
 // returns sql.ErrNoRows when the user holds nothing in the game. Ordered
 // behind queued writes, it returns once committed.
-func (s *Store) RemoveGameForUser(gameID, userID string) (RemovalOutcome, error) {
+func (s *Store) RemoveGameForUser(ctx context.Context, gameID, userID string) (RemovalOutcome, error) {
 	if !validUUID(gameID) || !validUUID(userID) {
 		return "", sql.ErrNoRows
 	}
 	var outcome RemovalOutcome
-	ctx, cancel := context.WithTimeout(context.Background(), flushTimeout+writeTimeout)
+	ctx, cancel := context.WithTimeout(ctx, flushTimeout+writeTimeout)
 	defer cancel()
 	// A missing row or a game the user holds nothing in is an answer, not a
 	// failed write: the transaction then changes nothing and outcome stays

@@ -108,7 +108,7 @@ func (h *HTTPHandler) RegisterHandler(c *fiber.Ctx) error {
 	}
 
 	// Create the user and initial session atomically.
-	user, sessionID, err := h.svc.RegisterUser(req.Username, req.Email, req.Password)
+	user, sessionID, err := h.svc.RegisterUser(c.UserContext(), req.Username, req.Email, req.Password)
 	if err != nil {
 		if errors.Is(err, service.ErrStorageDisabled) || errors.Is(err, service.ErrStorageUnavailable) {
 			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
@@ -203,7 +203,7 @@ func (h *HTTPHandler) LoginHandler(c *fiber.Ctx) error {
 	req.Identifier = strings.ToLower(req.Identifier)
 
 	// Authenticate user and create session (invalidates previous session)
-	user, sessionID, err := h.svc.AuthenticateUser(req.Identifier, req.Password)
+	user, sessionID, err := h.svc.AuthenticateUser(c.UserContext(), req.Identifier, req.Password)
 	if err != nil {
 		if errors.Is(err, service.ErrStorageDisabled) || errors.Is(err, service.ErrStorageUnavailable) {
 			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
@@ -249,7 +249,7 @@ func (h *HTTPHandler) GetCurrentUserHandler(c *fiber.Ctx) error {
 		})
 	}
 
-	user, err := h.svc.GetUserByID(userID)
+	user, err := h.svc.GetUserByID(c.UserContext(), userID)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(core.ErrorResponse{
 			Error: "user not found",
@@ -276,7 +276,7 @@ func (h *HTTPHandler) LogoutHandler(c *fiber.Ctx) error {
 		})
 	}
 
-	if err := h.svc.InvalidateSession(sessionID); err != nil {
+	if err := h.svc.InvalidateSession(c.UserContext(), sessionID); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
 			Error: "failed to logout",
 			Code:  core.ErrInternalError,
@@ -308,7 +308,7 @@ func (h *HTTPHandler) DeleteAccountHandler(c *fiber.Ctx) error {
 		})
 	}
 
-	if err := h.svc.DeleteAccount(userID, sessionID, req.Password); err != nil {
+	if err := h.svc.DeleteAccount(c.UserContext(), userID, sessionID, req.Password); err != nil {
 		switch {
 		case errors.Is(err, service.ErrInvalidCredentials):
 			return c.Status(fiber.StatusUnauthorized).JSON(core.ErrorResponse{
@@ -396,7 +396,7 @@ func (h *HTTPHandler) ResetPasswordHandler(c *fiber.Ctx) error {
 		})
 	}
 
-	user, sessionID, err := h.svc.ResetPassword(req.Token, req.Password)
+	user, sessionID, err := h.svc.ResetPassword(c.UserContext(), req.Token, req.Password)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrResetInvalid):

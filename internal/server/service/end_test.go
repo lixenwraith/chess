@@ -85,7 +85,7 @@ func TestResignationClaimsAndPersists(t *testing.T) {
 		view.BlackPlayer.ClaimedBy != bob || view.EndTimeUTC == nil {
 		t.Fatalf("view after resignation: %+v", view)
 	}
-	history, err := svc.GetGameHistory(gameID)
+	history, err := svc.GetGameHistory(t.Context(), gameID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestConcessionAgainstComputerStaysOnRecord(t *testing.T) {
 		view.Concession.State != core.StateBlackWins || view.Concession.Ply != 2 {
 		t.Fatalf("view after undoing a resignation: %+v", view)
 	}
-	history, err := svc.GetGameHistory(gameID)
+	history, err := svc.GetGameHistory(t.Context(), gameID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestConcessionAgainstComputerStaysOnRecord(t *testing.T) {
 
 	move(t, svc, gameID, alice, "d2d4")
 	resign()
-	history, _ = svc.GetGameHistory(gameID)
+	history, _ = svc.GetGameHistory(t.Context(), gameID)
 	if history.Result != "black_wins" || len(history.Moves) != 1 || history.Concession.Ply != 2 {
 		t.Fatalf("second resignation replaced the first concession: %+v", history)
 	}
@@ -241,7 +241,7 @@ func TestDrawOffersBetweenHumans(t *testing.T) {
 	if err := svc.EndGame(gameID, accept); err != nil {
 		t.Fatal(err)
 	}
-	history, err := svc.GetGameHistory(gameID)
+	history, err := svc.GetGameHistory(t.Context(), gameID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +266,7 @@ func TestOfferToMissingOfferIsRejected(t *testing.T) {
 func TestGameWithDeletedRowIsUnloadedNotDegraded(t *testing.T) {
 	svc, dsn := newPersistentTestServiceDSN(t)
 	gameID := newHumanGame(t, svc)
-	if _, err := svc.GetGameHistory(gameID); err != nil { // flushes the insert
+	if _, err := svc.GetGameHistory(t.Context(), gameID); err != nil { // flushes the insert
 		t.Fatal(err)
 	}
 	db, err := sql.Open("pgx", dsn)

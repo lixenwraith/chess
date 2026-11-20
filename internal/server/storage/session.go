@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
@@ -9,8 +10,8 @@ import (
 
 // CreateSession creates or replaces the user's single session and records the
 // login time in the same statement, so a login is one round trip.
-func (s *Store) CreateSession(record SessionRecord) error {
-	ctx, cancel := opContext()
+func (s *Store) CreateSession(ctx context.Context, record SessionRecord) error {
+	ctx, cancel := opContext(ctx)
 	defer cancel()
 	const query = `WITH session AS (
 			INSERT INTO sessions (session_id, user_id, created_at, expires_at)
@@ -32,11 +33,11 @@ func (s *Store) CreateSession(record SessionRecord) error {
 }
 
 // GetSession retrieves a session by ID
-func (s *Store) GetSession(sessionID string) (*SessionRecord, error) {
+func (s *Store) GetSession(ctx context.Context, sessionID string) (*SessionRecord, error) {
 	if !validUUID(sessionID) {
 		return nil, sql.ErrNoRows
 	}
-	ctx, cancel := opContext()
+	ctx, cancel := opContext(ctx)
 	defer cancel()
 	var session SessionRecord
 	err := s.db.QueryRowContext(ctx,
@@ -53,11 +54,11 @@ func (s *Store) GetSession(sessionID string) (*SessionRecord, error) {
 
 // DeleteSession removes a session (logout). Deleting an absent session is not
 // an error.
-func (s *Store) DeleteSession(sessionID string) error {
+func (s *Store) DeleteSession(ctx context.Context, sessionID string) error {
 	if !validUUID(sessionID) {
 		return nil
 	}
-	ctx, cancel := opContext()
+	ctx, cancel := opContext(ctx)
 	defer cancel()
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE session_id = $1`, sessionID); err != nil {
 		return err
@@ -67,8 +68,8 @@ func (s *Store) DeleteSession(sessionID string) error {
 }
 
 // DeleteExpiredSessions removes expired sessions
-func (s *Store) DeleteExpiredSessions() (int64, error) {
-	ctx, cancel := opContext()
+func (s *Store) DeleteExpiredSessions(ctx context.Context) (int64, error) {
+	ctx, cancel := opContext(ctx)
 	defer cancel()
 	result, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at < $1`, time.Now().UTC())
 	if err != nil {
@@ -84,11 +85,11 @@ func (s *Store) DeleteExpiredSessions() (int64, error) {
 // IsSessionValidForUser verifies both expiry and the binding between a JWT
 // subject and its persisted session. Checking only the session ID would allow
 // a malformed server-issued token to authenticate as the wrong subject.
-func (s *Store) IsSessionValidForUser(sessionID, userID string) (bool, error) {
+func (s *Store) IsSessionValidForUser(ctx context.Context, sessionID, userID string) (bool, error) {
 	if !validUUID(sessionID) || !validUUID(userID) {
 		return false, nil
 	}
-	ctx, cancel := opContext()
+	ctx, cancel := opContext(ctx)
 	defer cancel()
 	var valid bool
 	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(

@@ -179,9 +179,9 @@ func (s *Service) sendPasswordReset(m *mailer, identifier string) {
 	var record *storage.UserRecord
 	var err error
 	if strings.Contains(identifier, "@") {
-		record, err = s.store.GetUserByEmail(identifier)
+		record, err = s.store.GetUserByEmail(m.ctx, identifier)
 	} else {
-		record, err = s.store.GetUserByUsername(identifier)
+		record, err = s.store.GetUserByUsername(m.ctx, identifier)
 	}
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -201,7 +201,7 @@ func (s *Service) sendPasswordReset(m *mailer, identifier string) {
 		return
 	}
 	now := time.Now().UTC()
-	err = s.store.CreatePasswordReset(storage.PasswordResetRecord{
+	err = s.store.CreatePasswordReset(m.ctx, storage.PasswordResetRecord{
 		UserID: record.UserID, TokenHash: hash, CreatedAt: now, ExpiresAt: now.Add(PasswordResetTTL),
 	}, m.cooldown)
 	switch {
@@ -232,7 +232,8 @@ it is and nobody else can use the link without this email.
 	})
 	if err != nil {
 		slog.Error("password reset email failed", "user_id", record.UserID, "error", err)
-		if _, err := s.store.ConsumePasswordReset(hash, now); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		// Revoke even when shutdown cut the send short, or the cooldown blocks a retry.
+		if _, err := s.store.ConsumePasswordReset(context.WithoutCancel(m.ctx), hash, now); err != nil && !errors.Is(err, sql.ErrNoRows) {
 			slog.Error("unsent password reset not revoked", "user_id", record.UserID, "error", err)
 		}
 		return
@@ -243,7 +244,7 @@ it is and nobody else can use the link without this email.
 // ResetPassword sets a new password for the account whose pending reset
 // token this is, ends its other sessions, and signs the user in. The token
 // works once and only until its expiry.
-func (s *Service) ResetPassword(token, password string) (*User, string, error) {
+func (s *Service) ResetPassword(ctx context.Context, token, password string) (*User, string, error) {
 	if s.store == nil {
 		return nil, "", ErrStorageDisabled
 	}
@@ -251,7 +252,7 @@ func (s *Service) ResetPassword(token, password string) (*User, string, error) {
 		return nil, "", ErrResetInvalid
 	}
 	now := time.Now().UTC()
-	userID, err := s.store.ConsumePasswordReset(hashResetToken(token), now)
+	userID, err := s.store.ConsumePasswordReset(ctx, hashResetToken(token), now)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, "", ErrResetInvalid
@@ -266,18 +267,18 @@ func (s *Service) ResetPassword(token, password string) (*User, string, error) {
 		}
 		return nil, "", fmt.Errorf("failed to hash password: %w", err)
 	}
-	if err := s.store.ResetUserPassword(userID, passwordHash); err != nil {
+	if err := s.store.ResetUserPassword(ctx, userID, passwordHash); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, "", ErrResetInvalid
 		}
 		return nil, "", fmt.Errorf("%w: reset password: %v", ErrStorageUnavailable, err)
 	}
-	record, err := s.store.GetUserByID(userID)
+	record, err := s.store.GetUserByID(ctx, userID)
 	if err != nil {
 		return nil, "", fmt.Errorf("%w: look up user: %v", ErrStorageUnavailable, err)
 	}
 	sessionID := uuid.NewString()
-	if err := s.store.CreateSession(storage.SessionRecord{
+	if err := s.store.CreateSession(ctx, storage.SessionRecord{
 		SessionID: sessionID, UserID: userID, CreatedAt: now, ExpiresAt: now.Add(SessionTTL),
 	}); err != nil {
 		return nil, "", fmt.Errorf("%w: create session: %v", ErrStorageUnavailable, err)

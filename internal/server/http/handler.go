@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -21,7 +22,11 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/recover"
 )
 
-const rateLimitRate = 10 // req/sec
+const (
+	rateLimitRate = 10 // req/sec
+	// requestTimeout outlasts the long-poll, which waits 30 s.
+	requestTimeout = 35 * time.Second
+)
 
 // HTTPHandler handles HTTP requests and routes them to the processor
 type HTTPHandler struct {
@@ -47,6 +52,9 @@ type Options struct {
 	ProxyHeader string
 	// Version is the build identifier /health reports.
 	Version string
+	// Context is the server's lifetime: cancelling it ends the database work
+	// of every request still running. Nil means context.Background().
+	Context context.Context
 }
 
 // appConfig returns the Fiber configuration. Client-IP resolution only honors
@@ -56,7 +64,7 @@ func appConfig(opts Options) fiber.Config {
 	config := fiber.Config{
 		ErrorHandler: customErrorHandler,
 		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 35 * time.Second,
+		WriteTimeout: requestTimeout,
 		IdleTimeout:  60 * time.Second,
 	}
 	if len(opts.TrustedProxies) > 0 && opts.ProxyHeader != "" {
@@ -84,6 +92,19 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 
 	// Initialize Fiber app
 	app := fiber.New(appConfig(opts))
+
+	// fasthttp's own context ends only at shutdown, and a disconnect cancels
+	// nothing: each request gets a deadline within the server's lifetime.
+	serverCtx := opts.Context
+	if serverCtx == nil {
+		serverCtx = context.Background()
+	}
+	app.Use(func(c *fiber.Ctx) error {
+		ctx, cancel := context.WithTimeout(serverCtx, requestTimeout)
+		defer cancel()
+		c.SetUserContext(ctx)
+		return c.Next()
+	})
 
 	// Global middleware (order matters)
 	app.Use(recover.New())
@@ -454,11 +475,10 @@ func (h *HTTPHandler) GetGame(c *fiber.Ctx) error {
 		return c.JSON(resp.Data)
 	}
 
-	// Register wait with service
-	ctx := c.Context()
+	ctx := c.UserContext()
 	notify := h.svc.RegisterWait(gameID, moveCount, ctx)
 
-	// Wait for notification, timeout, or client disconnect
+	// notify closes on a change, after 30 s, or when shutdown ends the waits.
 	select {
 	case <-notify:
 		// State changed or timeout, get fresh game state
@@ -473,7 +493,6 @@ func (h *HTTPHandler) GetGame(c *fiber.Ctx) error {
 		return c.JSON(resp.Data)
 
 	case <-ctx.Done():
-		// Client disconnected
 		return nil
 	}
 }
@@ -689,7 +708,7 @@ func (h *HTTPHandler) GetGameHistory(c *fiber.Ctx) error {
 		return invalidGameID(c)
 	}
 
-	history, err := h.svc.GetGameHistory(gameID)
+	history, err := h.svc.GetGameHistory(c.UserContext(), gameID)
 	if err != nil {
 		return storedGameError(c, err)
 	}
@@ -714,7 +733,7 @@ func (h *HTTPHandler) GetGamePGN(c *fiber.Ctx) error {
 		})
 	}
 
-	pgn, err := h.svc.GetGamePGN(gameID, ply)
+	pgn, err := h.svc.GetGamePGN(c.UserContext(), gameID, ply)
 	if err != nil {
 		return storedGameError(c, err)
 	}
@@ -806,7 +825,7 @@ func (h *HTTPHandler) GetCurrentUserGames(c *fiber.Ctx) error {
 		})
 	}
 
-	games, err := h.svc.GetUserGames(userID, service.UserGamesOptions{
+	games, err := h.svc.GetUserGames(c.UserContext(), userID, service.UserGamesOptions{
 		Limit:  limit,
 		Offset: offset,
 		Cursor: c.Query("cursor"),
@@ -847,7 +866,7 @@ func (h *HTTPHandler) ImportGame(c *fiber.Ctx) error {
 	}
 	req := *(body.(*core.ImportGameRequest))
 
-	imported, err := h.svc.ImportGame(userID, req.PGN)
+	imported, err := h.svc.ImportGame(c.UserContext(), userID, req.PGN)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrInvalidPGN):
@@ -883,7 +902,7 @@ func (h *HTTPHandler) RemoveGame(c *fiber.Ctx) error {
 	if !isValidUUID(gameID) {
 		return invalidGameID(c)
 	}
-	outcome, err := h.svc.RemoveGame(gameID, userID)
+	outcome, err := h.svc.RemoveGame(c.UserContext(), gameID, userID)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrGameNotFound):

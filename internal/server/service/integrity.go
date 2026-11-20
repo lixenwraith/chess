@@ -66,21 +66,10 @@ type integrityFindings struct {
 	loaded   map[string]bool
 }
 
-// checkIntegrity finds data that the server cannot use and, in delete mode,
-// removes it:
-//
-//   - loaded games whose row was deleted by hand (unloaded from memory);
-//   - games with missing plies, when move rows were deleted by hand
-//     (unloaded if loaded, then deleted);
-//   - stored games that fail replay.Verify, integrityBatch per run
-//     (loaded games are skipped: their rows may trail memory);
-//   - games whose registered players were all deleted, once idle past the
-//     anonymous-game retention, like games that never had one;
-//   - accounts whose password hash is not a usable Argon2id PHC string, so
-//     nobody can sign in to them.
-//
-// Every finding is logged at WARN with its reason.
-func (s *Service) checkIntegrity(now time.Time) {
+// checkIntegrity runs the sweep doc/database.md describes: it logs each
+// finding at WARN with its reason and, in delete mode, removes it from memory
+// and the database. Loaded games are not replayed: their rows may trail memory.
+func (s *Service) checkIntegrity(ctx context.Context, now time.Time) {
 	s.mu.RLock()
 	mode, anonymousTTL := s.integrityMode, s.anonymousTTL
 	loaded := make(map[string]bool, len(s.games))
@@ -92,7 +81,7 @@ func (s *Service) checkIntegrity(now time.Time) {
 		return
 	}
 
-	findings, err := s.findIntegrityProblems(now, loaded, anonymousTTL)
+	findings, err := s.findIntegrityProblems(ctx, now, loaded, anonymousTTL)
 	if err != nil {
 		slog.Error("integrity sweep failed", "error", err)
 		return
@@ -132,7 +121,7 @@ func (s *Service) checkIntegrity(now time.Time) {
 	for userID := range findings.users {
 		users = append(users, userID)
 	}
-	if err := s.store.DeleteUsers(users); err != nil {
+	if err := s.store.DeleteUsers(ctx, users); err != nil {
 		slog.Error("integrity sweep failed to delete accounts", "error", err)
 	}
 	if len(findings.vanished)+len(games)+len(users) > 0 {
@@ -140,7 +129,7 @@ func (s *Service) checkIntegrity(now time.Time) {
 	}
 }
 
-func (s *Service) findIntegrityProblems(now time.Time, loaded map[string]bool,
+func (s *Service) findIntegrityProblems(ctx context.Context, now time.Time, loaded map[string]bool,
 	anonymousTTL time.Duration) (*integrityFindings, error) {
 	found := &integrityFindings{
 		vanished: map[string]string{},
@@ -155,12 +144,12 @@ func (s *Service) findIntegrityProblems(now time.Time, loaded map[string]bool,
 
 	// Every loaded game's insert was queued before the snapshot was taken, so
 	// after this flush a missing row means the row was deleted.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	flushCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := s.store.Flush(ctx); err != nil {
+	if err := s.store.Flush(flushCtx); err != nil {
 		return nil, err
 	}
-	exists, err := s.store.ExistingGames(live)
+	exists, err := s.store.ExistingGames(ctx, live)
 	if err != nil {
 		return nil, err
 	}
@@ -170,7 +159,7 @@ func (s *Service) findIntegrityProblems(now time.Time, loaded map[string]bool,
 		}
 	}
 
-	gaps, err := s.store.GamesWithMoveGaps()
+	gaps, err := s.store.GamesWithMoveGaps(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +167,7 @@ func (s *Service) findIntegrityProblems(now time.Time, loaded map[string]bool,
 		found.games[gameID] = "missing plies: move rows were deleted"
 	}
 
-	ids, err := s.store.GameIDsAfter(s.integrityCursor, integrityBatch)
+	ids, err := s.store.GameIDsAfter(ctx, s.integrityCursor, integrityBatch)
 	if err != nil {
 		return nil, err
 	}
@@ -190,7 +179,7 @@ func (s *Service) findIntegrityProblems(now time.Time, loaded map[string]bool,
 		if loaded[gameID] || found.games[gameID] != "" {
 			continue
 		}
-		record, moves, err := s.store.GetGameHistory(gameID)
+		record, moves, err := s.store.GetGameHistory(ctx, gameID)
 		if err != nil {
 			continue // deleted since the listing
 		}
@@ -200,7 +189,7 @@ func (s *Service) findIntegrityProblems(now time.Time, loaded map[string]bool,
 	}
 
 	if anonymousTTL > 0 {
-		orphans, err := s.store.OrphanedGames(now.Add(-anonymousTTL), live)
+		orphans, err := s.store.OrphanedGames(ctx, now.Add(-anonymousTTL), live)
 		if err != nil {
 			return nil, err
 		}
@@ -211,7 +200,7 @@ func (s *Service) findIntegrityProblems(now time.Time, loaded map[string]bool,
 		}
 	}
 
-	users, err := s.store.GetAllUsers()
+	users, err := s.store.GetAllUsers(ctx)
 	if err != nil {
 		return nil, err
 	}

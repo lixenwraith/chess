@@ -41,7 +41,7 @@ func TestMoveCommitClaimsSlotPersistsResultAndRejectsStalePosition(t *testing.T)
 	if view.WhitePlayer.ClaimedBy != userID || view.State != core.StateWhiteWins {
 		t.Fatalf("in-memory move did not settle atomically: %+v", view)
 	}
-	history, err := svc.GetGameHistory(gameID)
+	history, err := svc.GetGameHistory(t.Context(), gameID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestUndoClearsDurableTerminalResult(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	history, err := svc.GetGameHistory(gameID)
+	history, err := svc.GetGameHistory(t.Context(), gameID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestPlayerReconfigurationPreservesClaimAndPersistsConfiguration(t *testing.
 		t.Fatal(err)
 	}
 
-	history, err := svc.GetGameHistory(gameID)
+	history, err := svc.GetGameHistory(t.Context(), gameID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestPlayerReconfigurationPreservesClaimAndPersistsConfiguration(t *testing.
 	if err := svc.UpdatePlayers(gameID, computerWhite, replacementBlack, userID); err != nil {
 		t.Fatal(err)
 	}
-	history, err = svc.GetGameHistory(gameID)
+	history, err = svc.GetGameHistory(t.Context(), gameID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestCleanupEvictsOnlyMemoryCopyOfTerminalGame(t *testing.T) {
 	if _, err := svc.GetGameView(gameID); !errors.Is(err, ErrGameNotFound) {
 		t.Fatalf("terminal game remains in memory: %v", err)
 	}
-	if history, err := svc.GetGameHistory(gameID); err != nil || history.Result != "stalemate" {
+	if history, err := svc.GetGameHistory(t.Context(), gameID); err != nil || history.Result != "stalemate" {
 		t.Fatalf("durable history was removed: history=%+v err=%v", history, err)
 	}
 }
@@ -154,7 +154,7 @@ func TestCleanupEvictsOnlyMemoryCopyOfTerminalGame(t *testing.T) {
 func TestCleanupDeletesIdleAnonymousGamesAndUnloadsIdleClaimedOnes(t *testing.T) {
 	svc := newPersistentTestService(t)
 	svc.SetFinishedGameTTL(0)
-	user, _, err := svc.RegisterUser("alice", "", "Password1")
+	user, _, err := svc.RegisterUser(t.Context(), "alice", "", "Password1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestCleanupDeletesIdleAnonymousGamesAndUnloadsIdleClaimedOnes(t *testing.T)
 			t.Fatal(err)
 		}
 	}
-	history, err := svc.GetGameHistory(claimed)
+	history, err := svc.GetGameHistory(t.Context(), claimed)
 	if err != nil || history.Players.White.Name != "alice" {
 		t.Fatalf("claimed history name = %+v, %v", history, err)
 	}
@@ -189,13 +189,13 @@ func TestCleanupDeletesIdleAnonymousGamesAndUnloadsIdleClaimedOnes(t *testing.T)
 	if _, err := svc.GetGameView(anonymous); !errors.Is(err, ErrGameNotFound) {
 		t.Fatalf("idle anonymous game still loaded: %v", err)
 	}
-	if _, err := svc.GetGameHistory(anonymous); !errors.Is(err, ErrGameNotFound) {
+	if _, err := svc.GetGameHistory(t.Context(), anonymous); !errors.Is(err, ErrGameNotFound) {
 		t.Fatalf("idle anonymous game still stored: %v", err)
 	}
 	if _, err := svc.GetGameView(claimed); err != nil {
 		t.Fatalf("claimed game evicted: %v", err)
 	}
-	if _, err := svc.GetGameHistory(claimed); err != nil {
+	if _, err := svc.GetGameHistory(t.Context(), claimed); err != nil {
 		t.Fatalf("claimed game deleted: %v", err)
 	}
 
@@ -205,7 +205,7 @@ func TestCleanupDeletesIdleAnonymousGamesAndUnloadsIdleClaimedOnes(t *testing.T)
 	if _, err := svc.GetGameView(claimed); !errors.Is(err, ErrGameNotFound) {
 		t.Fatalf("idle claimed game still loaded: %v", err)
 	}
-	if _, err := svc.GetGameHistory(claimed); err != nil {
+	if _, err := svc.GetGameHistory(t.Context(), claimed); err != nil {
 		t.Fatalf("idle claimed game deleted: %v", err)
 	}
 }

@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"errors"
 	"net/http/httptest"
 	"testing"
@@ -12,7 +13,7 @@ import (
 
 func TestOptionalAuthAllowsAbsenceButRejectsInvalidToken(t *testing.T) {
 	app := fiber.New()
-	app.Get("/optional", OptionalAuth(func(string) (string, map[string]any, error) {
+	app.Get("/optional", OptionalAuth(func(context.Context, string) (string, map[string]any, error) {
 		return "", nil, errors.New("invalid token")
 	}), func(c *fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusNoContent)
@@ -41,7 +42,7 @@ func TestOptionalAuthAllowsAbsenceButRejectsInvalidToken(t *testing.T) {
 func TestAuthMiddlewareReportsStorageUnavailable(t *testing.T) {
 	for _, middleware := range []func(TokenValidator) fiber.Handler{AuthRequired, OptionalAuth} {
 		app := fiber.New()
-		app.Get("/protected", middleware(func(string) (string, map[string]any, error) {
+		app.Get("/protected", middleware(func(context.Context, string) (string, map[string]any, error) {
 			return "", nil, service.ErrStorageUnavailable
 		}), func(c *fiber.Ctx) error {
 			return c.SendStatus(fiber.StatusNoContent)
@@ -60,7 +61,7 @@ func TestAuthMiddlewareReportsStorageUnavailable(t *testing.T) {
 }
 
 func TestAuthMiddlewareParsesBearerHeaderStrictly(t *testing.T) {
-	validate := func(token string) (string, map[string]any, error) {
+	validate := func(_ context.Context, token string) (string, map[string]any, error) {
 		if token != "good.token.value" {
 			return "", nil, errors.New("invalid token")
 		}

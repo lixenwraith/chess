@@ -22,12 +22,12 @@ const importPGN = `[Event "World Championship"]
 
 func TestImportGameStoresReplaysAndLists(t *testing.T) {
 	svc := newPersistentTestService(t)
-	user, _, err := svc.RegisterUser("alice", "", "Password1")
+	user, _, err := svc.RegisterUser(t.Context(), "alice", "", "Password1")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	imported, err := svc.ImportGame(user.UserID, importPGN)
+	imported, err := svc.ImportGame(t.Context(), user.UserID, importPGN)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestImportGameStoresReplaysAndLists(t *testing.T) {
 		t.Fatalf("imported = %+v", imported)
 	}
 
-	history, err := svc.GetGameHistory(imported.GameID)
+	history, err := svc.GetGameHistory(t.Context(), imported.GameID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestImportGameStoresReplaysAndLists(t *testing.T) {
 	if strings.Join(san, " ") != "d4 Nf6 c4 e6 Nf3 d5" {
 		t.Errorf("SAN = %v", san)
 	}
-	pgn, err := svc.GetGamePGN(imported.GameID, -1)
+	pgn, err := svc.GetGamePGN(t.Context(), imported.GameID, -1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestImportGameStoresReplaysAndLists(t *testing.T) {
 		}
 	}
 
-	page, err := svc.GetUserGames(user.UserID, UserGamesOptions{Limit: 10})
+	page, err := svc.GetUserGames(t.Context(), user.UserID, UserGamesOptions{Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestImportGameStoresReplaysAndLists(t *testing.T) {
 		t.Fatalf("listing = %+v", page.Games)
 	}
 	// Imported games have no claimed colour.
-	page, _ = svc.GetUserGames(user.UserID, UserGamesOptions{Limit: 10, Color: "white"})
+	page, _ = svc.GetUserGames(t.Context(), user.UserID, UserGamesOptions{Limit: 10, Color: "white"})
 	if len(page.Games) != 0 {
 		t.Errorf("imported game listed under a colour filter")
 	}
@@ -84,12 +84,12 @@ func TestImportGameStoresReplaysAndLists(t *testing.T) {
 		"ongoing":   {"1. e4 e5 *", "", ""},
 		"material":  {"[FEN \"4k3/8/8/8/8/8/8/3RK3 w - - 0 1\"]\n[SetUp \"1\"]\n\n1. Rd8+ Kxd8 1/2-1/2", "draw", "insufficient_material"},
 	} {
-		got, err := svc.ImportGame(user.UserID, tc.pgn)
+		got, err := svc.ImportGame(t.Context(), user.UserID, tc.pgn)
 		if err != nil {
 			t.Errorf("%s: %v", name, err)
 			continue
 		}
-		h, _ := svc.GetGameHistory(got.GameID)
+		h, _ := svc.GetGameHistory(t.Context(), got.GameID)
 		if h.Result != tc.result || h.Termination != tc.termination {
 			t.Errorf("%s: result %q %q, want %q %q", name, h.Result, h.Termination, tc.result, tc.termination)
 		}
@@ -103,7 +103,7 @@ func TestImportGameStoresReplaysAndLists(t *testing.T) {
 		"bad fen":        "[FEN \"nonsense\"]\n[SetUp \"1\"]\n\n1. e4 *",
 		"not pgn":        "hello world",
 	} {
-		if _, err := svc.ImportGame(user.UserID, bad); !errors.Is(err, ErrInvalidPGN) {
+		if _, err := svc.ImportGame(t.Context(), user.UserID, bad); !errors.Is(err, ErrInvalidPGN) {
 			t.Errorf("%s: error = %v, want ErrInvalidPGN", name, err)
 		}
 	}
@@ -111,11 +111,11 @@ func TestImportGameStoresReplaysAndLists(t *testing.T) {
 
 func TestRemoveGameDeletesOwnAndReleasesShared(t *testing.T) {
 	svc := newPersistentTestService(t)
-	alice, _, err := svc.RegisterUser("alice", "", "Password1")
+	alice, _, err := svc.RegisterUser(t.Context(), "alice", "", "Password1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	bob, _, err := svc.RegisterUser("bob", "", "Password1")
+	bob, _, err := svc.RegisterUser(t.Context(), "bob", "", "Password1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,26 +123,26 @@ func TestRemoveGameDeletesOwnAndReleasesShared(t *testing.T) {
 
 	// A game alice alone claims: deleted outright and unloaded.
 	own := playLine(t, svc, alice.UserID, human, []string{"e2e4"}, core.StateOngoing)
-	outcome, err := svc.RemoveGame(own, alice.UserID)
+	outcome, err := svc.RemoveGame(t.Context(), own, alice.UserID)
 	if err != nil || outcome != storage.RemovedGame {
 		t.Fatalf("own game: %v %v", outcome, err)
 	}
 	if _, err := svc.GetGameView(own); err == nil {
 		t.Error("deleted game still in memory")
 	}
-	if _, err := svc.GetGameHistory(own); !errors.Is(err, ErrGameNotFound) {
+	if _, err := svc.GetGameHistory(t.Context(), own); !errors.Is(err, ErrGameNotFound) {
 		t.Errorf("deleted game history: %v", err)
 	}
 
 	// An imported game: deleted by its importer, unknown to anyone else.
-	imported, err := svc.ImportGame(alice.UserID, "1. e4 e5 *")
+	imported, err := svc.ImportGame(t.Context(), alice.UserID, "1. e4 e5 *")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.RemoveGame(imported.GameID, bob.UserID); !errors.Is(err, ErrGameNotFound) {
+	if _, err := svc.RemoveGame(t.Context(), imported.GameID, bob.UserID); !errors.Is(err, ErrGameNotFound) {
 		t.Errorf("bob removing alice's import: %v", err)
 	}
-	if outcome, err := svc.RemoveGame(imported.GameID, alice.UserID); err != nil || outcome != storage.RemovedGame {
+	if outcome, err := svc.RemoveGame(t.Context(), imported.GameID, alice.UserID); err != nil || outcome != storage.RemovedGame {
 		t.Errorf("alice removing her import: %v %v", outcome, err)
 	}
 
@@ -155,7 +155,7 @@ func TestRemoveGameDeletesOwnAndReleasesShared(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	outcome, err = svc.RemoveGame(shared, alice.UserID)
+	outcome, err = svc.RemoveGame(t.Context(), shared, alice.UserID)
 	if err != nil || outcome != storage.RemovedClaim {
 		t.Fatalf("shared game: %v %v", outcome, err)
 	}
@@ -163,17 +163,17 @@ func TestRemoveGameDeletesOwnAndReleasesShared(t *testing.T) {
 	if err != nil || view.WhitePlayer.ClaimedBy != "" || view.BlackPlayer.ClaimedBy != bob.UserID {
 		t.Errorf("shared game after release: %v %+v", err, view.WhitePlayer)
 	}
-	history, _ := svc.GetGameHistory(shared)
+	history, _ := svc.GetGameHistory(t.Context(), shared)
 	if history.Players.White.ClaimedBy != "" || history.Players.White.Name != "" || history.Players.Black.Name != "bob" {
 		t.Errorf("stored claims after release: %+v %+v", history.Players.White, history.Players.Black)
 	}
-	if page, _ := svc.GetUserGames(alice.UserID, UserGamesOptions{Limit: 10}); len(page.Games) != 0 {
+	if page, _ := svc.GetUserGames(t.Context(), alice.UserID, UserGamesOptions{Limit: 10}); len(page.Games) != 0 {
 		t.Errorf("alice still lists %d games", len(page.Games))
 	}
-	if page, _ := svc.GetUserGames(bob.UserID, UserGamesOptions{Limit: 10}); len(page.Games) != 1 {
+	if page, _ := svc.GetUserGames(t.Context(), bob.UserID, UserGamesOptions{Limit: 10}); len(page.Games) != 1 {
 		t.Errorf("bob lists %d games", len(page.Games))
 	}
-	if _, err := svc.RemoveGame(shared, alice.UserID); !errors.Is(err, ErrGameNotFound) {
+	if _, err := svc.RemoveGame(t.Context(), shared, alice.UserID); !errors.Is(err, ErrGameNotFound) {
 		t.Errorf("second removal: %v", err)
 	}
 }

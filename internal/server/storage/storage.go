@@ -191,11 +191,10 @@ func (s *Store) handleWrite(req writeRequest) {
 }
 
 // executeWrite runs one logical mutation as one transaction. A transient error
-// raised before COMMIT is retried: the transaction was rolled back, so a retry
-// cannot duplicate it, and the single writer preserves ordering while it waits.
-// A COMMIT error has an unknown outcome and is never retried. Any unrecovered
-// failure degrades storage permanently, because skipping one write would leave
-// later writes applied to an incomplete history.
+// before COMMIT is retried: the rollback makes a retry safe, and the single
+// writer keeps the order while it waits. A COMMIT error has an unknown outcome
+// and is never retried. Any unrecovered failure degrades storage for good, as
+// skipping one write would apply later ones to an incomplete history.
 func (s *Store) executeWrite(req writeRequest) error {
 	started := time.Now()
 	var err error
@@ -346,8 +345,8 @@ func (s *Store) Flush(ctx context.Context) error {
 	}
 }
 
-func (s *Store) flushBeforeRead() error {
-	ctx, cancel := context.WithTimeout(context.Background(), flushTimeout)
+func (s *Store) flushBeforeRead(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, flushTimeout)
 	defer cancel()
 	return s.Flush(ctx)
 }
@@ -469,8 +468,8 @@ func (s *Store) DropSchema() error {
 
 // opContext bounds a synchronous operation so a stalled database cannot hold a
 // request handler indefinitely.
-func opContext() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), queryTimeout)
+func opContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, queryTimeout)
 }
 
 // isTransient reports errors after which the same transaction may succeed on a

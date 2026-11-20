@@ -143,6 +143,12 @@ func (s *Service) RegisterWait(gameID string, moveCount int, ctx context.Context
 	return s.waiter.RegisterWait(gameID, moveCount, ctx)
 }
 
+// EndWaits wakes every long-poll and refuses new waits, so a server's drain
+// need not wait them out; Shutdown ends them too.
+func (s *Service) EndWaits(timeout time.Duration) error {
+	return s.waiter.Shutdown(timeout)
+}
+
 // Shutdown gracefully shuts down the service
 func (s *Service) Shutdown(timeout time.Duration) error {
 	var errs []error
@@ -172,7 +178,7 @@ func (s *Service) Shutdown(timeout time.Duration) error {
 // deletes anonymous games past their retention, and runs the integrity sweep
 // when enabled.
 func (s *Service) RunCleanupJob(ctx context.Context, interval time.Duration) {
-	s.cleanupExpired()
+	s.cleanupExpired(ctx)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -181,27 +187,27 @@ func (s *Service) RunCleanupJob(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.cleanupExpired()
+			s.cleanupExpired(ctx)
 		}
 	}
 }
 
-func (s *Service) cleanupExpired() {
+func (s *Service) cleanupExpired(ctx context.Context) {
 	now := time.Now().UTC()
 	if s.store != nil {
-		if deleted, err := s.store.DeleteExpiredSessions(); err != nil {
+		if deleted, err := s.store.DeleteExpiredSessions(ctx); err != nil {
 			slog.Error("cleanup failed to delete expired sessions", "error", err)
 		} else if deleted > 0 {
 			slog.Info("cleanup deleted expired sessions", "count", deleted)
 		}
-		if deleted, err := s.store.DeleteExpiredPasswordResets(); err != nil {
+		if deleted, err := s.store.DeleteExpiredPasswordResets(ctx); err != nil {
 			slog.Error("cleanup failed to delete expired password resets", "error", err)
 		} else if deleted > 0 {
 			slog.Info("cleanup deleted expired password resets", "count", deleted)
 		}
 	}
 	s.cleanupGames(now)
-	s.checkIntegrity(now)
+	s.checkIntegrity(ctx, now)
 }
 
 // cleanupGames unloads terminal games past the finished TTL and idle games

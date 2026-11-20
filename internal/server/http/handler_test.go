@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"io"
 	nethttp "net/http"
 	"net/http/httptest"
@@ -105,6 +106,27 @@ func TestAPIRoutes(t *testing.T) {
 		if !registered[want] {
 			t.Errorf("route %s is not registered", want)
 		}
+	}
+}
+
+func TestLongPollEndsWhenServerContextIsCancelled(t *testing.T) {
+	svc, err := service.New(nil, []byte("test-secret-test-secret-test-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gameID := uuid.NewString()
+	white := core.NewPlayer(core.PlayerConfig{Type: core.PlayerHuman}, core.ColorWhite)
+	black := core.NewPlayer(core.PlayerConfig{Type: core.PlayerHuman}, core.ColorBlack)
+	if err := svc.CreateGame(gameID, white, black, chess.StartFEN, core.ColorWhite, core.StateOngoing, core.TermNone); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	app := NewFiberApp(nil, svc, Options{Context: ctx})
+	time.AfterFunc(100*time.Millisecond, cancel)
+	// Uncancelled, the wait lasts service.WaitTimeout and app.Test gives up first.
+	request := httptest.NewRequest("GET", "/api/games/"+gameID+"?wait=true&moveCount=0", nil)
+	if _, err := app.Test(request, 5_000); err != nil {
+		t.Fatalf("long-poll outlived the server context: %v", err)
 	}
 }
 
@@ -253,7 +275,7 @@ func TestDeleteAccountRequiresPasswordAndEndsTheSession(t *testing.T) {
 		return response.StatusCode
 	}
 
-	user, sessionID, err := svc.RegisterUser("alice", "", "Password1")
+	user, sessionID, err := svc.RegisterUser(t.Context(), "alice", "", "Password1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +306,7 @@ func TestDeleteAccountRequiresPasswordAndEndsTheSession(t *testing.T) {
 	if got := send("GET", "/api/auth/me", token, ""); got != 401 {
 		t.Errorf("token still accepted after deletion: /auth/me = %d", got)
 	}
-	if _, _, err := svc.AuthenticateUser("alice", "Password1"); err == nil {
+	if _, _, err := svc.AuthenticateUser(t.Context(), "alice", "Password1"); err == nil {
 		t.Error("deleted account can still sign in")
 	}
 }

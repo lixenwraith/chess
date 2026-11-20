@@ -36,11 +36,11 @@ func TestPasswordResetFlow(t *testing.T) {
 	}
 	svc.mail.cooldown = 0 // set before the first request reaches the sender
 
-	user, sessionID, err := svc.RegisterUser("alice", "Alice@Example.test", "Password1")
+	user, sessionID, err := svc.RegisterUser(t.Context(), "alice", "Alice@Example.test", "Password1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := svc.RegisterUser("bob", "", "Password1"); err != nil {
+	if _, _, err := svc.RegisterUser(t.Context(), "bob", "", "Password1"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -67,36 +67,36 @@ func TestPasswordResetFlow(t *testing.T) {
 	if token == first {
 		t.Fatal("second request reused the token")
 	}
-	if _, _, err := svc.ResetPassword(first, "Password2"); !errors.Is(err, ErrResetInvalid) {
+	if _, _, err := svc.ResetPassword(t.Context(), first, "Password2"); !errors.Is(err, ErrResetInvalid) {
 		t.Errorf("replaced token: %v", err)
 	}
 	for _, bad := range []string{"", "x", strings.Repeat("A", 43), token + "A"} {
-		if _, _, err := svc.ResetPassword(bad, "Password2"); !errors.Is(err, ErrResetInvalid) {
+		if _, _, err := svc.ResetPassword(t.Context(), bad, "Password2"); !errors.Is(err, ErrResetInvalid) {
 			t.Errorf("token %q: %v", bad, err)
 		}
 	}
 
-	reset, newSession, err := svc.ResetPassword(token, "Password2")
+	reset, newSession, err := svc.ResetPassword(t.Context(), token, "Password2")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if reset.UserID != user.UserID || reset.Username != "alice" || newSession == "" || newSession == sessionID {
 		t.Fatalf("reset returned %+v, session %q", reset, newSession)
 	}
-	if _, _, err := svc.ResetPassword(token, "Password3"); !errors.Is(err, ErrResetInvalid) {
+	if _, _, err := svc.ResetPassword(t.Context(), token, "Password3"); !errors.Is(err, ErrResetInvalid) {
 		t.Errorf("token reused: %v", err)
 	}
 	// The old session is gone, the new one and the new password work.
-	if _, _, err := svc.ValidateToken(mustToken(t, svc, user.UserID, sessionID)); err == nil {
+	if _, _, err := svc.ValidateToken(t.Context(), mustToken(t, svc, user.UserID, sessionID)); err == nil {
 		t.Error("old session still valid")
 	}
-	if _, _, err := svc.ValidateToken(mustToken(t, svc, user.UserID, newSession)); err != nil {
+	if _, _, err := svc.ValidateToken(t.Context(), mustToken(t, svc, user.UserID, newSession)); err != nil {
 		t.Errorf("new session invalid: %v", err)
 	}
-	if _, _, err := svc.AuthenticateUser("alice", "Password1"); !errors.Is(err, ErrInvalidCredentials) {
+	if _, _, err := svc.AuthenticateUser(t.Context(), "alice", "Password1"); !errors.Is(err, ErrInvalidCredentials) {
 		t.Errorf("old password: %v", err)
 	}
-	if _, _, err := svc.AuthenticateUser("alice", "Password2"); err != nil {
+	if _, _, err := svc.AuthenticateUser(t.Context(), "alice", "Password2"); err != nil {
 		t.Errorf("new password: %v", err)
 	}
 
@@ -106,15 +106,15 @@ func TestPasswordResetFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	past := time.Now().UTC().Add(-time.Minute)
-	if err := svc.store.CreatePasswordReset(storage.PasswordResetRecord{
+	if err := svc.store.CreatePasswordReset(t.Context(), storage.PasswordResetRecord{
 		UserID: user.UserID, TokenHash: hash, CreatedAt: past.Add(-time.Hour), ExpiresAt: past,
 	}, 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := svc.ResetPassword(expired, "Password4"); !errors.Is(err, ErrResetInvalid) {
+	if _, _, err := svc.ResetPassword(t.Context(), expired, "Password4"); !errors.Is(err, ErrResetInvalid) {
 		t.Errorf("expired token: %v", err)
 	}
-	if deleted, err := svc.store.DeleteExpiredPasswordResets(); err != nil || deleted != 1 {
+	if deleted, err := svc.store.DeleteExpiredPasswordResets(t.Context()); err != nil || deleted != 1 {
 		t.Errorf("expired resets deleted = %d, %v", deleted, err)
 	}
 }
@@ -123,7 +123,7 @@ func TestPasswordResetFlow(t *testing.T) {
 // answer that waited for it would take longer for an account with an address.
 func TestPasswordResetRequestReturnsBeforeTheMailIsSent(t *testing.T) {
 	svc := newPersistentTestService(t)
-	if _, _, err := svc.RegisterUser("alice", "alice@example.test", "Password1"); err != nil {
+	if _, _, err := svc.RegisterUser(t.Context(), "alice", "alice@example.test", "Password1"); err != nil {
 		t.Fatal(err)
 	}
 	sender := &heldSender{release: make(chan struct{}), sent: make(chan mail.Message, 1)}
@@ -151,7 +151,7 @@ func TestPasswordResetMailsAnAccountOncePerCooldown(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"alice", "carol"} {
-		if _, _, err := svc.RegisterUser(name, name+"@example.test", "Password1"); err != nil {
+		if _, _, err := svc.RegisterUser(t.Context(), name, name+"@example.test", "Password1"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -168,7 +168,7 @@ func TestPasswordResetMailsAnAccountOncePerCooldown(t *testing.T) {
 	}
 	token := resetToken(t, mails[0], "alice@example.test")
 	resetToken(t, mails[1], "carol@example.test")
-	if _, _, err := svc.ResetPassword(token, "Password2"); err != nil {
+	if _, _, err := svc.ResetPassword(t.Context(), token, "Password2"); err != nil {
 		t.Fatalf("first link after a request within the cooldown: %v", err)
 	}
 }

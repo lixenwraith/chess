@@ -233,7 +233,8 @@ CHESS_E2E_MAIL_DIR=/tmp/chess-mail make test-e2e                 # terminal 2
 - Min search time: 100ms (internal/server/processor/processor.go)
 - Write queue: 1000 operations (internal/server/storage/storage.go)
 - DB connections: 10 max, 5 idle (internal/server/storage/storage.go)
-- DB operation deadline: 5 seconds; write transactions 10 seconds
+- DB operation deadline: 5 seconds, within the caller's context; write transactions 10 seconds
+- Request deadline: 35 seconds, the response write timeout too (internal/server/http/handler.go)
 - Transient write retries: 6 attempts, 100 ms doubling backoff
 - JWT expiration: 7 days (internal/server/service/service.go)
 - Concurrent Argon2id derivations: 4, five-second wait (internal/server/service/user.go)

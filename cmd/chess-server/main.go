@@ -211,18 +211,18 @@ func main() {
 		log.Printf("Password recovery enabled: %s; links open %s", sender.Describe(), *publicURL)
 	}
 
-	// Start cleanup job for expired users/sessions
-	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
+	// The server's lifetime: requests and the cleanup job run within it.
+	serverCtx, serverCancel := context.WithCancel(context.Background())
 	cleanupDone := make(chan struct{})
 	go func() {
 		defer close(cleanupDone)
-		svc.RunCleanupJob(cleanupCtx, service.CleanupJobInterval)
+		svc.RunCleanupJob(serverCtx, service.CleanupJobInterval)
 	}()
 
 	// 3. Initialize the Processor (Orchestrator), injecting the service
 	proc, err := processor.New(svc)
 	if err != nil {
-		cleanupCancel()
+		serverCancel()
 		<-cleanupDone
 		svc.Shutdown(gracefulShutdownTimeout)
 		log.Fatalf("Failed to initialize processor: %v", err)
@@ -235,6 +235,7 @@ func main() {
 		TrustedProxies: trustedProxies,
 		ProxyHeader:    *proxyHeader,
 		Version:        version,
+		Context:        serverCtx,
 	})
 
 	// API Server configuration
@@ -299,12 +300,16 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), gracefulShutdownTimeout)
 	defer shutdownCancel()
 
-	// Graceful shutdown of HTTP server with timeout
+	// Long-polls hold no state: end them first, so the drain waits only for
+	// requests doing work. Cancelling the server context then stops what
+	// outlived the drain, and the cleanup job, before storage closes.
+	if err = svc.EndWaits(gracefulShutdownTimeout); err != nil {
+		log.Printf("Long-poll shutdown error: %v", err)
+	}
 	if err = app.ShutdownWithContext(shutdownCtx); err != nil {
 		log.Printf("Server forced to shutdown: %v", err)
 	}
-
-	cleanupCancel() // Stop cleanup before closing processor and storage.
+	serverCancel()
 	<-cleanupDone
 
 	// Close processor before the service so engine callbacks have settled.

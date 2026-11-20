@@ -26,7 +26,6 @@ batch under Done says what it delivered.
   - R10.1 P3: metrics
   - R9.2 P3: analysis on a replay
   - R5.1–R5.4 P3: the curated archive, rights first
-  - R6.4 P3: request contexts into storage calls
 
 ## Done
 
@@ -48,7 +47,10 @@ batch under Done says what it delivered.
 - Operations: transient write retries, degraded mode reported by `/health`,
   the integrity sweep (`-db-cleanup`), draw and resign flows.
 - R6, in part: no cap on computer games, whose engine work the queue bounds;
-  unfinished claimed games leave memory after a week idle (`-idle-game-ttl`).
+  unfinished claimed games leave memory after a week idle (`-idle-game-ttl`);
+  a request's 35-second deadline and the server's lifetime reach its storage
+  calls, while queued writes keep the writer's own (the processor needs none:
+  its writes are queued). A disconnect stays unnoticed: that needs net/http.
 
 ## Decisions
 
@@ -288,30 +290,6 @@ rather than assumed, and `/health` reports both transitions. The storage
 tests already terminate a backend and force a permanent failure; recovery
 extends them.
 
-### R6.4 Request contexts into storage calls
-
-- Priority: P3: a refactor whose gain under Fiber is deadlines and shutdown,
-  not disconnects
-- Affected files: `internal/server/http/handler.go`,
-  `internal/server/http/auth.go`, `internal/server/processor/command.go`,
-  `internal/server/processor/processor.go`, `internal/server/service/`,
-  `internal/server/storage/`, `doc/architecture.md`, `doc/api.md`
-- Guide: [Long-Polling Flow](architecture.md#long-polling-flow),
-  [Get Game](api.md#get-game)
-
-Each storage call makes its own deadline from `context.Background()`
-(`opContext`, five seconds; `flushBeforeRead`), so a request's lifetime
-never reaches the database. Under Fiber v2 the request context is fasthttp's
-`RequestCtx`, whose `Done` closes only at server shutdown: a disconnecting
-client cancels nothing, and an abandoned long-poll holds its waiter for the
-full 30 seconds.
-
-- A context from the handler through `processor.Command`, the service and
-  storage, replacing `opContext` at each call; the handler's context carries
-  a per-request deadline and shutdown.
-- Cancellation on disconnect needs net/http, whose request context ends with
-  the connection; leaving Fiber is its own decision, not part of this item.
-
 ## R7 Rules Core as the Move Authority
 
 The rules core (`internal/server/chess`) decides custom starting positions,
@@ -430,6 +408,9 @@ Email changes only through the CLI.
   token (32 random bytes, SHA-256 stored, single use). `password_resets`
   becomes one token table with a kind column (reset, verify) rather than a
   parallel table per kind.
+- `ResetPassword` consumes the token, then sets the password in a second
+  transaction, so a server stopping between them spends the link: hash
+  first, then consume the token and set the password in one transaction.
 - Registration with an address mails the link; `POST /auth/verify` marks it;
   a resend for the signed-in user is rate-limited.
 - Recovery mails only a verified address. Decide what an unverified address

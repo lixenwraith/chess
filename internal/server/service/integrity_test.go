@@ -72,7 +72,7 @@ func TestIntegritySweep(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := svc.GetGameHistory(valid); err != nil { // flush queued writes
+	if _, err := svc.GetGameHistory(t.Context(), valid); err != nil { // flush queued writes
 		t.Fatal(err)
 	}
 
@@ -82,7 +82,7 @@ func TestIntegritySweep(t *testing.T) {
 	exec(`DELETE FROM games WHERE game_id = $1`, vanished)
 
 	svc.SetIntegrityMode(IntegrityReport)
-	svc.checkIntegrity(time.Now())
+	svc.checkIntegrity(t.Context(), time.Now())
 	for _, gameID := range []string{valid, gap, corrupt, orphan, claimed, loaded} {
 		if !stored(gameID) {
 			t.Fatalf("report mode deleted game %s", gameID)
@@ -93,8 +93,8 @@ func TestIntegritySweep(t *testing.T) {
 	}
 
 	svc.SetIntegrityMode(IntegrityDelete)
-	svc.checkIntegrity(time.Now())
-	if _, err := svc.GetGameHistory(valid); err != nil { // flush the deletion
+	svc.checkIntegrity(t.Context(), time.Now())
+	if _, err := svc.GetGameHistory(t.Context(), valid); err != nil { // flush the deletion
 		t.Fatal(err)
 	}
 	for gameID, want := range map[string]bool{
@@ -123,7 +123,7 @@ func TestIntegritySweep(t *testing.T) {
 	}
 
 	// A healthy database gives a clean second run.
-	findings, err := svc.findIntegrityProblems(time.Now(), map[string]bool{loaded: true}, AnonymousGameTTL)
+	findings, err := svc.findIntegrityProblems(t.Context(), time.Now(), map[string]bool{loaded: true}, AnonymousGameTTL)
 	if err != nil {
 		t.Fatal(err)
 	}

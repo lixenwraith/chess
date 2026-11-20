@@ -4,6 +4,10 @@
 
 ### Transport Layer (`internal/server/http`)
 Fiber web server handling HTTP requests/responses. Implements routing, rate limiting, content-type validation, JWT authentication middleware, request parsing. Translates HTTP to internal Command objects.
+Each request carries a context that ends 35 seconds after it starts, or when
+shutdown stops what outlived its drain; it reaches every synchronous storage
+call. At shutdown long-polls end first, then running requests get five seconds
+to finish.
 
 ### Processing Layer (`internal/server/processor`)
 Central command handler containing business logic. Single `Execute(Command)` entry point decouples transport from logic. Uses synchronous UCI engine for validation, asynchronous EngineQueue for computer moves. Commands include optional user context for authenticated operations.
@@ -49,7 +53,10 @@ restart does not degrade storage. A COMMIT error (unknown outcome), a permanent
 error, or a full queue marks storage degraded; live play remains available in
 memory and `/health` reports that durable history may be incomplete.
 
-Synchronous operations carry a five-second deadline. The pool holds at most ten
+Synchronous operations run under the caller's context (a request's, the
+cleanup job's) and are bounded to five seconds each; queued writes keep the
+writer's own deadline, so a request that ends cannot abort a write it
+caused. The pool holds at most ten
 connections (five idle). The schema is resolved through `search_path`, so the
 role default (`chess`) or a DSN parameter selects it. `InitDB` applies ordered,
 transactional migrations under an advisory lock and issues no DDL when the

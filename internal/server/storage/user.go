@@ -26,26 +26,27 @@ type UserLimits struct {
 
 // CreateUser creates an administratively managed user without applying the
 // public-registration capacity policy.
-func (s *Store) CreateUser(record UserRecord) error {
-	return s.createUser(record, nil, nil)
+func (s *Store) CreateUser(ctx context.Context, record UserRecord) error {
+	return s.createUser(ctx, record, nil, nil)
 }
 
 // CreateUserWithinLimits atomically applies the registration limit, creates
 // the user, and optionally creates its initial session. A session failure
 // rolls back the account.
 func (s *Store) CreateUserWithinLimits(
+	ctx context.Context,
 	record UserRecord,
 	session *SessionRecord,
 	limits UserLimits,
 ) error {
-	return s.createUser(record, session, &limits)
+	return s.createUser(ctx, record, session, &limits)
 }
 
-func (s *Store) createUser(record UserRecord, session *SessionRecord, limits *UserLimits) error {
+func (s *Store) createUser(ctx context.Context, record UserRecord, session *SessionRecord, limits *UserLimits) error {
 	if session != nil && session.UserID != record.UserID {
 		return errors.New("initial session user does not match new user")
 	}
-	ctx, cancel := opContext()
+	ctx, cancel := opContext(ctx)
 	defer cancel()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -117,8 +118,8 @@ func mapUserConflict(err error) error {
 // DeleteUser removes a user synchronously; sessions cascade, while games keep
 // the claim ID and name snapshot. It returns sql.ErrNoRows when no such user
 // exists.
-func (s *Store) DeleteUser(userID string) error {
-	if err := s.execUserUpdate(`DELETE FROM users WHERE user_id = $1`, userID); err != nil {
+func (s *Store) DeleteUser(ctx context.Context, userID string) error {
+	if err := s.execUserUpdate(ctx, `DELETE FROM users WHERE user_id = $1`, userID); err != nil {
 		return err
 	}
 	slog.Debug("storage user deleted", "user_id", userID)
@@ -126,15 +127,11 @@ func (s *Store) DeleteUser(userID string) error {
 }
 
 // DeleteAccount removes an account at its owner's request. Unlike DeleteUser,
-// which keeps the claim IDs and name snapshots for the record, it first clears
-// the user's claims and names from every stored game, so nothing in the
-// database still names the person, and a game nobody else claimed becomes
-// anonymous and falls to the inactivity purge. Sessions cascade.
-//
-// It runs on the ordered game writer, behind every gameplay write already
-// queued, so a queued claim cannot land on a game after it was cleared. It
-// returns sql.ErrNoRows when no such user exists.
-func (s *Store) DeleteAccount(userID string) error {
+// it first clears the user's claims and names from every stored game, so
+// nothing names the person and a game nobody else claimed falls to the
+// anonymous purge. It runs behind every queued gameplay write, so no queued
+// claim lands after the clear. It returns sql.ErrNoRows for an unknown user.
+func (s *Store) DeleteAccount(ctx context.Context, userID string) error {
 	if !validUUID(userID) {
 		return sql.ErrNoRows
 	}
@@ -143,7 +140,7 @@ func (s *Store) DeleteAccount(userID string) error {
 	// failed write, so it must not degrade the writer.
 	var deleted int64
 	// Behind the queue, then its own transaction.
-	ctx, cancel := context.WithTimeout(context.Background(), flushTimeout+writeTimeout)
+	ctx, cancel := context.WithTimeout(ctx, flushTimeout+writeTimeout)
 	defer cancel()
 	err := s.enqueueWait(ctx, "delete_account", func(ctx context.Context, tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `UPDATE games SET
@@ -173,29 +170,29 @@ func (s *Store) DeleteAccount(userID string) error {
 }
 
 // UpdateUserPassword updates user password hash
-func (s *Store) UpdateUserPassword(userID, passwordHash string) error {
-	return s.execUserUpdate(`UPDATE users SET password_hash = $2 WHERE user_id = $1`,
+func (s *Store) UpdateUserPassword(ctx context.Context, userID, passwordHash string) error {
+	return s.execUserUpdate(ctx, `UPDATE users SET password_hash = $2 WHERE user_id = $1`,
 		userID, passwordHash)
 }
 
 // UpdateUserEmail updates the email; an empty value removes it.
-func (s *Store) UpdateUserEmail(userID, email string) error {
-	return s.execUserUpdate(`UPDATE users SET email = lower($2) WHERE user_id = $1`,
+func (s *Store) UpdateUserEmail(ctx context.Context, userID, email string) error {
+	return s.execUserUpdate(ctx, `UPDATE users SET email = lower($2) WHERE user_id = $1`,
 		userID, nullableString(email))
 }
 
 // UpdateUserUsername updates username
-func (s *Store) UpdateUserUsername(userID, username string) error {
-	return s.execUserUpdate(`UPDATE users SET username = lower($2) WHERE user_id = $1`,
+func (s *Store) UpdateUserUsername(ctx context.Context, userID, username string) error {
+	return s.execUserUpdate(ctx, `UPDATE users SET username = lower($2) WHERE user_id = $1`,
 		userID, username)
 }
 
 // execUserUpdate runs a single-row statement keyed by user_id ($1).
-func (s *Store) execUserUpdate(query, userID string, args ...any) error {
+func (s *Store) execUserUpdate(ctx context.Context, query, userID string, args ...any) error {
 	if !validUUID(userID) {
 		return sql.ErrNoRows
 	}
-	ctx, cancel := opContext()
+	ctx, cancel := opContext(ctx)
 	defer cancel()
 	result, err := s.db.ExecContext(ctx, query, append([]any{userID}, args...)...)
 	if err != nil {
@@ -210,8 +207,8 @@ func (s *Store) execUserUpdate(query, userID string, args ...any) error {
 }
 
 // GetAllUsers retrieves all users, newest first
-func (s *Store) GetAllUsers() ([]UserRecord, error) {
-	ctx, cancel := opContext()
+func (s *Store) GetAllUsers(ctx context.Context) ([]UserRecord, error) {
+	ctx, cancel := opContext(ctx)
 	defer cancel()
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+userSelectColumns+` FROM users ORDER BY created_at DESC, user_id`)
@@ -232,28 +229,28 @@ func (s *Store) GetAllUsers() ([]UserRecord, error) {
 }
 
 // GetUserByUsername retrieves a user by case-insensitive username.
-func (s *Store) GetUserByUsername(username string) (*UserRecord, error) {
-	return s.getUser(`username = lower($1)`, username)
+func (s *Store) GetUserByUsername(ctx context.Context, username string) (*UserRecord, error) {
+	return s.getUser(ctx, `username = lower($1)`, username)
 }
 
 // GetUserByEmail retrieves a user by case-insensitive email.
-func (s *Store) GetUserByEmail(email string) (*UserRecord, error) {
+func (s *Store) GetUserByEmail(ctx context.Context, email string) (*UserRecord, error) {
 	if email == "" {
 		return nil, sql.ErrNoRows
 	}
-	return s.getUser(`email = lower($1)`, email)
+	return s.getUser(ctx, `email = lower($1)`, email)
 }
 
 // GetUserByID retrieves user by unique user ID
-func (s *Store) GetUserByID(userID string) (*UserRecord, error) {
+func (s *Store) GetUserByID(ctx context.Context, userID string) (*UserRecord, error) {
 	if !validUUID(userID) {
 		return nil, sql.ErrNoRows
 	}
-	return s.getUser(`user_id = $1`, userID)
+	return s.getUser(ctx, `user_id = $1`, userID)
 }
 
-func (s *Store) getUser(predicate string, arg any) (*UserRecord, error) {
-	ctx, cancel := opContext()
+func (s *Store) getUser(ctx context.Context, predicate string, arg any) (*UserRecord, error) {
+	ctx, cancel := opContext(ctx)
 	defer cancel()
 	var user UserRecord
 	row := s.db.QueryRowContext(ctx, `SELECT `+userSelectColumns+` FROM users WHERE `+predicate, arg)
