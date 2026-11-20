@@ -176,6 +176,7 @@ Server flags:
 | `-proxy-header` | | Client-IP header set by the proxy (default `X-Real-IP`) |
 | `-max-users` | | Registration cap (default 100, `0` = none) |
 | `-anonymous-game-ttl` | | Retention of games without a registered player (default `24h`) |
+| `-idle-game-ttl` | | Memory retention of an unfinished game with a registered player after its last activity; it stays stored (default `168h`) |
 | `-finished-game-ttl` | | Memory retention of finished games (default `1h`) |
 | `-db-cleanup` | | Hourly integrity sweep: `off` (default), `report` (log findings), or `delete` ([database.md](database.md#integrity-sweep)) |
 | `-smtp-host`, `-smtp-port` | | SMTP relay for password-reset email (default port 25); recovery is off without a transport |

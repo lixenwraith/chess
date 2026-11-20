@@ -151,7 +151,7 @@ func TestCleanupEvictsOnlyMemoryCopyOfTerminalGame(t *testing.T) {
 	}
 }
 
-func TestCleanupRemovesIdleAnonymousGamesButKeepsClaimedOnes(t *testing.T) {
+func TestCleanupDeletesIdleAnonymousGamesAndUnloadsIdleClaimedOnes(t *testing.T) {
 	svc := newPersistentTestService(t)
 	svc.SetFinishedGameTTL(0)
 	user, _, err := svc.RegisterUser("alice", "", "Password1")
@@ -197,6 +197,16 @@ func TestCleanupRemovesIdleAnonymousGamesButKeepsClaimedOnes(t *testing.T) {
 	}
 	if _, err := svc.GetGameHistory(claimed); err != nil {
 		t.Fatalf("claimed game deleted: %v", err)
+	}
+
+	// Past the idle TTL the unfinished claimed game leaves memory, which no
+	// longer holds it against anything, and stays stored for replay.
+	svc.cleanupGames(time.Now().UTC().Add(IdleGameTTL + time.Hour))
+	if _, err := svc.GetGameView(claimed); !errors.Is(err, ErrGameNotFound) {
+		t.Fatalf("idle claimed game still loaded: %v", err)
+	}
+	if _, err := svc.GetGameHistory(claimed); err != nil {
+		t.Fatalf("idle claimed game deleted: %v", err)
 	}
 }
 

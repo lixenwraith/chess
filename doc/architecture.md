@@ -13,8 +13,9 @@ In-memory live-game storage with authentication support. A mutex protects each
 game transition and callers receive immutable game views rather than mutable
 game pointers. The service manages game lifecycle, snapshots, player
 configuration, user accounts, JWT tokens, persistence, and cleanup. Finished
-games leave memory after an hour while their durable rows remain; games with
-no registered player leave memory and the database 24 hours after their last
+games leave memory after an hour and unfinished ones a registered player
+claimed after a week idle, while their durable rows remain; games with no
+registered player leave memory and the database 24 hours after their last
 activity (see Retention below).
 
 #### Long-Polling Registry (`internal/server/service/waiter.go`)
@@ -318,6 +319,8 @@ outlives deleted accounts, and the name snapshot keeps it readable.
 ### Retention
 - Sessions are deleted after expiry (7 days after the last login).
 - Finished games leave memory after `-finished-game-ttl` (1 hour); their rows stay.
+- Unfinished games a registered player claimed leave memory after a week
+  without activity (`-idle-game-ttl`); their rows stay, for replay.
 - Games with no claimed slot are unloaded from memory and deleted from the
   database 24 hours after their last activity (`-anonymous-game-ttl`). The
   hourly cleanup evicts idle games first, then queues the delete through the

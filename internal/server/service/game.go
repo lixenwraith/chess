@@ -99,14 +99,6 @@ func (s *Service) CreateGame(
 		return fmt.Errorf("game %s already exists", id)
 	}
 
-	// Check computer game limit
-	hasComputer := whitePlayer.Type == core.PlayerComputer || blackPlayer.Type == core.PlayerComputer
-	if hasComputer && !initialState.IsTerminal() {
-		if active := s.activeComputerGamesLocked(); active >= MaxComputerGames {
-			return fmt.Errorf("computer game limit reached (%d/%d)", active, MaxComputerGames)
-		}
-	}
-
 	now := time.Now().UTC()
 	g := game.New(initialFEN, whitePlayer, blackPlayer, startingTurn)
 	g.SetOutcome(initialState, termination, now)
@@ -161,13 +153,6 @@ func (s *Service) UpdatePlayers(gameID string, whitePlayer, blackPlayer *core.Pl
 
 	oldWhite := g.GetPlayer(core.ColorWhite)
 	oldBlack := g.GetPlayer(core.ColorBlack)
-	oldHasComputer := g.HasComputerPlayer()
-	newHasComputer := whitePlayer.Type == core.PlayerComputer || blackPlayer.Type == core.PlayerComputer
-	if !oldHasComputer && newHasComputer && !g.State().IsTerminal() {
-		if active := s.activeComputerGamesLocked(); active >= MaxComputerGames {
-			return fmt.Errorf("computer game limit reached (%d/%d)", active, MaxComputerGames)
-		}
-	}
 
 	// Player configuration is mutable, but historical user association is not.
 	// Preserve a human ID while the slot remains human, and preserve any claim

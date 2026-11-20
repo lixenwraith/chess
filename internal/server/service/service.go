@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,7 +18,6 @@ import (
 )
 
 const (
-	MaxComputerGames   = 10
 	DefaultMaxUsers    = 100
 	SessionTTL         = 7 * 24 * time.Hour
 	CleanupJobInterval = 1 * time.Hour
@@ -25,6 +25,9 @@ const (
 	// AnonymousGameTTL is how long a game no registered user claimed survives
 	// after its last activity, in memory and in the database.
 	AnonymousGameTTL = 24 * time.Hour
+	// IdleGameTTL is how long an unfinished game a registered user claimed
+	// stays in memory after its last activity; its rows stay for replay.
+	IdleGameTTL = 7 * 24 * time.Hour
 )
 
 // Service coordinates game state, user management, and storage
@@ -37,6 +40,7 @@ type Service struct {
 	waiter       *WaitRegistry
 	finishedTTL  time.Duration
 	anonymousTTL time.Duration
+	idleTTL      time.Duration
 	maxUsers     atomic.Int64
 
 	integrityMode   IntegrityMode
@@ -67,6 +71,7 @@ func New(store *storage.Store, jwtSecret []byte) (*Service, error) {
 		waiter:       NewWaitRegistry(),
 		finishedTTL:  FinishedGameTTL,
 		anonymousTTL: AnonymousGameTTL,
+		idleTTL:      IdleGameTTL,
 	}
 	s.maxUsers.Store(DefaultMaxUsers)
 	if store != nil {
@@ -91,6 +96,15 @@ func (s *Service) SetFinishedGameTTL(ttl time.Duration) {
 func (s *Service) SetAnonymousGameTTL(ttl time.Duration) {
 	s.mu.Lock()
 	s.anonymousTTL = ttl
+	s.mu.Unlock()
+}
+
+// SetIdleGameTTL configures how long an unfinished game a registered user
+// claimed stays in memory after its last activity; its rows stay. A
+// non-positive duration keeps such games loaded.
+func (s *Service) SetIdleGameTTL(ttl time.Duration) {
+	s.mu.Lock()
+	s.idleTTL = ttl
 	s.mu.Unlock()
 }
 
@@ -127,32 +141,6 @@ func (s *Service) RegisterWait(gameID string, moveCount int, ctx context.Context
 		return notify
 	}
 	return s.waiter.RegisterWait(gameID, moveCount, ctx)
-}
-
-// CanCreateComputerGame reports whether the computer game limit leaves room
-// for another game; CreateGame re-checks under its lock.
-func (s *Service) CanCreateComputerGame() bool {
-	return s.GetComputerGameCount() < MaxComputerGames
-}
-
-// GetComputerGameCount returns the number of unfinished loaded games with a
-// computer player. Finished games stay loaded for a while but need no engine,
-// so they do not count against MaxComputerGames.
-func (s *Service) GetComputerGameCount() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.activeComputerGamesLocked()
-}
-
-// activeComputerGamesLocked counts as GetComputerGameCount. Caller holds s.mu.
-func (s *Service) activeComputerGamesLocked() int {
-	active := 0
-	for _, g := range s.games {
-		if g.HasComputerPlayer() && !g.State().IsTerminal() {
-			active++
-		}
-	}
-	return active
 }
 
 // Shutdown gracefully shuts down the service
@@ -212,26 +200,30 @@ func (s *Service) cleanupExpired() {
 	s.checkIntegrity(now)
 }
 
-// cleanupGames unloads terminal games after the finished-game TTL and
-// unclaimed games idle past the anonymous TTL, then queues deletion of
-// anonymous games idle past that TTL. The set of games still loaded is taken
-// under the same lock as the eviction and excluded from deletion, so no live
-// game can lose its row while writes for it are still possible.
+// cleanupGames unloads terminal games past the finished TTL and idle games
+// past the anonymous TTL (unclaimed) or the idle TTL (claimed, unfinished),
+// then queues deletion of the idle anonymous ones. The loaded set is taken
+// under the eviction's lock and excluded from deletion, so no live game can
+// lose its row while writes for it are still possible.
 func (s *Service) cleanupGames(now time.Time) {
 	s.mu.Lock()
-	finishedCutoff := now.Add(-s.finishedTTL)
-	anonymousTTL := s.anonymousTTL
+	finishedTTL, anonymousTTL, idleTTL := s.finishedTTL, s.anonymousTTL, s.idleTTL
+	finishedCutoff := now.Add(-finishedTTL)
 	anonymousCutoff := now.Add(-anonymousTTL)
-	var finished, idle []string
+	idleCutoff := now.Add(-idleTTL)
+	var finished, anonymous, claimed []string
 	live := make([]string, 0, len(s.games))
 	for gameID, g := range s.games {
-		ended := g.EndTimeUTC()
+		ended, state := g.EndTimeUTC(), g.State()
 		switch {
-		case s.finishedTTL > 0 && g.State().IsTerminal() && ended != nil && ended.Before(finishedCutoff):
+		case finishedTTL > 0 && state.IsTerminal() && ended != nil && ended.Before(finishedCutoff):
 			finished = append(finished, gameID)
-		case anonymousTTL > 0 && !g.IsClaimed() && g.State() != core.StatePending &&
+		case anonymousTTL > 0 && !g.IsClaimed() && state != core.StatePending &&
 			g.LastActivity().Before(anonymousCutoff):
-			idle = append(idle, gameID)
+			anonymous = append(anonymous, gameID)
+		case idleTTL > 0 && g.IsClaimed() && !state.IsTerminal() && state != core.StatePending &&
+			g.LastActivity().Before(idleCutoff):
+			claimed = append(claimed, gameID)
 		default:
 			live = append(live, gameID)
 			continue
@@ -240,16 +232,20 @@ func (s *Service) cleanupGames(now time.Time) {
 	}
 	s.mu.Unlock()
 
-	for _, gameID := range append(finished, idle...) {
+	for _, gameID := range slices.Concat(finished, anonymous, claimed) {
 		s.waiter.RemoveGame(gameID)
 	}
 	if len(finished) > 0 {
 		slog.Info("cleanup evicted terminal games from memory",
-			"count", len(finished), "retention", s.finishedTTL)
+			"count", len(finished), "retention", finishedTTL)
 	}
-	if len(idle) > 0 {
+	if len(anonymous) > 0 {
 		slog.Info("cleanup evicted idle anonymous games from memory",
-			"count", len(idle), "retention", anonymousTTL)
+			"count", len(anonymous), "retention", anonymousTTL)
+	}
+	if len(claimed) > 0 {
+		slog.Info("cleanup evicted idle claimed games from memory; their rows stay",
+			"count", len(claimed), "retention", idleTTL)
 	}
 	if s.store != nil && anonymousTTL > 0 {
 		if err := s.store.DeleteAnonymousGames(anonymousCutoff, live); err != nil {

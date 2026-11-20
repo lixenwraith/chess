@@ -293,38 +293,3 @@ func TestGameWithDeletedRowIsUnloadedNotDegraded(t *testing.T) {
 		t.Fatalf("storage health %q after a write for a deleted game", health)
 	}
 }
-
-func TestFinishedGamesDoNotCountAgainstComputerLimit(t *testing.T) {
-	svc := newPersistentTestService(t)
-	newComputerGame := func() (string, error) {
-		gameID := uuid.NewString()
-		white := core.NewPlayer(core.PlayerConfig{Type: core.PlayerHuman}, core.ColorWhite)
-		black := core.NewPlayer(core.PlayerConfig{Type: core.PlayerComputer, Level: 1, SearchTime: 100}, core.ColorBlack)
-		return gameID, svc.CreateGame(gameID, white, black, chess.StartFEN, core.ColorWhite,
-			core.StateOngoing, core.TermNone)
-	}
-	var games []string
-	for i := 0; i < MaxComputerGames; i++ {
-		gameID, err := newComputerGame()
-		if err != nil {
-			t.Fatal(err)
-		}
-		games = append(games, gameID)
-	}
-	if _, err := newComputerGame(); err == nil {
-		t.Fatal("computer game limit not enforced")
-	}
-	// Resigning one frees its slot while the game stays loaded.
-	if err := svc.EndGame(games[0], EndCommit{
-		ExpectedFEN: chess.StartFEN, Color: core.ColorWhite,
-		State: core.StateBlackWins, Termination: core.TermResignation,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if got := svc.GetComputerGameCount(); got != MaxComputerGames-1 {
-		t.Fatalf("active computer games = %d, want %d", got, MaxComputerGames-1)
-	}
-	if _, err := newComputerGame(); err != nil {
-		t.Fatalf("finished game still counted: %v", err)
-	}
-}

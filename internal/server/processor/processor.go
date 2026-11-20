@@ -144,15 +144,6 @@ func (p *Processor) handleCreateGame(cmd Command) ProcessorResponse {
 		args.Black.SearchTime = minSearchTime
 	}
 
-	// Check computer game limit
-	hasComputer := args.White.Type == core.PlayerComputer || args.Black.Type == core.PlayerComputer
-	if hasComputer && !p.svc.CanCreateComputerGame() {
-		return p.errorResponse(
-			fmt.Sprintf("computer game limit reached (%d/%d)", p.svc.GetComputerGameCount(), service.MaxComputerGames),
-			core.ErrResourceLimit,
-		)
-	}
-
 	gameID := p.svc.GenerateGameID()
 
 	// Validate FEN safety, then classify via engine

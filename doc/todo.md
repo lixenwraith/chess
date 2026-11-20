@@ -13,7 +13,6 @@ batch under Done says what it delivered.
 ## Order of Work
 
 - Phase 1, now:
-  - R6.1 P0: computer-game cap held by abandoned games
   - R7.1 P1: verify production data against the rules core (operations)
   - R8.1 P1: deliver mail through the mail jail (operations)
 - Phase 2, next, in this order:
@@ -47,6 +46,8 @@ batch under Done says what it delivered.
   links, self-service account deletion.
 - Operations: transient write retries, degraded mode reported by `/health`,
   the integrity sweep (`-db-cleanup`), draw and resign flows.
+- R6, in part: no cap on computer games, whose engine work the queue bounds;
+  unfinished claimed games leave memory after a week idle (`-idle-game-ttl`).
 
 ## Decisions
 
@@ -210,43 +211,9 @@ history and PGN are public by ID (D2). The archive adds a public listing:
 
 A live game is held in memory (`Service.games`) and mirrored to the database
 through the ordered writer; memory is the authority while it is loaded.
-After a restart every unfinished game is replay-only, once storage degrades
-nothing is written until a restart, and a claimed unfinished game never
-leaves memory. R6.1–R6.3 share one mapping, between a loaded `game.Game` and
-its rows.
-
-### R6.1 Computer-game cap held by abandoned games
-
-- Priority: P0, found in review: ten abandoned games stop computer play for
-  every user until a restart
-- Affected files: `internal/server/service/service.go`,
-  `internal/server/service/game.go`, `internal/server/processor/processor.go`,
-  `cmd/chess-server/main.go`, `doc/architecture.md`, `doc/development.md`
-- Guide: [Retention](architecture.md#retention),
-  [Create Game](api.md#create-game)
-
-`MaxComputerGames` (10) counts unfinished loaded games with a computer side,
-and creating such a game, or switching a side to the computer, refuses past
-it with `RESOURCE_LIMIT` ("computer game limit reached"). `cleanupGames`
-unloads a finished game after `-finished-game-ttl` and an unclaimed one
-after `-anonymous-game-ttl` idle, never a claimed unfinished one. The web
-client plays only the computer, and a signed-in creator claims their side at
-creation, so a game left by **New game** or a closed tab stays loaded until
-a restart. Ten such games, from any accounts, close computer play to every
-user; ten anonymous ones close it for a day. A probe confirmed it: ten
-claimed games stayed loaded, and the cap shut, through a cleanup a year
-later.
-
-- The engine queue (100 tasks, two workers) already bounds engine work: a
-  full queue refuses the move. The cap is a second mechanism for that job;
-  drop it, or count only games whose computer is thinking.
-- Unload claimed unfinished games idle past a TTL (a flag beside
-  `-anonymous-game-ttl`), so memory stays bounded. Until R6.2 such a game
-  becomes replay-only, as after a restart today.
-- A bound per account, and per IP for anonymous games, on unfinished
-  computer games, only if one actor holding many proves a problem.
-- A test of the rule: abandoned claimed games do not refuse a new computer
-  game.
+After a restart, or a week idle, an unfinished game is replay-only, and once
+storage degrades nothing is written until a restart. R6.2 and R6.3 share one
+mapping, between a loaded `game.Game` and its rows.
 
 ### R6.2 Resume unfinished games after a restart
 
@@ -277,7 +244,7 @@ search time, claim and name, the result, termination and concession.
   live they could be moved by anyone holding the ID.
 - No load while storage is degraded: the rows may lag memory (R6.3).
 - A loaded game joins the set the purge and the integrity sweep already
-  exclude; R6.1's idle unload becomes lossless.
+  exclude; the idle unload (`-idle-game-ttl`) becomes lossless.
 - Clients: the CLI's `join` works on a stored game unchanged; the web
   client's My games and device list offer Continue on an unfinished game
   where today they only replay it.
@@ -607,8 +574,8 @@ write.
 - The measures asked for: write-queue depth, retries, degraded transitions,
   flush and replay-read latency, KDF slot wait. Beside them: shadow-check
   disagreements (R7.1's gate as a counter rather than a log search), engine
-  queue depth and engine restarts, loaded games and those with a computer
-  (R6.1), long-poll waiters.
+  queue depth and engine restarts, loaded games and those with a computer,
+  long-poll waiters.
 - Form: the Prometheus text format written with the standard library
   (counters, gauges, fixed-bucket histograms) needs no dependency; `expvar`
   serves JSON without histograms.

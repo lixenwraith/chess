@@ -36,6 +36,7 @@ go build ./cmd/chess-client-cli
 - `-log-http`: Enable API and web request logs (default: `true`)
 - `-finished-game-ttl`: How long terminal games stay in memory (default: `1h`; `0` disables eviction)
 - `-anonymous-game-ttl`: How long games without a registered player survive after their last activity, in memory and in the database (default: `24h`; `0` keeps them)
+- `-idle-game-ttl`: How long an unfinished game with a registered player stays in memory after its last activity; it stays stored for replay (default: `168h`; `0` keeps it)
 - `-max-users`: Accounts at which public registration closes (default: `100`; `0` = no limit; the CLI is not limited)
 - `-web-api-url`: Browser-visible API origin for the embedded web client, set on its script element as `data-api`; useful when its public origin differs from the listen address
 - `-smtp-host`, `-smtp-port`, `-smtp-user`, `-smtp-password-file`, `-mail-from`: SMTP relay for password-reset email; without a transport, recovery is off
