@@ -327,7 +327,8 @@ and `termination` names how it was reached (see
 `moveNumber` counts plies from 1. `san` is omitted only for a stored move the
 rules core cannot notate, which the server logs. A claimed player's `name` is
 their username when the claim was recorded; it survives later renames and
-account deletion, and is omitted for anonymous and computer players.
+`db user delete` (self-service deletion clears it), and is omitted for
+anonymous and computer players.
 
 Undo stays available after most results (a finished game can be rewound and
 played on), so a stored game is never final. Responses carry a strong `ETag`
@@ -382,8 +383,8 @@ and `unterminated` otherwise.
 ### List My Stored Games
 `GET /users/me/games?limit=50&cursor=<nextCursor>&status=finished&color=white`
 
-Returns games associated with the authenticated user at creation time or by a
-later first-move slot claim, newest first. Requires
+Returns games associated with the authenticated user at creation time, by a
+later first-move slot claim, or by import, newest first. Requires
 `Authorization: Bearer <token>` and persistent storage.
 
 - `limit`: 1-100; defaults to 50
@@ -400,8 +401,9 @@ or the initial FEN when there is none), result, its `pgnResult` token and
 players, move count, `origin` (`played` or `imported`) and, for an imported
 game, its `event`. `nextCursor` is present only when another
 page exists; `nextOffset` also, on requests without a cursor. A game belongs
-to a user who created it while authenticated or claimed a slot with a first
-move; the association survives later player reconfiguration.
+to a user who created it while authenticated, claimed a slot with a first
+move, or imported it; `color` matches claims only. The association survives
+later player reconfiguration.
 
 Returns 400 `INVALID_REQUEST` for a malformed cursor or filter.
 

@@ -46,7 +46,7 @@ test_basic_longpoll() {
     log_info "Created game: $GAME_ID"
 
     # Start background poller
-    log_info "Starting long-poll request (25s timeout)..."
+    log_info "Starting long-poll request (30s timeout)..."
     curl -s -X GET "$API_URL/games/$GAME_ID?wait=true&moveCount=0" > /tmp/poll_result.json &
     POLL_PID=$!
 
@@ -138,7 +138,7 @@ test_timeout() {
     end_time=$(date +%s)
     elapsed=$((end_time - start_time))
 
-    # Check timeout was ~25 seconds
+    # Check timeout was ~30 seconds
     if [ "$elapsed" -ge 29 ] && [ "$elapsed" -le 31 ]; then
         log_info "✓ Request timed out after ~30 seconds"
     else

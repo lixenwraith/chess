@@ -65,7 +65,7 @@ batch under Done says what it delivered.
 - D3 SAN and PGN are derived on read, server-side in Go, from the initial
   FEN and the UCI line.
 - D4 Player names, done: a claim snapshots the username, which survives
-  renames and account deletion.
+  renames and `db user delete`; self-service deletion clears it.
 - D5 Draw rules, done: dead material, threefold repetition and the
   fifty-move rule apply automatically; offers and resignation exist;
   `termination` says how a game ended.
@@ -356,8 +356,8 @@ about 6,000 positions a run, and fuzz targets.
 
 Password recovery by email is built: `POST /api/auth/recover` stores a
 one-time token (its SHA-256, for an hour) and mails a link through an SMTP
-relay or, in development, a directory of `.eml` files. Addresses are taken
-as typed.
+relay or, in development, a directory of `.eml` files. Addresses are not
+verified.
 
 ### R8.1 Deliver mail through the mail jail
 
@@ -400,8 +400,8 @@ as typed.
   [Request a Password Reset](api.md#request-a-password-reset),
   [Users](database.md#users)
 
-An address is stored as typed, at registration or by `db user set-email`,
-and is unique; recovery mails a reset link to it. A typo hands the account's
+An address is stored unverified (lowercased), at registration or by `db user
+set-email`, and is unique; recovery mails a reset link to it. A typo hands the account's
 reset links to whoever owns the typed address, and anyone can register an
 address they do not own, which then refuses its owner's registration (409).
 Email changes only through the CLI.

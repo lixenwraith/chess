@@ -189,9 +189,10 @@ start the server.
 
 ### Query Operations
 1. Replay-sensitive game reads wait on the async-write barrier
-2. "My games" matches claims (`white_claimed_by`/`black_claimed_by`) through two
-   composite partial indexes; authenticated creators and first movers always
-   record a claim, and claims survive player reconfiguration
+2. "My games" matches claims and imports (`white_claimed_by`,
+   `black_claimed_by`, `imported_by`) through three composite partial
+   indexes, a colour filter that claim only; authenticated creators and first
+   movers always record a claim, and claims survive player reconfiguration
 3. The listing reads each game's move count and final FEN from its last move
    with a LATERAL probe of the `moves` primary key, not a per-row count
 4. Move history is read in primary-key order `(game_id, move_number)`
