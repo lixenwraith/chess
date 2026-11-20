@@ -13,3 +13,11 @@ What earlier agents learned that neither AGENTS.md nor the other docs state.
 - A test that sets a field the reset-mail sender reads (`mailer.cooldown`)
   sets it before the first `RequestPasswordReset`: the queue's send orders
   the write before the sender's read, which keeps `-race` quiet.
+- To show a comment sweep changed no code, print each file without comments
+  (`go/parser`, then `go/printer` with the comments dropped) at HEAD and in
+  the tree, and diff the two ignoring blank lines.
+- `test/run-test-server.sh` starts `bin/chess-server -dev` by a relative
+  path, so a pattern on the checkout path misses it; a stale server keeps
+  8080 and 9090 and the next suite runs against it. Stop it by PID.
+- The Playwright suite registers accounts, so `--repeat-each` soon meets the
+  5-a-minute registration limit: those 429s are not regressions.
