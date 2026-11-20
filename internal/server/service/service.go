@@ -155,6 +155,10 @@ func (s *Service) Shutdown(timeout time.Duration) error {
 	s.games = make(map[string]*game.Game)
 	s.mu.Unlock()
 
+	// Queued reset emails need the store.
+	if s.mail != nil {
+		s.mail.close(timeout)
+	}
 	if s.store != nil {
 		if err := s.store.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("storage: %w", err))

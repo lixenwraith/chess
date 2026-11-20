@@ -119,9 +119,12 @@ hashing is saturated or `STORAGE_UNAVAILABLE` when storage is down.
 ### Request a Password Reset
 `POST /auth/recover`
 
-Emails a one-time reset link to the account's address. The response is the
-same whether or not the account exists or has an email, so nothing is
-revealed.
+Emails a one-time reset link to the account's address. The request is
+answered before the account is looked up, so the response, and how soon it
+comes, is the same whether or not the account exists or has an email. One
+link is mailed to an account per 5 minutes; a request within that time mails
+nothing and the last link keeps working. A message the relay refuses is
+logged, and its link revoked.
 
 **Request:**
 ```json
@@ -132,12 +135,12 @@ revealed.
 
 **Response (202):**
 ```json
-{"message": "If the account has an email address, a reset link has been sent to it."}
+{"message": "If the account has an email address, a reset link is on its way to it."}
 ```
 
 Errors: 429 past 3 requests a minute per IP, 503 `NOT_CONFIGURED` when the
-server has no mail transport (`/health` reports `"mail": "disabled"`), 502
-when the relay refused the message.
+server has no mail transport (`/health` reports `"mail": "disabled"`), 503
+`RESOURCE_LIMIT` when 64 requests already wait for the sender.
 
 ### Reset a Password
 `POST /auth/reset`

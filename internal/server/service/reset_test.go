@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -33,6 +34,7 @@ func TestPasswordResetFlow(t *testing.T) {
 	if svc.MailHealth() != "ok" {
 		t.Fatal("mail not reported ok")
 	}
+	svc.mail.cooldown = 0 // set before the first request reaches the sender
 
 	user, sessionID, err := svc.RegisterUser("alice", "Alice@Example.test", "Password1")
 	if err != nil {
@@ -42,25 +44,26 @@ func TestPasswordResetFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Unknown accounts and accounts without email get the same answer and no mail.
+	// Unknown accounts and accounts without email get the same answer and no
+	// mail: the sender works in order, so alice's mail is the first one.
 	for _, id := range []string{"nobody", "nobody@example.test", "bob"} {
 		if err := svc.RequestPasswordReset(id); err != nil {
 			t.Errorf("recover %q: %v", id, err)
 		}
-	}
-	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
-		t.Fatalf("mail sent for unknown accounts: %d files", len(entries))
 	}
 
 	// By email, case-insensitively; then by username, which replaces the link.
 	if err := svc.RequestPasswordReset("ALICE@example.test"); err != nil {
 		t.Fatal(err)
 	}
-	first := lastMailToken(t, dir)
+	if mails := waitForMail(t, dir, 1); len(mails) != 1 {
+		t.Fatalf("mail sent for unknown accounts: %d messages", len(mails))
+	}
+	first := resetToken(t, waitForMail(t, dir, 1)[0], "alice@example.test")
 	if err := svc.RequestPasswordReset("alice"); err != nil {
 		t.Fatal(err)
 	}
-	token := lastMailToken(t, dir)
+	token := resetToken(t, waitForMail(t, dir, 2)[1], "alice@example.test")
 	if token == first {
 		t.Fatal("second request reused the token")
 	}
@@ -105,7 +108,7 @@ func TestPasswordResetFlow(t *testing.T) {
 	past := time.Now().UTC().Add(-time.Minute)
 	if err := svc.store.CreatePasswordReset(storage.PasswordResetRecord{
 		UserID: user.UserID, TokenHash: hash, CreatedAt: past.Add(-time.Hour), ExpiresAt: past,
-	}); err != nil {
+	}, 0); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := svc.ResetPassword(expired, "Password4"); !errors.Is(err, ErrResetInvalid) {
@@ -116,18 +119,105 @@ func TestPasswordResetFlow(t *testing.T) {
 	}
 }
 
-func lastMailToken(t *testing.T, dir string) string {
-	t.Helper()
-	entries, err := os.ReadDir(dir)
-	if err != nil || len(entries) == 0 {
-		t.Fatalf("no mail in %s: %v", dir, err)
-	}
-	data, err := os.ReadFile(filepath.Join(dir, entries[len(entries)-1].Name()))
-	if err != nil {
+// TestPasswordResetRequestReturnsBeforeTheMailIsSent holds the relay: an
+// answer that waited for it would take longer for an account with an address.
+func TestPasswordResetRequestReturnsBeforeTheMailIsSent(t *testing.T) {
+	svc := newPersistentTestService(t)
+	if _, _, err := svc.RegisterUser("alice", "alice@example.test", "Password1"); err != nil {
 		t.Fatal(err)
 	}
-	text := string(data)
-	if !strings.Contains(text, "To: alice@example.test\r\n") || !strings.Contains(text, "Subject: Reset your chess password\r\n") {
+	sender := &heldSender{release: make(chan struct{}), sent: make(chan mail.Message, 1)}
+	if err := svc.SetMailer(sender, "https://example.test/chess/web-client/"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RequestPasswordReset("alice"); err != nil {
+		t.Fatal(err)
+	}
+	close(sender.release)
+	select {
+	case m := <-sender.sent:
+		if m.To != "alice@example.test" {
+			t.Fatalf("mail to %q", m.To)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("queued reset email never sent")
+	}
+}
+
+func TestPasswordResetMailsAnAccountOncePerCooldown(t *testing.T) {
+	svc := newPersistentTestService(t)
+	dir := filepath.Join(t.TempDir(), "mail")
+	if err := svc.SetMailer(&mail.Dir{Path: dir, From: "chess@example.test"}, "https://example.test/chess/web-client/"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"alice", "carol"} {
+		if _, _, err := svc.RegisterUser(name, name+"@example.test", "Password1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Carol's request, queued last, shows when the sender has passed alice's
+	// second one, which mails nothing and leaves the first link working.
+	for _, id := range []string{"alice", "alice", "carol"} {
+		if err := svc.RequestPasswordReset(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mails := waitForMail(t, dir, 2)
+	if len(mails) != 2 {
+		t.Fatalf("%d messages, want one each", len(mails))
+	}
+	token := resetToken(t, mails[0], "alice@example.test")
+	resetToken(t, mails[1], "carol@example.test")
+	if _, _, err := svc.ResetPassword(token, "Password2"); err != nil {
+		t.Fatalf("first link after a request within the cooldown: %v", err)
+	}
+}
+
+// heldSender delivers each message once release is closed.
+type heldSender struct {
+	release chan struct{}
+	sent    chan mail.Message
+}
+
+func (h *heldSender) Send(ctx context.Context, m mail.Message) error {
+	select {
+	case <-h.release:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	h.sent <- m
+	return nil
+}
+
+func (h *heldSender) Describe() string { return "held" }
+
+// waitForMail waits until dir holds at least n complete messages and returns
+// them all in the order written.
+func waitForMail(t *testing.T, dir string, n int) []string {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		entries, _ := os.ReadDir(dir)
+		var mails []string
+		for _, entry := range entries {
+			if data, err := os.ReadFile(filepath.Join(dir, entry.Name())); err == nil && linkPattern.Match(data) {
+				mails = append(mails, string(data))
+			}
+		}
+		if len(mails) >= n && len(mails) == len(entries) {
+			return mails
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d of %d messages in %s", len(mails), n, dir)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// resetToken returns the token of the reset link in a message to address.
+func resetToken(t *testing.T, text, address string) string {
+	t.Helper()
+	if !strings.Contains(text, "To: "+address+"\r\n") || !strings.Contains(text, "Subject: Reset your chess password\r\n") {
 		t.Fatalf("mail = %q", text)
 	}
 	m := linkPattern.FindStringSubmatch(text)

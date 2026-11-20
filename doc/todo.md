@@ -17,7 +17,6 @@ batch under Done says what it delivered.
   - R8.1 P1: deliver mail through the mail jail (operations)
 - Phase 2, next, in this order:
   - R9.1 P2: interrupt long-running CLI commands
-  - R8.3 P2: recovery requests reveal accounts by timing
   - R6.2 P2: resume unfinished games after a restart
   - R7.2 P2: validate human moves with the core, after R7.1
   - R8.2 P2: email verification, after R8.1
@@ -43,7 +42,9 @@ batch under Done says what it delivered.
 - R5, per user: PGN import (API, web, CLI, `db game import`) and deletion of
   stored games by their owner; schema v5.
 - Accounts: password recovery by email (schema v4), administrative reset
-  links, self-service account deletion.
+  links, self-service account deletion. R8.3: a recovery request is answered
+  before the lookup and mailed from a queue, one email per account per 5
+  minutes.
 - Operations: transient write retries, degraded mode reported by `/health`,
   the integrity sweep (`-db-cleanup`), draw and resign flows.
 - R6, in part: no cap on computer games, whose engine work the queue bounds;
@@ -442,25 +443,6 @@ Email changes only through the CLI.
   account dialog shows the state, and `/auth/me` carries it.
 - Decide how the migration marks existing addresses: unverified, which is
   accurate, or verified, which spares current users a step.
-
-### R8.3 Recovery requests reveal accounts by timing
-
-- Priority: P2, found in review: a small change closes an account oracle
-- Affected files: `internal/server/service/reset.go`,
-  `internal/server/service/reset_test.go`, `internal/server/http/auth.go`,
-  `doc/api.md`
-- Guide: [Request a Password Reset](api.md#request-a-password-reset)
-
-`RequestPasswordReset` answers alike for an unknown account, an account
-without an address, and a sent link, but only the last waits for the relay
-(up to 20 seconds): the response time tells an account with an address from
-the rest, and a relay failure answers 502 to an existing account only. Each
-request also mails again, replacing the pending reset, and the limit (3 a
-minute) counts per IP, so requests from many IPs can flood one inbox.
-
-- Store the reset, hand the message to a bounded sender, answer 202 at once;
-  a failed send is logged, not returned.
-- A cooldown per account between reset mails.
 
 ## R9 Clients
 

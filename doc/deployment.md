@@ -219,7 +219,9 @@ With an SMTP relay the server emails a reset link on request (`POST
 opens the client, which sets the new password and signs the person in. The
 link works for an hour and once; using it signs the account out everywhere
 else. Accounts without an email address cannot use it (the CLI commands above
-can).
+can). The server answers before it sends, one email per account per 5
+minutes, and logs a message the relay refuses: watch the log for
+`password reset email failed` after setting the relay up.
 
 The relay is a separate jail reached over the internal network. Set in
 `rc.conf`:

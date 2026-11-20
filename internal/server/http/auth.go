@@ -334,9 +334,9 @@ func (h *HTTPHandler) DeleteAccountHandler(c *fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
-// RecoverHandler emails a password-reset link. The answer is the same whether
-// or not the account exists or has an email, so nothing is revealed; only a
-// missing transport (503) or a delivery failure (502) is reported.
+// RecoverHandler queues a password-reset email. The answer, and how soon it
+// comes, is the same whether or not the account exists or has an email; only
+// a missing transport or a full queue (503) is reported.
 func (h *HTTPHandler) RecoverHandler(c *fiber.Ctx) error {
 	var req RecoverRequest
 	if err := c.BodyParser(&req); err != nil || strings.TrimSpace(req.Identifier) == "" {
@@ -358,11 +358,11 @@ func (h *HTTPHandler) RecoverHandler(c *fiber.Ctx) error {
 			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
 				Error: "password recovery is not available on this server", Code: core.ErrNotConfigured,
 			})
-		case errors.Is(err, service.ErrMailFailed):
-			return c.Status(fiber.StatusBadGateway).JSON(core.ErrorResponse{
-				Error: "the reset email could not be sent; try again later", Code: core.ErrInternalError,
+		case errors.Is(err, service.ErrMailBusy):
+			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+				Error: err.Error(), Code: core.ErrResourceLimit,
 			})
-		case errors.Is(err, service.ErrStorageDisabled), errors.Is(err, service.ErrStorageUnavailable):
+		case errors.Is(err, service.ErrStorageDisabled):
 			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
 				Error: "account storage unavailable", Code: core.ErrStorageUnavailable,
 			})
@@ -373,7 +373,7 @@ func (h *HTTPHandler) RecoverHandler(c *fiber.Ctx) error {
 		}
 	}
 	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
-		"message": "If the account has an email address, a reset link has been sent to it.",
+		"message": "If the account has an email address, a reset link is on its way to it.",
 	})
 }
 
