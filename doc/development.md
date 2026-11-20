@@ -317,5 +317,5 @@ CHESS_E2E_MAIL_DIR=/tmp/chess-mail make test-e2e                 # terminal 2
 - No push-based game updates (30-second long-polling is used)
 - Live games are not rehydrated after restart; persisted games are currently replay-only
 - Database history has no automatic retention policy
-- Curated games are planned in [Replay Plan](./todo.md)
+- Curated games are planned in the [Roadmap](./todo.md#r5-imported-and-curated-games)
 - REST API only
