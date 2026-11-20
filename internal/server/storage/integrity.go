@@ -9,17 +9,14 @@ import (
 	"time"
 )
 
-// Queries for the integrity sweep. None of them change data except the two
-// Delete methods.
-
 // ExistingGames reports which of ids have a games row. Flush first when ids
 // include games whose insert may still be queued.
-func (s *Store) ExistingGames(ids []string) (map[string]bool, error) {
+func (s *Store) ExistingGames(ctx context.Context, ids []string) (map[string]bool, error) {
 	exists := make(map[string]bool, len(ids))
 	if len(ids) == 0 {
 		return exists, nil
 	}
-	ctx, cancel := opContext()
+	ctx, cancel := opContext(ctx)
 	defer cancel()
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT game_id FROM games WHERE game_id = ANY($1::uuid[])`, ids)
@@ -31,8 +28,8 @@ func (s *Store) ExistingGames(ids []string) (map[string]bool, error) {
 
 // GamesWithMoveGaps returns games whose moves are not numbered 1..n: a move
 // row was deleted from the start or the middle of the line.
-func (s *Store) GamesWithMoveGaps() ([]string, error) {
-	ctx, cancel := opContext()
+func (s *Store) GamesWithMoveGaps(ctx context.Context) ([]string, error) {
+	ctx, cancel := opContext(ctx)
 	defer cancel()
 	rows, err := s.db.QueryContext(ctx, `SELECT game_id FROM moves
 		GROUP BY game_id HAVING count(*) <> max(move_number) ORDER BY game_id`)
@@ -45,13 +42,13 @@ func (s *Store) GamesWithMoveGaps() ([]string, error) {
 
 // GameIDsAfter returns up to limit game IDs above after, in ID order; an
 // empty after starts at the lowest.
-func (s *Store) GameIDsAfter(after string, limit int) ([]string, error) {
+func (s *Store) GameIDsAfter(ctx context.Context, after string, limit int) ([]string, error) {
 	if after == "" {
 		after = "00000000-0000-0000-0000-000000000000"
 	} else if !validUUID(after) {
 		return nil, fmt.Errorf("invalid game ID %q", after)
 	}
-	ctx, cancel := opContext()
+	ctx, cancel := opContext(ctx)
 	defer cancel()
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT game_id FROM games WHERE game_id > $1 ORDER BY game_id LIMIT $2`, after, limit)
@@ -66,11 +63,11 @@ func (s *Store) GameIDsAfter(after string, limit int) ([]string, error) {
 // whose claimants and importer were all deleted, idle since cutoff by the
 // anonymous-game rule (start, last move, and end all before it), excluding
 // live games.
-func (s *Store) OrphanedGames(cutoff time.Time, live []string) ([]string, error) {
+func (s *Store) OrphanedGames(ctx context.Context, cutoff time.Time, live []string) ([]string, error) {
 	if live == nil {
 		live = []string{}
 	}
-	ctx, cancel := opContext()
+	ctx, cancel := opContext(ctx)
 	defer cancel()
 	rows, err := s.db.QueryContext(ctx, `SELECT g.game_id FROM games g
 		WHERE (g.white_claimed_by IS NOT NULL OR g.black_claimed_by IS NOT NULL OR g.imported_by IS NOT NULL)
@@ -113,11 +110,11 @@ func (s *Store) DeleteGames(ids []string) error {
 
 // DeleteUsers deletes accounts and, by cascade, their sessions. Their games
 // keep the claims and name snapshots.
-func (s *Store) DeleteUsers(ids []string) error {
+func (s *Store) DeleteUsers(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
+	ctx, cancel := context.WithTimeout(ctx, writeTimeout)
 	defer cancel()
 	result, err := s.db.ExecContext(ctx, `DELETE FROM users WHERE user_id = ANY($1::uuid[])`, ids)
 	if err != nil {

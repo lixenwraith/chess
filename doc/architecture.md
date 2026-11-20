@@ -4,6 +4,10 @@
 
 ### Transport Layer (`internal/server/http`)
 Fiber web server handling HTTP requests/responses. Implements routing, rate limiting, content-type validation, JWT authentication middleware, request parsing. Translates HTTP to internal Command objects.
+Each request carries a context that ends 35 seconds after it starts, or when
+shutdown stops what outlived its drain; it reaches every synchronous storage
+call. At shutdown long-polls end first, then running requests get five seconds
+to finish.
 
 ### Processing Layer (`internal/server/processor`)
 Central command handler containing business logic. Single `Execute(Command)` entry point decouples transport from logic. Uses synchronous UCI engine for validation, asynchronous EngineQueue for computer moves. Commands include optional user context for authenticated operations.
@@ -13,14 +17,15 @@ In-memory live-game storage with authentication support. A mutex protects each
 game transition and callers receive immutable game views rather than mutable
 game pointers. The service manages game lifecycle, snapshots, player
 configuration, user accounts, JWT tokens, persistence, and cleanup. Finished
-games leave memory after an hour while their durable rows remain; games with
-no registered player leave memory and the database 24 hours after their last
+games leave memory after an hour and unfinished ones a registered player
+claimed after a week idle, while their durable rows remain; games with no
+registered player leave memory and the database 24 hours after their last
 activity (see Retention below).
 
-#### Long-Polling Registry (`internal/service/waiter.go`)
+#### Long-Polling Registry (`internal/server/service/waiter.go`)
 Manages clients waiting for game state changes via HTTP long-polling. Tracks move counts per client, sends notifications on state changes, enforces 30-second timeout. Non-blocking notification pattern handles slow clients gracefully. Coordinates with service layer for game updates and deletion events.
 
-#### Authentication Module (`internal/service/user.go`, `internal/http/auth.go`)
+#### Authentication Module (`internal/server/service/user.go`, `internal/server/http/auth.go`)
 - **Password Hashing**: Argon2id (`lixenwraith/auth`), at most four concurrent
   derivations; unknown accounts verify against a dummy hash for equal timing
 - **JWT Management**: one scoped `auth.JWT` manager (HS256, issuer
@@ -48,15 +53,20 @@ restart does not degrade storage. A COMMIT error (unknown outcome), a permanent
 error, or a full queue marks storage degraded; live play remains available in
 memory and `/health` reports that durable history may be incomplete.
 
-Synchronous operations carry a five-second deadline. The pool holds at most ten
-connections (five idle). The schema is resolved through `search_path`, so the
-role default (`chess`) or a DSN parameter selects it. `InitDB` applies ordered,
-transactional migrations under an advisory lock and issues no DDL when the
-schema is current, which lets a DML-only runtime role start the server.
+Synchronous operations run under the caller's context (a request's, the
+cleanup job's): five seconds a query, ten for the sweep's flush and account
+purge. Queued writes keep the writer's own deadline. A caller that has ended
+queues nothing; once queued, a write runs and its caller (import, removal,
+account deletion) waits up to fifteen seconds for the outcome. The pool holds
+at most ten connections (five idle). The schema is resolved through
+`search_path`, so the role default (`chess`) or a DSN parameter selects it.
+`InitDB` applies ordered, transactional migrations under an advisory lock and
+issues no DDL when the schema is current, which lets a DML-only runtime role
+start the server.
 
 ### Supporting Modules
-- **Engine** (`internal/engine`): UCI protocol wrapper for Stockfish process communication
-- **Game** (`internal/game`): Game state with snapshot history and player associations
+- **Engine** (`internal/server/engine`): UCI protocol wrapper for Stockfish process communication
+- **Game** (`internal/server/game`): Game state with snapshot history and player associations
 - **Rules core** (`internal/server/chess`): dependency-free position model,
   legal move generation, SAN, PGN, ASCII board, dead-material and repetition
   detection. It validates custom starting FENs, applies the automatic draw
@@ -65,7 +75,11 @@ schema is current, which lets a DML-only runtime role start the server.
 - **Replay** (`internal/server/replay`): works on stored game records: SAN
   for every ply, PGN assembly with the termination comment, and verification
   against the rules (used by `db verify`, `db pgn`, and the integrity sweep)
-- **Core** (`internal/core`): Shared types, API models, error constants
+- **Mail** (`internal/server/mail`): password-reset email through an SMTP
+  relay, or `.eml` files in development
+- **Web server** (`internal/server/webserver`): serves the embedded web client
+  (`-serve`)
+- **Core** (`internal/server/core`): Shared types, API models, error constants
 - **CLI** (`cmd/chess-server/cli`): Database and user management commands
 - **Client** (`cmd/chess-client-cli`, `internal/client`): Interactive debugging client with command registry, session management, and colored terminal output
 
@@ -121,8 +135,10 @@ schema is current, which lets a DML-only runtime role start the server.
 
 ### Computer Move
 1. HTTP handler receives `POST /games/{id}/moves` with `{"move": "cccc"}`
-2. Processor sets game state to `pending`
-3. Submits task to EngineQueue, returns immediately
+2. Processor queues a task on EngineQueue and sets the game `pending`, under
+   the service lock; a full queue (two tasks a worker) answers 503
+   `RESOURCE_LIMIT` and leaves the game `ongoing`
+3. Returns immediately
 4. Worker goroutine calculates move with dedicated Stockfish instance
 5. Callback re-validates the move on the validation engine, applies the
    automatic draw rules, and commits via the service
@@ -131,13 +147,14 @@ schema is current, which lets a DML-only runtime role start the server.
 
 ### Long-Polling Flow
 1. Client sends `GET /games/{id}?wait=true&moveCount=N`
-2. Handler creates context from HTTP connection
-3. Registers wait with WaitRegistry using game ID and move count
-4. If game state unchanged, blocks up to 30 seconds
-5. On any game update, NotifyGame sends to all waiters
-6. Returns immediately with current state
-7. Client disconnection cancels wait via context
-8. Game deletion notifies and removes all waiters
+2. Registers wait with WaitRegistry using game ID and move count
+3. If game state unchanged, blocks up to 30 seconds
+4. On any game update, NotifyGame sends to all waiters
+5. Returns immediately with current state
+6. Game deletion notifies and removes all waiters; server shutdown ends the
+   wait
+7. A client that disconnects is not noticed (fasthttp reports no disconnect
+   to a running handler): its wait ends by one of the above
 
 ### Durable Replay Read
 1. Client requests `GET /api/games/{id}/history`
@@ -172,9 +189,10 @@ schema is current, which lets a DML-only runtime role start the server.
 
 ### Query Operations
 1. Replay-sensitive game reads wait on the async-write barrier
-2. "My games" matches claims (`white_claimed_by`/`black_claimed_by`) through two
-   composite partial indexes; authenticated creators and first movers always
-   record a claim, and claims survive player reconfiguration
+2. "My games" matches claims and imports (`white_claimed_by`,
+   `black_claimed_by`, `imported_by`) through three composite partial
+   indexes, a colour filter that claim only; authenticated creators and first
+   movers always record a claim, and claims survive player reconfiguration
 3. The listing reads each game's move count and final FEN from its last move
    with a LATERAL probe of the `moves` primary key, not a per-row count
 4. Move history is read in primary-key order `(game_id, move_number)`
@@ -237,7 +255,7 @@ Commands encapsulate operations with type, arguments, and optional user ID for a
 ### Player Configuration
 Players identified by UUID (authenticated users) or generated IDs (anonymous), configured with type (human/computer), skill level, and search time.
 
-### Storage Schema (version 3)
+### Storage Schema (version 5)
 ```sql
 users (
     user_id uuid PRIMARY KEY,
@@ -274,7 +292,16 @@ games (
     concession_result text,                 -- first resignation (win) or agreed draw,
     concession_termination text,            --   kept when an undo continues play
     concession_ply integer,                 --   against the computer; all four set
-    concession_time_utc timestamptz         --   together or all NULL
+    concession_time_utc timestamptz,        --   together or all NULL
+    imported_by uuid,                       -- account that imported it from PGN
+    event text, site text, round text       -- the imported PGN's tags
+)
+
+password_resets (
+    user_id uuid PRIMARY KEY REFERENCES users ON DELETE CASCADE,
+    token_hash bytea NOT NULL UNIQUE,       -- SHA-256 of the emailed token
+    created_at timestamptz NOT NULL,
+    expires_at timestamptz NOT NULL         -- an hour after creation
 )
 
 moves (
@@ -292,15 +319,20 @@ moves (
 `termination`, constrained to be set exactly with `result` and to fit it
 (wins by checkmate or resignation, draws by a draw rule or agreement).
 Version 3 added the `concession_*` columns: a rewind clears `result` and
-`termination` but keeps them, and the first concession is never overwritten. Indexes cover session expiry,
-each claim column ordered by `(start_time_utc DESC, game_id DESC)` for the game
-listing, and the start time of unclaimed games for the anonymous-game purge.
+`termination` but keeps them, and the first concession is never overwritten.
+Version 4 added `password_resets`, one pending reset per account; version 5
+the import columns. Indexes cover session and reset expiry, each claim column
+and `imported_by` ordered by `(start_time_utc DESC, game_id DESC)` for the
+game listing, and the start time of games with neither claim nor importer for
+the anonymous-game purge.
 Claims and player IDs deliberately have no foreign key to `users`: history
 outlives deleted accounts, and the name snapshot keeps it readable.
 
 ### Retention
 - Sessions are deleted after expiry (7 days after the last login).
 - Finished games leave memory after `-finished-game-ttl` (1 hour); their rows stay.
+- Unfinished games a registered player claimed leave memory after a week
+  without activity (`-idle-game-ttl`); their rows stay, for replay.
 - Games with no claimed slot are unloaded from memory and deleted from the
   database 24 hours after their last activity (`-anonymous-game-ttl`). The
   hourly cleanup evicts idle games first, then queues the delete through the

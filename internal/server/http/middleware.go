@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"errors"
 
 	"github.com/lixenwraith/chess/internal/server/core"
@@ -10,10 +11,8 @@ import (
 	"github.com/lixenwraith/auth"
 )
 
-// TokenValidator validates JWT tokens
-type TokenValidator func(token string) (userID string, claims map[string]any, err error)
+type TokenValidator func(ctx context.Context, token string) (userID string, claims map[string]any, err error)
 
-// AuthRequired enforces JWT authentication for protected endpoints
 func AuthRequired(validateToken TokenValidator) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		header := c.Get(fiber.HeaderAuthorization)
@@ -50,7 +49,7 @@ func OptionalAuth(validateToken TokenValidator) fiber.Handler {
 }
 
 func authenticate(c *fiber.Ctx, validateToken TokenValidator, token string) error {
-	userID, claims, err := validateToken(token)
+	userID, claims, err := validateToken(c.UserContext(), token)
 	if err != nil {
 		if errors.Is(err, service.ErrStorageDisabled) || errors.Is(err, service.ErrStorageUnavailable) {
 			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{

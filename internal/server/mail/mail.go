@@ -28,7 +28,6 @@ type Message struct {
 	Body    string
 }
 
-// Sender delivers messages.
 type Sender interface {
 	Send(ctx context.Context, m Message) error
 	// Describe names the transport for logs, without secrets.
@@ -49,7 +48,6 @@ type SMTP struct {
 	Timeout time.Duration
 }
 
-// Describe names the relay.
 func (s *SMTP) Describe() string {
 	auth := "no authentication"
 	if s.Username != "" {
@@ -58,7 +56,6 @@ func (s *SMTP) Describe() string {
 	return fmt.Sprintf("smtp %s:%d (%s), from %s", s.Host, s.Port, auth, s.From)
 }
 
-// Send delivers one message through the relay.
 func (s *SMTP) Send(ctx context.Context, m Message) error {
 	from, err := mail.ParseAddress(s.From)
 	if err != nil {
@@ -86,6 +83,9 @@ func (s *SMTP) Send(ctx context.Context, m Message) error {
 	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
 		return err
 	}
+	// The dial alone watches ctx: a cancel ends the exchange at once instead.
+	stop := context.AfterFunc(ctx, func() { conn.SetDeadline(time.Now()) })
+	defer stop()
 
 	client, err := smtp.NewClient(conn, s.Host)
 	if err != nil {
@@ -128,7 +128,6 @@ type Dir struct {
 	From string
 }
 
-// Describe names the directory.
 func (d *Dir) Describe() string {
 	return fmt.Sprintf("directory %s, from %s", d.Path, d.From)
 }

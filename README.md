@@ -194,7 +194,7 @@ Access the UI at `http://localhost:9090` when server is running with `-serve` fl
 - [Architecture](./doc/architecture.md) - System design with auth layer
 - [Development](./doc/development.md) - Build, test, and user management
 - [Client Guide](./doc/client.md) - Interactive debugging client, including replay
-- [Replay Plan](./doc/todo.md) - Game-replay phases, decisions, and what is left
+- [Roadmap](./doc/todo.md) - What is left, by batch and priority, and the decisions taken
 - [Stockfish Integration](./doc/stockfish.md) - Engine communication
 
 ## License

@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -17,31 +18,44 @@ type PasswordResetRecord struct {
 	ExpiresAt time.Time
 }
 
-// CreatePasswordReset stores a reset for the user, replacing any pending one,
-// so only the latest link works. It returns sql.ErrNoRows for an unknown
-// user.
-func (s *Store) CreatePasswordReset(record PasswordResetRecord) error {
+// ErrResetPending reports a pending reset created within the cooldown.
+var ErrResetPending = errors.New("a password reset was created within the cooldown")
+
+// CreatePasswordReset stores a reset for the user, replacing a pending one
+// created at least cooldown earlier, so only the latest link works. It
+// returns ErrResetPending when a newer one stands, and sql.ErrNoRows for an
+// unknown user.
+func (s *Store) CreatePasswordReset(ctx context.Context, record PasswordResetRecord, cooldown time.Duration) error {
 	if !validUUID(record.UserID) {
 		return sql.ErrNoRows
 	}
 	if len(record.TokenHash) != 32 {
 		return errors.New("token hash must be 32 bytes")
 	}
-	ctx, cancel := opContext()
+	ctx, cancel := opContext(ctx)
 	defer cancel()
 	result, err := s.db.ExecContext(ctx, `INSERT INTO password_resets (user_id, token_hash, created_at, expires_at)
 		SELECT user_id, $2, $3, $4 FROM users WHERE user_id = $1
 		ON CONFLICT (user_id) DO UPDATE SET
 			token_hash = excluded.token_hash,
 			created_at = excluded.created_at,
-			expires_at = excluded.expires_at`,
-		record.UserID, record.TokenHash, record.CreatedAt, record.ExpiresAt)
+			expires_at = excluded.expires_at
+		WHERE password_resets.created_at <= $5`,
+		record.UserID, record.TokenHash, record.CreatedAt, record.ExpiresAt, record.CreatedAt.Add(-cooldown))
 	if err != nil {
 		return fmt.Errorf("create password reset: %w", err)
 	}
 	if rows, err := result.RowsAffected(); err != nil {
 		return err
 	} else if rows == 0 {
+		var exists bool
+		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE user_id = $1)`,
+			record.UserID).Scan(&exists); err != nil {
+			return fmt.Errorf("create password reset: %w", err)
+		}
+		if exists {
+			return ErrResetPending
+		}
 		return sql.ErrNoRows
 	}
 	slog.Debug("storage password reset created", "user_id", record.UserID, "expires_at", record.ExpiresAt)
@@ -51,11 +65,11 @@ func (s *Store) CreatePasswordReset(record PasswordResetRecord) error {
 // ConsumePasswordReset deletes the reset matching tokenHash and returns its
 // user, or sql.ErrNoRows when none is pending or it has expired. A token
 // works once.
-func (s *Store) ConsumePasswordReset(tokenHash []byte, now time.Time) (string, error) {
+func (s *Store) ConsumePasswordReset(ctx context.Context, tokenHash []byte, now time.Time) (string, error) {
 	if len(tokenHash) != 32 {
 		return "", sql.ErrNoRows
 	}
-	ctx, cancel := opContext()
+	ctx, cancel := opContext(ctx)
 	defer cancel()
 	var userID string
 	err := s.db.QueryRowContext(ctx,
@@ -67,9 +81,8 @@ func (s *Store) ConsumePasswordReset(tokenHash []byte, now time.Time) (string, e
 	return userID, nil
 }
 
-// DeleteExpiredPasswordResets removes resets past their expiry.
-func (s *Store) DeleteExpiredPasswordResets() (int64, error) {
-	ctx, cancel := opContext()
+func (s *Store) DeleteExpiredPasswordResets(ctx context.Context) (int64, error) {
+	ctx, cancel := opContext(ctx)
 	defer cancel()
 	result, err := s.db.ExecContext(ctx, `DELETE FROM password_resets WHERE expires_at < $1`, time.Now().UTC())
 	if err != nil {
@@ -85,11 +98,11 @@ func (s *Store) DeleteExpiredPasswordResets() (int64, error) {
 // ResetUserPassword sets a new password hash and ends the user's sessions in
 // one transaction: whoever held the old password is signed out everywhere.
 // It returns sql.ErrNoRows for an unknown user.
-func (s *Store) ResetUserPassword(userID, passwordHash string) error {
+func (s *Store) ResetUserPassword(ctx context.Context, userID, passwordHash string) error {
 	if !validUUID(userID) {
 		return sql.ErrNoRows
 	}
-	ctx, cancel := opContext()
+	ctx, cancel := opContext(ctx)
 	defer cancel()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

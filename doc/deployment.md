@@ -176,6 +176,7 @@ Server flags:
 | `-proxy-header` | | Client-IP header set by the proxy (default `X-Real-IP`) |
 | `-max-users` | | Registration cap (default 100, `0` = none) |
 | `-anonymous-game-ttl` | | Retention of games without a registered player (default `24h`) |
+| `-idle-game-ttl` | | Memory retention of an unfinished game with a registered player after its last activity; it stays stored (default `168h`) |
 | `-finished-game-ttl` | | Memory retention of finished games (default `1h`) |
 | `-db-cleanup` | | Hourly integrity sweep: `off` (default), `report` (log findings), or `delete` ([database.md](database.md#integrity-sweep)) |
 | `-smtp-host`, `-smtp-port` | | SMTP relay for password-reset email (default port 25); recovery is off without a transport |
@@ -218,7 +219,9 @@ With an SMTP relay the server emails a reset link on request (`POST
 opens the client, which sets the new password and signs the person in. The
 link works for an hour and once; using it signs the account out everywhere
 else. Accounts without an email address cannot use it (the CLI commands above
-can).
+can). The server answers before it sends, at most one email per account per
+5 minutes while its link is pending, and logs a message the relay refuses:
+watch the log for `password reset email failed` after setting the relay up.
 
 The relay is a separate jail reached over the internal network. Set in
 `rc.conf`:

@@ -169,21 +169,13 @@ test/run-test-server.sh bin/chess-server
 test/test-longpoll.sh
 ```
 
-### Coverage
-- **Basic Long-Polling**: Wait for game state changes
-- **Multi-Client**: Multiple simultaneous waiters
-- **Timeout Behavior**: 25-second timeout verification
-- **Immediate Response**: No wait when state already changed
-- **Connection Handling**: Client disconnect cleanup
-- **Game Deletion**: Notification on game removal
-- **Move Detection**: Accurate move count tracking
-
 ### Test Scenarios
 1. **Single Waiter**: Client waits, receives update after move
 2. **Multiple Waiters**: 3 clients wait, all receive notification
-3. **Timeout**: Verify 25-second timeout with valid response
+3. **Timeout**: The wait ends after 30 seconds with the game state
 4. **Skip Wait**: Immediate return when moveCount outdated
-5. **Disconnection**: Proper cleanup on client disconnect
+
+A client that disconnects is not noticed: its wait ends at 30 seconds.
 
 ## Replay Tests (`test-replay.sh`)
 

@@ -57,13 +57,17 @@ would persist.
 
 The tables:
 
-| Table | Contents |
-|---|---|
-| `chess.schema_version` | One row: the applied migration |
-| `chess.users` | Accounts: lowercase username and email, Argon2id password hash |
-| `chess.sessions` | One active session per user; deleting it signs the user out |
-| `chess.games` | Players, claims (`*_claimed_by`), name snapshots, `result`, `termination`, `concession_*`, times |
-| `chess.moves` | Ply `move_number` 1..n, UCI move, FEN after the move |
+- `chess.schema_version`: one row, the applied migration
+- `chess.users`: accounts; lowercase username and email, Argon2id password
+  hash
+- `chess.sessions`: one active session per user; deleting it signs the user
+  out
+- `chess.password_resets`: one pending reset per account, the SHA-256 of the
+  emailed token
+- `chess.games`: players, claims (`*_claimed_by`), name snapshots, `result`,
+  `termination`, `concession_*`, times; for an imported game `imported_by`,
+  `event`, `site`, `round`
+- `chess.moves`: ply `move_number` 1..n, UCI move, FEN after the move
 
 `result` is `white_wins`, `black_wins`, `stalemate`, or `draw`, and
 `termination` says how: `checkmate`, `resignation`, `stalemate`,
@@ -290,7 +294,7 @@ The service commands are `systemctl stop|start chessd` on Linux and
 service stopped:
 
 ```sql
-TRUNCATE chess.moves, chess.games, chess.sessions, chess.users;
+TRUNCATE chess.moves, chess.games, chess.password_resets, chess.sessions, chess.users;
 ```
 
 **Recreate the tables** (drops and re-runs the migrations), with the service
@@ -302,7 +306,7 @@ su -m chess -c '/home/chess/bin/chess-server db delete -confirm -dsn "postgres:/
 su -m chess -c '/home/chess/bin/chess-server db init -dsn "postgres:///chess?host=/tmp"'
 ```
 
-`db init` prints `Database schema ready (version 3)`. In split mode the
+`db init` prints `Database schema ready (version 5)`. In split mode the
 `chess` role owns no tables and cannot drop or create them; run both commands
 as `postgres` acting as the owner role instead, e.g. on Linux:
 
@@ -329,7 +333,7 @@ create them again.
 Verify any of them:
 
 ```sql
-\dt chess.*                                   -- games, moves, schema_version, sessions, users
-SELECT version FROM chess.schema_version;     -- 3
+\dt chess.*                                   -- games, moves, password_resets, schema_version, sessions, users
+SELECT version FROM chess.schema_version;     -- 5
 \drds                                         -- chess: search_path and timeouts in database chess
 ```

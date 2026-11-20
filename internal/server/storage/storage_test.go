@@ -122,7 +122,7 @@ func TestReplayPersistenceIsAtomicAndReadAfterWriteConsistent(t *testing.T) {
 	}
 
 	// GetGameHistory must observe both queued writes without sleeps or polling.
-	record, moves, err := store.GetGameHistory(gameID)
+	record, moves, err := store.GetGameHistory(t.Context(), gameID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestReplayPersistenceIsAtomicAndReadAfterWriteConsistent(t *testing.T) {
 		t.Fatalf("moves = %+v", moves)
 	}
 
-	owned, err := store.QueryGamesForUser(user, UserGamesQuery{Limit: 10})
+	owned, err := store.QueryGamesForUser(t.Context(), user, UserGamesQuery{Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,14 +148,14 @@ func TestReplayPersistenceIsAtomicAndReadAfterWriteConsistent(t *testing.T) {
 	if err := store.RewindGame(gameID, 0); err != nil {
 		t.Fatal(err)
 	}
-	record, moves, err = store.GetGameHistory(gameID)
+	record, moves, err = store.GetGameHistory(t.Context(), gameID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if record.Result != "" || record.EndTimeUTC != nil || len(moves) != 0 {
 		t.Fatalf("rewind left stale replay data: game=%+v moves=%+v", record, moves)
 	}
-	owned, err = store.QueryGamesForUser(user, UserGamesQuery{Limit: 10})
+	owned, err = store.QueryGamesForUser(t.Context(), user, UserGamesQuery{Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,10 +163,10 @@ func TestReplayPersistenceIsAtomicAndReadAfterWriteConsistent(t *testing.T) {
 		t.Fatalf("rewound summary = %+v", owned)
 	}
 
-	if _, _, err := store.GetGameHistory("not-a-uuid"); !IsGameNotFound(err) {
+	if _, _, err := store.GetGameHistory(t.Context(), "not-a-uuid"); !IsGameNotFound(err) {
 		t.Fatalf("malformed ID error = %v, want not found", err)
 	}
-	if _, _, err := store.GetGameHistory(uuid.NewString()); !IsGameNotFound(err) {
+	if _, _, err := store.GetGameHistory(t.Context(), uuid.NewString()); !IsGameNotFound(err) {
 		t.Fatalf("unknown ID error = %v, want not found", err)
 	}
 }
@@ -207,7 +207,7 @@ func TestUserGamesArePagedNewestFirstWithoutDuplicates(t *testing.T) {
 
 	var got []string
 	for offset := 0; ; offset += 2 {
-		page, err := store.QueryGamesForUser(user, UserGamesQuery{Limit: 2, Offset: offset})
+		page, err := store.QueryGamesForUser(t.Context(), user, UserGamesQuery{Limit: 2, Offset: offset})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -221,7 +221,7 @@ func TestUserGamesArePagedNewestFirstWithoutDuplicates(t *testing.T) {
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("user games = %v, want %v", got, want)
 	}
-	if games, err := store.QueryGamesForUser("not-a-uuid", UserGamesQuery{Limit: 10}); err != nil || len(games) != 0 {
+	if games, err := store.QueryGamesForUser(t.Context(), "not-a-uuid", UserGamesQuery{Limit: 10}); err != nil || len(games) != 0 {
 		t.Fatalf("malformed user ID = %v, %v; want empty", games, err)
 	}
 
@@ -230,7 +230,7 @@ func TestUserGamesArePagedNewestFirstWithoutDuplicates(t *testing.T) {
 	got = nil
 	var after *GameCursor
 	for page := 0; ; page++ {
-		games, err := store.QueryGamesForUser(user, UserGamesQuery{Limit: 2, After: after})
+		games, err := store.QueryGamesForUser(t.Context(), user, UserGamesQuery{Limit: 2, After: after})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -261,7 +261,7 @@ func TestUserGamesArePagedNewestFirstWithoutDuplicates(t *testing.T) {
 	count := func(q UserGamesQuery) int {
 		t.Helper()
 		q.Limit = 50
-		games, err := store.QueryGamesForUser(user, q)
+		games, err := store.QueryGamesForUser(t.Context(), user, q)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -288,19 +288,19 @@ func TestUserGamesArePagedNewestFirstWithoutDuplicates(t *testing.T) {
 		{Limit: 1, Offset: 1, After: &GameCursor{GameID: user}},
 		{Limit: 1, After: &GameCursor{GameID: "x"}},
 	} {
-		if _, err := store.QueryGamesForUser(user, bad); err == nil {
+		if _, err := store.QueryGamesForUser(t.Context(), user, bad); err == nil {
 			t.Errorf("QueryGamesForUser(%+v) succeeded", bad)
 		}
 	}
 
 	prefix := want[0][:8]
-	if id, err := store.ResolveGameID(prefix); err != nil || id != want[0] {
+	if id, err := store.ResolveGameID(t.Context(), prefix); err != nil || id != want[0] {
 		t.Errorf("ResolveGameID(%s) = %q, %v; want %s", prefix, id, err, want[0])
 	}
-	if _, err := store.ResolveGameID("0000000"); err == nil {
+	if _, err := store.ResolveGameID(t.Context(), "0000000"); err == nil {
 		t.Error("ResolveGameID accepted a 7-digit prefix")
 	}
-	if _, err := store.ResolveGameID("ffffffff-ffff"); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := store.ResolveGameID(t.Context(), "ffffffff-ffff"); !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("ResolveGameID(unknown) error = %v, want sql.ErrNoRows", err)
 	}
 }
@@ -384,7 +384,7 @@ func TestAcceptedWriteCommitsAfterQueueAdmissionFailureMarksHealthDegraded(t *te
 	if err := <-done; err != nil {
 		t.Fatalf("accepted write was discarded: %v", err)
 	}
-	if _, err := store.GetUserByID(userID); err != nil {
+	if _, err := store.GetUserByID(t.Context(), userID); err != nil {
 		t.Fatalf("accepted write was not committed: %v", err)
 	}
 }
@@ -453,7 +453,7 @@ func TestWriteSurvivesTerminatedConnection(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.GetGameHistory(gameID); err != nil {
+	if _, _, err := store.GetGameHistory(t.Context(), gameID); err != nil {
 		t.Fatalf("write after connection loss: %v", err)
 	}
 	if !store.IsHealthy() {
@@ -485,30 +485,30 @@ func TestForeignKeyCascadeAppliesToSessions(t *testing.T) {
 	store := openStore(t, pgtest.DSN(t))
 	now := time.Now().UTC()
 	userID, sessionID := uuid.NewString(), uuid.NewString()
-	if err := store.CreateUser(UserRecord{
+	if err := store.CreateUser(t.Context(), UserRecord{
 		UserID: userID, Username: "user1", PasswordHash: "hash", CreatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CreateSession(SessionRecord{
+	if err := store.CreateSession(t.Context(), SessionRecord{
 		SessionID: sessionID, UserID: userID, CreatedAt: now, ExpiresAt: now.Add(time.Hour),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	user, err := store.GetUserByID(userID)
+	user, err := store.GetUserByID(t.Context(), userID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if user.LastLoginAt == nil || !user.LastLoginAt.Equal(now.Truncate(time.Microsecond)) {
 		t.Fatalf("session creation did not record login time: %v", user.LastLoginAt)
 	}
-	if err := store.DeleteUser(userID); err != nil {
+	if err := store.DeleteUser(t.Context(), userID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.GetSession(sessionID); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := store.GetSession(t.Context(), sessionID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("session survived user cascade: %v", err)
 	}
-	if err := store.DeleteUser(userID); !errors.Is(err, sql.ErrNoRows) {
+	if err := store.DeleteUser(t.Context(), userID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("deleting a missing user = %v, want sql.ErrNoRows", err)
 	}
 }
@@ -526,10 +526,10 @@ func TestLimitedUserCreationIsAtomicWithInitialSession(t *testing.T) {
 		SessionID: uuid.NewString(), UserID: first.UserID,
 		CreatedAt: now, ExpiresAt: now.Add(time.Hour),
 	}
-	if err := store.CreateUserWithinLimits(first, &firstSession, limits); err != nil {
+	if err := store.CreateUserWithinLimits(t.Context(), first, &firstSession, limits); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.GetSession(firstSession.SessionID); err != nil {
+	if _, err := store.GetSession(t.Context(), firstSession.SessionID); err != nil {
 		t.Fatalf("initial session not committed with user: %v", err)
 	}
 
@@ -539,15 +539,15 @@ func TestLimitedUserCreationIsAtomicWithInitialSession(t *testing.T) {
 		SessionID: firstSession.SessionID, UserID: conflicting.UserID,
 		CreatedAt: now, ExpiresAt: now.Add(time.Hour),
 	}
-	if err := store.CreateUserWithinLimits(conflicting, &conflictingSession, limits); err == nil {
+	if err := store.CreateUserWithinLimits(t.Context(), conflicting, &conflictingSession, limits); err == nil {
 		t.Fatal("expected duplicate session failure")
 	}
-	if _, err := store.GetUserByID(conflicting.UserID); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := store.GetUserByID(t.Context(), conflicting.UserID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("session failure did not roll back user: %v", err)
 	}
 
 	second := UserRecord{UserID: uuid.NewString(), Username: "bob", PasswordHash: "hash", CreatedAt: now}
-	if err := store.CreateUserWithinLimits(second, nil, limits); err != nil {
+	if err := store.CreateUserWithinLimits(t.Context(), second, nil, limits); err != nil {
 		t.Fatal(err)
 	}
 
@@ -558,26 +558,26 @@ func TestLimitedUserCreationIsAtomicWithInitialSession(t *testing.T) {
 		{Username: "dave", Email: "alice@EXAMPLE.com"},
 	} {
 		duplicate.UserID, duplicate.PasswordHash, duplicate.CreatedAt = uuid.NewString(), "hash", now
-		if err := store.CreateUserWithinLimits(duplicate, nil, limits); !errors.Is(err, ErrUserAlreadyExists) {
+		if err := store.CreateUserWithinLimits(t.Context(), duplicate, nil, limits); !errors.Is(err, ErrUserAlreadyExists) {
 			t.Fatalf("duplicate %+v error = %v, want ErrUserAlreadyExists", duplicate, err)
 		}
 	}
 	third := UserRecord{UserID: uuid.NewString(), Username: "erin", PasswordHash: "hash", CreatedAt: now}
-	if err := store.CreateUserWithinLimits(third, nil, limits); !errors.Is(err, ErrUserCapacity) {
+	if err := store.CreateUserWithinLimits(t.Context(), third, nil, limits); !errors.Is(err, ErrUserCapacity) {
 		t.Fatalf("registration at capacity = %v, want ErrUserCapacity", err)
 	}
 	for _, existing := range []string{first.UserID, second.UserID} {
-		if _, err := store.GetUserByID(existing); err != nil {
+		if _, err := store.GetUserByID(t.Context(), existing); err != nil {
 			t.Fatalf("existing user %s removed at capacity: %v", existing, err)
 		}
 	}
 
 	// Administrative creation and a zero limit are not capped.
-	if err := store.CreateUser(third); err != nil {
+	if err := store.CreateUser(t.Context(), third); err != nil {
 		t.Fatalf("CLI creation beyond the public limit: %v", err)
 	}
 	unlimited := UserRecord{UserID: uuid.NewString(), Username: "frank", PasswordHash: "hash", CreatedAt: now}
-	if err := store.CreateUserWithinLimits(unlimited, nil, UserLimits{}); err != nil {
+	if err := store.CreateUserWithinLimits(t.Context(), unlimited, nil, UserLimits{}); err != nil {
 		t.Fatalf("zero limit: %v", err)
 	}
 }
@@ -591,7 +591,7 @@ func TestConcurrentRegistrationsRespectCapacity(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs <- store.CreateUserWithinLimits(UserRecord{
+			errs <- store.CreateUserWithinLimits(t.Context(), UserRecord{
 				UserID: uuid.NewString(), Username: fmt.Sprintf("user%d", i),
 				PasswordHash: "hash", CreatedAt: time.Now().UTC(),
 			}, nil, limits)
@@ -608,7 +608,7 @@ func TestConcurrentRegistrationsRespectCapacity(t *testing.T) {
 			t.Errorf("registration failed: %v", err)
 		}
 	}
-	users, err := store.GetAllUsers()
+	users, err := store.GetAllUsers(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -626,41 +626,41 @@ func TestUserLookupsAndUpdates(t *testing.T) {
 	}
 	bob := UserRecord{UserID: uuid.NewString(), Username: "bob", PasswordHash: "hash", CreatedAt: now}
 	for _, user := range []UserRecord{alice, bob} {
-		if err := store.CreateUser(user); err != nil {
+		if err := store.CreateUser(t.Context(), user); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	byName, err := store.GetUserByUsername("ALICE")
+	byName, err := store.GetUserByUsername(t.Context(), "ALICE")
 	if err != nil || byName.UserID != alice.UserID || byName.Username != "alice" || byName.Email != "alice@example.com" {
 		t.Fatalf("username lookup = %+v, %v", byName, err)
 	}
-	if byEmail, err := store.GetUserByEmail("ALICE@example.COM"); err != nil || byEmail.UserID != alice.UserID {
+	if byEmail, err := store.GetUserByEmail(t.Context(), "ALICE@example.COM"); err != nil || byEmail.UserID != alice.UserID {
 		t.Fatalf("email lookup = %+v, %v", byEmail, err)
 	}
-	if byID, err := store.GetUserByID(bob.UserID); err != nil || byID.Email != "" {
+	if byID, err := store.GetUserByID(t.Context(), bob.UserID); err != nil || byID.Email != "" {
 		t.Fatalf("user without email = %+v, %v", byID, err)
 	}
-	if _, err := store.GetUserByEmail(""); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := store.GetUserByEmail(t.Context(), ""); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("empty email lookup = %v, want sql.ErrNoRows", err)
 	}
-	if _, err := store.GetUserByID("not-a-uuid"); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := store.GetUserByID(t.Context(), "not-a-uuid"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("malformed ID lookup = %v, want sql.ErrNoRows", err)
 	}
 
-	if err := store.UpdateUserUsername(bob.UserID, "ALICE"); !errors.Is(err, ErrUserAlreadyExists) {
+	if err := store.UpdateUserUsername(t.Context(), bob.UserID, "ALICE"); !errors.Is(err, ErrUserAlreadyExists) {
 		t.Fatalf("conflicting rename = %v, want ErrUserAlreadyExists", err)
 	}
-	if err := store.UpdateUserEmail(bob.UserID, "alice@example.com"); !errors.Is(err, ErrUserAlreadyExists) {
+	if err := store.UpdateUserEmail(t.Context(), bob.UserID, "alice@example.com"); !errors.Is(err, ErrUserAlreadyExists) {
 		t.Fatalf("conflicting email = %v, want ErrUserAlreadyExists", err)
 	}
-	if err := store.UpdateUserEmail(alice.UserID, ""); err != nil {
+	if err := store.UpdateUserEmail(t.Context(), alice.UserID, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpdateUserEmail(bob.UserID, "alice@example.com"); err != nil {
+	if err := store.UpdateUserEmail(t.Context(), bob.UserID, "alice@example.com"); err != nil {
 		t.Fatalf("released email not reusable: %v", err)
 	}
-	if err := store.UpdateUserPassword(uuid.NewString(), "hash"); !errors.Is(err, sql.ErrNoRows) {
+	if err := store.UpdateUserPassword(t.Context(), uuid.NewString(), "hash"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("update of missing user = %v, want sql.ErrNoRows", err)
 	}
 }
@@ -669,28 +669,28 @@ func TestExpiredSessionsAreDeleted(t *testing.T) {
 	store := openStore(t, pgtest.DSN(t))
 	now := time.Now().UTC()
 	userID := uuid.NewString()
-	if err := store.CreateUser(UserRecord{
+	if err := store.CreateUser(t.Context(), UserRecord{
 		UserID: userID, Username: "user", PasswordHash: "hash", CreatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	oldSession := uuid.NewString()
-	if err := store.CreateSession(SessionRecord{
+	if err := store.CreateSession(t.Context(), SessionRecord{
 		SessionID: oldSession, UserID: userID,
 		CreatedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(-time.Hour),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if valid, err := store.IsSessionValidForUser(oldSession, userID); err != nil || valid {
+	if valid, err := store.IsSessionValidForUser(t.Context(), oldSession, userID); err != nil || valid {
 		t.Fatalf("expired session valid = %v, %v", valid, err)
 	}
-	if deleted, err := store.DeleteExpiredSessions(); err != nil || deleted != 1 {
+	if deleted, err := store.DeleteExpiredSessions(t.Context()); err != nil || deleted != 1 {
 		t.Fatalf("expired sessions deleted = %d, %v; want 1", deleted, err)
 	}
-	if _, err := store.GetUserByID(userID); err != nil {
+	if _, err := store.GetUserByID(t.Context(), userID); err != nil {
 		t.Fatalf("session cleanup removed the account: %v", err)
 	}
-	if valid, err := store.IsSessionValidForUser("not-a-uuid", userID); err != nil || valid {
+	if valid, err := store.IsSessionValidForUser(t.Context(), "not-a-uuid", userID); err != nil || valid {
 		t.Fatalf("malformed session valid = %v, %v", valid, err)
 	}
 }
@@ -752,7 +752,7 @@ func TestAnonymousGamesArePurgedAfterInactivity(t *testing.T) {
 		idle: false, idleFinished: false,
 		recentMove: true, recentEnd: true, recentStart: true, live: true, claimed: true,
 	} {
-		_, moves, err := store.GetGameHistory(gameID)
+		_, moves, err := store.GetGameHistory(t.Context(), gameID)
 		switch {
 		case wantKept && err != nil:
 			t.Errorf("game %s deleted: %v", gameID, err)
@@ -767,7 +767,7 @@ func TestAnonymousGamesArePurgedAfterInactivity(t *testing.T) {
 	if err := store.DeleteAnonymousGames(cutoff, nil); err != nil {
 		t.Fatalf("nil live set: %v", err)
 	}
-	if _, _, err := store.GetGameHistory(live); !IsGameNotFound(err) {
+	if _, _, err := store.GetGameHistory(t.Context(), live); !IsGameNotFound(err) {
 		t.Fatalf("idle game kept after leaving memory: %v", err)
 	}
 }
@@ -777,7 +777,7 @@ func TestClaimsSnapshotPlayerNames(t *testing.T) {
 	now := time.Now().UTC()
 	alice, bob := uuid.NewString(), uuid.NewString()
 	for id, name := range map[string]string{alice: "alice", bob: "bob"} {
-		if err := store.CreateUser(UserRecord{UserID: id, Username: name, PasswordHash: "hash", CreatedAt: now}); err != nil {
+		if err := store.CreateUser(t.Context(), UserRecord{UserID: id, Username: name, PasswordHash: "hash", CreatedAt: now}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -804,19 +804,19 @@ func TestClaimsSnapshotPlayerNames(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	record, _, err := store.GetGameHistory(gameID)
+	record, _, err := store.GetGameHistory(t.Context(), gameID)
 	if err != nil || record.WhiteName != "alice" || record.BlackName != "bob" {
 		t.Fatalf("names = %q/%q, %v", record.WhiteName, record.BlackName, err)
 	}
 
 	// The snapshot survives a rename and account deletion.
-	if err := store.UpdateUserUsername(bob, "robert"); err != nil {
+	if err := store.UpdateUserUsername(t.Context(), bob, "robert"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.DeleteUser(alice); err != nil {
+	if err := store.DeleteUser(t.Context(), alice); err != nil {
 		t.Fatal(err)
 	}
-	record, _, err = store.GetGameHistory(gameID)
+	record, _, err = store.GetGameHistory(t.Context(), gameID)
 	if err != nil || record.WhiteName != "alice" || record.BlackName != "bob" || record.WhiteClaimedBy != alice {
 		t.Fatalf("names after rename/delete = %q/%q claim=%q, %v",
 			record.WhiteName, record.BlackName, record.WhiteClaimedBy, err)
@@ -832,7 +832,7 @@ func TestClaimsSnapshotPlayerNames(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if record, _, err := store.GetGameHistory(orphan); err != nil || record.WhiteName != "" {
+	if record, _, err := store.GetGameHistory(t.Context(), orphan); err != nil || record.WhiteName != "" {
 		t.Fatalf("orphan claim name = %q, %v", record.WhiteName, err)
 	}
 }
@@ -842,11 +842,11 @@ func TestDeleteAccountClearsClaimsAndNames(t *testing.T) {
 	now := time.Now().UTC()
 	alice, bob := uuid.NewString(), uuid.NewString()
 	for id, name := range map[string]string{alice: "alice", bob: "bob"} {
-		if err := store.CreateUser(UserRecord{UserID: id, Username: name, PasswordHash: "hash", CreatedAt: now}); err != nil {
+		if err := store.CreateUser(t.Context(), UserRecord{UserID: id, Username: name, PasswordHash: "hash", CreatedAt: now}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := store.CreateSession(SessionRecord{
+	if err := store.CreateSession(t.Context(), SessionRecord{
 		SessionID: uuid.NewString(), UserID: alice, CreatedAt: now, ExpiresAt: now.Add(time.Hour),
 	}); err != nil {
 		t.Fatal(err)
@@ -867,10 +867,10 @@ func TestDeleteAccountClearsClaimsAndNames(t *testing.T) {
 		}
 	}
 
-	if err := store.DeleteAccount(alice); err != nil {
+	if err := store.DeleteAccount(t.Context(), alice); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.GetUserByID(alice); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := store.GetUserByID(t.Context(), alice); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("account still present: %v", err)
 	}
 	var sessions int
@@ -878,7 +878,7 @@ func TestDeleteAccountClearsClaimsAndNames(t *testing.T) {
 		t.Fatalf("sessions left: %d, %v", sessions, err)
 	}
 
-	record, _, err := store.GetGameHistory(shared)
+	record, _, err := store.GetGameHistory(t.Context(), shared)
 	if err != nil || record.WhiteClaimedBy != "" || record.WhiteName != "" ||
 		record.BlackClaimedBy != bob || record.BlackName != "bob" {
 		t.Fatalf("shared game after deletion: white %q/%q black %q/%q, %v",
@@ -891,18 +891,61 @@ func TestDeleteAccountClearsClaimsAndNames(t *testing.T) {
 	if err := store.Flush(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.GetGameHistory(solo); !errors.Is(err, sql.ErrNoRows) {
+	if _, _, err := store.GetGameHistory(t.Context(), solo); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("solo game survived the anonymous purge: %v", err)
 	}
-	if _, _, err := store.GetGameHistory(shared); err != nil {
+	if _, _, err := store.GetGameHistory(t.Context(), shared); err != nil {
 		t.Fatalf("a game another user claims must stay: %v", err)
 	}
 
-	if err := store.DeleteAccount(alice); !errors.Is(err, sql.ErrNoRows) {
+	if err := store.DeleteAccount(t.Context(), alice); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("second deletion: %v, want sql.ErrNoRows", err)
 	}
 	if !store.IsHealthy() {
 		t.Fatal("deleting a missing account degraded the writer")
+	}
+}
+
+// TestCallerContextGatesQueuingNotAQueuedWrite: an ended caller queues no
+// write, and one cancelled while its write waits still learns its outcome.
+func TestCallerContextGatesQueuingNotAQueuedWrite(t *testing.T) {
+	store := openStore(t, pgtest.DSN(t))
+	insert := func(ctx context.Context, tx *sql.Tx) error {
+		id := uuid.NewString()
+		_, err := tx.ExecContext(ctx, `INSERT INTO users (user_id, username, password_hash, created_at)
+			VALUES ($1, $2, 'hash', now())`, id, "u"+id[:8])
+		return err
+	}
+	users := func() (n int) {
+		if err := store.db.QueryRow(`SELECT count(*) FROM users`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	ended, cancel := context.WithCancel(t.Context())
+	cancel()
+	for range 20 {
+		if err := store.enqueueWait(ended, "ended", insert); !errors.Is(err, context.Canceled) {
+			t.Fatalf("ended caller: %v", err)
+		}
+	}
+	if err := store.Flush(t.Context()); err != nil || users() != 0 {
+		t.Fatalf("an ended caller queued writes: %d users, %v", users(), err)
+	}
+
+	lock, err := store.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lock.Exec(`LOCK TABLE users IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	time.AfterFunc(300*time.Millisecond, func() { lock.Rollback() })
+	if err := store.enqueueWait(ctx, "cancelled", insert); err != nil || users() != 1 {
+		t.Fatalf("cancelled caller of a committed write: %v, %d users", err, users())
 	}
 }
 
@@ -1061,7 +1104,7 @@ func TestMigrationV3BackfillsConcessions(t *testing.T) {
 		"agreement":   {ConcessionResult: "draw", ConcessionTermination: "agreement", ConcessionPly: 0},
 		"checkmate":   {},
 	} {
-		records, err := store.QueryGames(ids[termination], "")
+		records, err := store.QueryGames(t.Context(), ids[termination], "")
 		if err != nil || len(records) != 1 {
 			t.Fatalf("%s: %v, %d records", termination, err, len(records))
 		}
@@ -1156,7 +1199,7 @@ func TestWriteForDeletedGameIsDroppedWithoutDegrading(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.GetGameHistory(other); err != nil {
+	if _, _, err := store.GetGameHistory(t.Context(), other); err != nil {
 		t.Fatalf("other game: %v", err)
 	}
 }

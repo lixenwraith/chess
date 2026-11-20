@@ -17,14 +17,12 @@ import (
 var emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
 var usernameRegex = regexp.MustCompile(`^[a-zA-Z0-9_]{1,40}$`)
 
-// RegisterRequest defines the user registration payload
 type RegisterRequest struct {
 	Username string `json:"username" validate:"required,min=1,max=40"`
 	Email    string `json:"email" validate:"omitempty,max=255"`
 	Password string `json:"password" validate:"required,min=8,max=128"`
 }
 
-// LoginRequest defines the authentication payload
 type LoginRequest struct {
 	Identifier string `json:"identifier" validate:"required"` // username or email
 	Password   string `json:"password" validate:"required"`
@@ -46,7 +44,6 @@ type ResetPasswordRequest struct {
 	Password string `json:"password" validate:"required"`
 }
 
-// AuthResponse contains JWT token and user information
 type AuthResponse struct {
 	Token     string    `json:"token"`
 	UserID    string    `json:"userId"`
@@ -55,7 +52,6 @@ type AuthResponse struct {
 	ExpiresAt time.Time `json:"expiresAt"`
 }
 
-// UserResponse contains current user information
 type UserResponse struct {
 	UserID    string    `json:"userId"`
 	Username  string    `json:"username"`
@@ -63,7 +59,6 @@ type UserResponse struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-// RegisterHandler creates a new user account
 func (h *HTTPHandler) RegisterHandler(c *fiber.Ctx) error {
 	var req RegisterRequest
 	if err := c.BodyParser(&req); err != nil {
@@ -74,7 +69,6 @@ func (h *HTTPHandler) RegisterHandler(c *fiber.Ctx) error {
 		})
 	}
 
-	// Validate username format
 	if !usernameRegex.MatchString(req.Username) {
 		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
 			Error:   "invalid username format",
@@ -83,7 +77,6 @@ func (h *HTTPHandler) RegisterHandler(c *fiber.Ctx) error {
 		})
 	}
 
-	// Validate email format if provided
 	if req.Email != "" && !emailRegex.MatchString(req.Email) {
 		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
 			Error:   "invalid email format",
@@ -92,7 +85,6 @@ func (h *HTTPHandler) RegisterHandler(c *fiber.Ctx) error {
 		})
 	}
 
-	// Validate password strength
 	if err := validatePassword(req.Password); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
 			Error:   "weak password",
@@ -108,7 +100,7 @@ func (h *HTTPHandler) RegisterHandler(c *fiber.Ctx) error {
 	}
 
 	// Create the user and initial session atomically.
-	user, sessionID, err := h.svc.RegisterUser(req.Username, req.Email, req.Password)
+	user, sessionID, err := h.svc.RegisterUser(c.UserContext(), req.Username, req.Email, req.Password)
 	if err != nil {
 		if errors.Is(err, service.ErrStorageDisabled) || errors.Is(err, service.ErrStorageUnavailable) {
 			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
@@ -135,7 +127,6 @@ func (h *HTTPHandler) RegisterHandler(c *fiber.Ctx) error {
 		})
 	}
 
-	// Generate JWT token
 	token, err := h.svc.GenerateUserToken(user.UserID, sessionID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
@@ -153,7 +144,6 @@ func (h *HTTPHandler) RegisterHandler(c *fiber.Ctx) error {
 	})
 }
 
-// validatePassword checks password strength requirements
 func validatePassword(password string) error {
 	const (
 		minPasswordLength = 8
@@ -166,7 +156,6 @@ func validatePassword(password string) error {
 		return fmt.Errorf("password must not exceed 128 characters")
 	}
 
-	// Check for at least one letter and one number
 	hasLetter := false
 	hasNumber := false
 	for _, r := range password {
@@ -188,7 +177,6 @@ func validatePassword(password string) error {
 	return nil
 }
 
-// LoginHandler authenticates user and returns JWT token
 func (h *HTTPHandler) LoginHandler(c *fiber.Ctx) error {
 	var req LoginRequest
 	if err := c.BodyParser(&req); err != nil {
@@ -203,7 +191,7 @@ func (h *HTTPHandler) LoginHandler(c *fiber.Ctx) error {
 	req.Identifier = strings.ToLower(req.Identifier)
 
 	// Authenticate user and create session (invalidates previous session)
-	user, sessionID, err := h.svc.AuthenticateUser(req.Identifier, req.Password)
+	user, sessionID, err := h.svc.AuthenticateUser(c.UserContext(), req.Identifier, req.Password)
 	if err != nil {
 		if errors.Is(err, service.ErrStorageDisabled) || errors.Is(err, service.ErrStorageUnavailable) {
 			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
@@ -221,7 +209,6 @@ func (h *HTTPHandler) LoginHandler(c *fiber.Ctx) error {
 		})
 	}
 
-	// Generate JWT token with session ID
 	token, err := h.svc.GenerateUserToken(user.UserID, sessionID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
@@ -239,7 +226,6 @@ func (h *HTTPHandler) LoginHandler(c *fiber.Ctx) error {
 	})
 }
 
-// GetCurrentUserHandler returns authenticated user information
 func (h *HTTPHandler) GetCurrentUserHandler(c *fiber.Ctx) error {
 	userID, ok := c.Locals("userID").(string)
 	if !ok || userID == "" {
@@ -249,7 +235,12 @@ func (h *HTTPHandler) GetCurrentUserHandler(c *fiber.Ctx) error {
 		})
 	}
 
-	user, err := h.svc.GetUserByID(userID)
+	user, err := h.svc.GetUserByID(c.UserContext(), userID)
+	if errors.Is(err, service.ErrStorageUnavailable) {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+			Error: "account storage unavailable", Code: core.ErrStorageUnavailable,
+		})
+	}
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(core.ErrorResponse{
 			Error: "user not found",
@@ -265,9 +256,7 @@ func (h *HTTPHandler) GetCurrentUserHandler(c *fiber.Ctx) error {
 	})
 }
 
-// LogoutHandler invalidates the current session
 func (h *HTTPHandler) LogoutHandler(c *fiber.Ctx) error {
-	// Extract session ID from token claims
 	sessionID, ok := c.Locals("sessionID").(string)
 	if !ok || sessionID == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
@@ -276,7 +265,13 @@ func (h *HTTPHandler) LogoutHandler(c *fiber.Ctx) error {
 		})
 	}
 
-	if err := h.svc.InvalidateSession(sessionID); err != nil {
+	err := h.svc.InvalidateSession(c.UserContext(), sessionID)
+	if errors.Is(err, service.ErrStorageUnavailable) {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+			Error: "account storage unavailable", Code: core.ErrStorageUnavailable,
+		})
+	}
+	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
 			Error: "failed to logout",
 			Code:  core.ErrInternalError,
@@ -308,7 +303,7 @@ func (h *HTTPHandler) DeleteAccountHandler(c *fiber.Ctx) error {
 		})
 	}
 
-	if err := h.svc.DeleteAccount(userID, sessionID, req.Password); err != nil {
+	if err := h.svc.DeleteAccount(c.UserContext(), userID, sessionID, req.Password); err != nil {
 		switch {
 		case errors.Is(err, service.ErrInvalidCredentials):
 			return c.Status(fiber.StatusUnauthorized).JSON(core.ErrorResponse{
@@ -334,9 +329,9 @@ func (h *HTTPHandler) DeleteAccountHandler(c *fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
-// RecoverHandler emails a password-reset link. The answer is the same whether
-// or not the account exists or has an email, so nothing is revealed; only a
-// missing transport (503) or a delivery failure (502) is reported.
+// RecoverHandler queues a password-reset email. The answer, and how soon it
+// comes, is the same whether or not the account exists or has an email; only
+// a missing transport or a full queue (503) is reported.
 func (h *HTTPHandler) RecoverHandler(c *fiber.Ctx) error {
 	var req RecoverRequest
 	if err := c.BodyParser(&req); err != nil || strings.TrimSpace(req.Identifier) == "" {
@@ -358,11 +353,11 @@ func (h *HTTPHandler) RecoverHandler(c *fiber.Ctx) error {
 			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
 				Error: "password recovery is not available on this server", Code: core.ErrNotConfigured,
 			})
-		case errors.Is(err, service.ErrMailFailed):
-			return c.Status(fiber.StatusBadGateway).JSON(core.ErrorResponse{
-				Error: "the reset email could not be sent; try again later", Code: core.ErrInternalError,
+		case errors.Is(err, service.ErrMailBusy):
+			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+				Error: err.Error(), Code: core.ErrResourceLimit,
 			})
-		case errors.Is(err, service.ErrStorageDisabled), errors.Is(err, service.ErrStorageUnavailable):
+		case errors.Is(err, service.ErrStorageDisabled):
 			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
 				Error: "account storage unavailable", Code: core.ErrStorageUnavailable,
 			})
@@ -373,7 +368,7 @@ func (h *HTTPHandler) RecoverHandler(c *fiber.Ctx) error {
 		}
 	}
 	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
-		"message": "If the account has an email address, a reset link has been sent to it.",
+		"message": "If the account has an email address, a reset link is on its way to it.",
 	})
 }
 
@@ -396,7 +391,7 @@ func (h *HTTPHandler) ResetPasswordHandler(c *fiber.Ctx) error {
 		})
 	}
 
-	user, sessionID, err := h.svc.ResetPassword(req.Token, req.Password)
+	user, sessionID, err := h.svc.ResetPassword(c.UserContext(), req.Token, req.Password)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrResetInvalid):

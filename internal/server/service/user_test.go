@@ -17,7 +17,7 @@ var testJWTSecret = []byte("test-secret-test-secret-test-secret")
 
 func TestValidateTokenRequiresScopedTokenBoundToSession(t *testing.T) {
 	svc := newPersistentTestService(t)
-	user, sessionID, err := svc.RegisterUser("alice", "", "Password1")
+	user, sessionID, err := svc.RegisterUser(t.Context(), "alice", "", "Password1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +26,7 @@ func TestValidateTokenRequiresScopedTokenBoundToSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gotUserID, claims, err := svc.ValidateToken(validToken)
+	gotUserID, claims, err := svc.ValidateToken(t.Context(), validToken)
 	if err != nil || gotUserID != user.UserID || claims["session_id"] != sessionID {
 		t.Fatalf("valid token rejected: user=%q claims=%v err=%v", gotUserID, claims, err)
 	}
@@ -64,29 +64,29 @@ func TestValidateTokenRequiresScopedTokenBoundToSession(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := svc.ValidateToken(token); err == nil {
+		if _, _, err := svc.ValidateToken(t.Context(), token); err == nil {
 			t.Errorf("%s: token accepted", name)
 		}
 	}
 
-	if err := svc.InvalidateSession(sessionID); err != nil {
+	if err := svc.InvalidateSession(t.Context(), sessionID); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := svc.ValidateToken(validToken); err == nil {
+	if _, _, err := svc.ValidateToken(t.Context(), validToken); err == nil {
 		t.Fatal("invalidated session was accepted")
 	}
 }
 
 func TestAuthenticateUserFailuresAreIndistinguishable(t *testing.T) {
 	svc := newPersistentTestService(t)
-	if _, _, err := svc.RegisterUser("alice", "alice@example.com", "Password1"); err != nil {
+	if _, _, err := svc.RegisterUser(t.Context(), "alice", "alice@example.com", "Password1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := svc.RegisterUser("ALICE", "", "Password1"); !errors.Is(err, ErrUserExists) {
+	if _, _, err := svc.RegisterUser(t.Context(), "ALICE", "", "Password1"); !errors.Is(err, ErrUserExists) {
 		t.Fatalf("duplicate registration = %v, want ErrUserExists", err)
 	}
 
-	user, sessionID, err := svc.AuthenticateUser("alice@example.com", "Password1")
+	user, sessionID, err := svc.AuthenticateUser(t.Context(), "alice@example.com", "Password1")
 	if err != nil || sessionID == "" || user.Username != "alice" {
 		t.Fatalf("login by email = %+v, %q, %v", user, sessionID, err)
 	}
@@ -96,7 +96,7 @@ func TestAuthenticateUserFailuresAreIndistinguishable(t *testing.T) {
 		"unknown email":  {"nobody@example.com", "Password1"},
 		"wrong password": {"alice", "Password2"},
 	} {
-		if _, _, err := svc.AuthenticateUser(attempt[0], attempt[1]); !errors.Is(err, ErrInvalidCredentials) {
+		if _, _, err := svc.AuthenticateUser(t.Context(), attempt[0], attempt[1]); !errors.Is(err, ErrInvalidCredentials) {
 			t.Errorf("%s: error = %v, want ErrInvalidCredentials", name, err)
 		}
 	}
@@ -105,14 +105,14 @@ func TestAuthenticateUserFailuresAreIndistinguishable(t *testing.T) {
 func TestRegistrationCapIsConfigurable(t *testing.T) {
 	svc := newPersistentTestService(t)
 	svc.SetMaxUsers(1)
-	if _, _, err := svc.RegisterUser("alice", "", "Password1"); err != nil {
+	if _, _, err := svc.RegisterUser(t.Context(), "alice", "", "Password1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := svc.RegisterUser("bob", "", "Password1"); !errors.Is(err, ErrAtCapacity) {
+	if _, _, err := svc.RegisterUser(t.Context(), "bob", "", "Password1"); !errors.Is(err, ErrAtCapacity) {
 		t.Fatalf("registration past the cap = %v, want ErrAtCapacity", err)
 	}
 	svc.SetMaxUsers(0)
-	if _, _, err := svc.RegisterUser("bob", "", "Password1"); err != nil {
+	if _, _, err := svc.RegisterUser(t.Context(), "bob", "", "Password1"); err != nil {
 		t.Fatalf("registration without a cap: %v", err)
 	}
 }
@@ -151,7 +151,7 @@ func TestNewRejectsShortJWTSecret(t *testing.T) {
 
 func TestDeleteAccountReleasesLiveClaims(t *testing.T) {
 	svc := newPersistentTestService(t)
-	user, sessionID, err := svc.RegisterUser("alice", "", "Password1")
+	user, sessionID, err := svc.RegisterUser(t.Context(), "alice", "", "Password1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,17 +168,17 @@ func TestDeleteAccountReleasesLiveClaims(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := svc.DeleteAccount(user.UserID, sessionID, "Password2"); !errors.Is(err, ErrInvalidCredentials) {
+	if err := svc.DeleteAccount(t.Context(), user.UserID, sessionID, "Password2"); !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("wrong password: %v, want ErrInvalidCredentials", err)
 	}
-	if _, _, err := svc.ValidateToken(token); err != nil {
+	if _, _, err := svc.ValidateToken(t.Context(), token); err != nil {
 		t.Fatalf("a refused deletion ended the session: %v", err)
 	}
 
-	if err := svc.DeleteAccount(user.UserID, sessionID, "Password1"); err != nil {
+	if err := svc.DeleteAccount(t.Context(), user.UserID, sessionID, "Password1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := svc.ValidateToken(token); err == nil {
+	if _, _, err := svc.ValidateToken(t.Context(), token); err == nil {
 		t.Error("token still valid after deletion")
 	}
 	view, err := svc.GetGameView(gameID)

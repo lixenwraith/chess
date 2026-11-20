@@ -128,12 +128,10 @@ func NewStore(dsn string) (*Store, error) {
 	return s, nil
 }
 
-// IsHealthy returns true if the storage is operational
 func (s *Store) IsHealthy() bool {
 	return s.healthStatus.Load()
 }
 
-// writerLoop processes async write operations
 func (s *Store) writerLoop() {
 	defer s.wg.Done()
 	slog.Debug("storage writer started")
@@ -191,11 +189,10 @@ func (s *Store) handleWrite(req writeRequest) {
 }
 
 // executeWrite runs one logical mutation as one transaction. A transient error
-// raised before COMMIT is retried: the transaction was rolled back, so a retry
-// cannot duplicate it, and the single writer preserves ordering while it waits.
-// A COMMIT error has an unknown outcome and is never retried. Any unrecovered
-// failure degrades storage permanently, because skipping one write would leave
-// later writes applied to an incomplete history.
+// before COMMIT is retried: the rollback makes a retry safe, and the single
+// writer keeps the order while it waits. A COMMIT error has an unknown outcome
+// and is never retried. Any unrecovered failure degrades storage for good, as
+// skipping one write would apply later ones to an incomplete history.
 func (s *Store) executeWrite(req writeRequest) error {
 	started := time.Now()
 	var err error
@@ -285,8 +282,9 @@ func (s *Store) enqueue(operation, gameID string, fn func(context.Context, *sql.
 }
 
 // enqueueWait queues fn on the ordered writer and waits for its own outcome,
-// for a write that must be ordered after queued gameplay writes and must also
-// report success only once it is durable.
+// for a write ordered after queued gameplay writes that reports success only
+// once durable. ctx decides whether it is queued; a queued write runs anyway,
+// so the wait for it ends at the writer's bound, never at a cancel.
 func (s *Store) enqueueWait(ctx context.Context, operation string, fn func(context.Context, *sql.Tx) error) error {
 	s.enqueueMu.RLock()
 	if s.closed.Load() {
@@ -296,6 +294,10 @@ func (s *Store) enqueueWait(ctx context.Context, operation string, fn func(conte
 	if !s.healthStatus.Load() {
 		s.enqueueMu.RUnlock()
 		return ErrStorageDegraded
+	}
+	if err := ctx.Err(); err != nil {
+		s.enqueueMu.RUnlock()
+		return err
 	}
 
 	done := make(chan error, 1)
@@ -307,11 +309,13 @@ func (s *Store) enqueueWait(ctx context.Context, operation string, fn func(conte
 		return ctx.Err()
 	}
 
+	timer := time.NewTimer(flushTimeout + writeTimeout)
+	defer timer.Stop()
 	select {
 	case err := <-done:
 		return err
-	case <-ctx.Done():
-		return ctx.Err()
+	case <-timer.C:
+		return fmt.Errorf("%s: %w", operation, context.DeadlineExceeded)
 	}
 }
 
@@ -346,8 +350,8 @@ func (s *Store) Flush(ctx context.Context) error {
 	}
 }
 
-func (s *Store) flushBeforeRead() error {
-	ctx, cancel := context.WithTimeout(context.Background(), flushTimeout)
+func (s *Store) flushBeforeRead(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, flushTimeout)
 	defer cancel()
 	return s.Flush(ctx)
 }
@@ -469,8 +473,8 @@ func (s *Store) DropSchema() error {
 
 // opContext bounds a synchronous operation so a stalled database cannot hold a
 // request handler indefinitely.
-func opContext() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), queryTimeout)
+func opContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, queryTimeout)
 }
 
 // isTransient reports errors after which the same transaction may succeed on a

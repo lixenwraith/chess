@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -33,7 +34,7 @@ type Imported struct {
 // refused if illegal; the result comes from the PGN's result token, its
 // termination from the final position (mate, stalemate, a dead position,
 // repetition or the fifty-move rule) or else resignation or agreement.
-func (s *Service) ImportGame(userID, text string) (*Imported, error) {
+func (s *Service) ImportGame(ctx context.Context, userID, text string) (*Imported, error) {
 	if s.store == nil {
 		return nil, ErrStorageDisabled
 	}
@@ -57,7 +58,6 @@ func (s *Service) ImportGame(userID, text string) (*Imported, error) {
 		startFEN = normalized
 	}
 
-	// Replay the moves, keeping the position after each ply.
 	pos, err := chess.ParseFEN(startFEN)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidPGN, err)
@@ -108,7 +108,7 @@ func (s *Service) ImportGame(userID, text string) (*Imported, error) {
 		end := start
 		record.EndTimeUTC = &end
 	}
-	if err := s.store.ImportGame(record, moves); err != nil {
+	if err := s.store.ImportGame(ctx, record, moves); err != nil {
 		return nil, fmt.Errorf("%w: import game: %v", ErrStorageUnavailable, err)
 	}
 	slog.Info("game imported", "game_id", gameID, "user_id", userID, "plies", len(moves), "result", result)
@@ -221,11 +221,11 @@ func importStartTime(game *chess.ParsedPGN) time.Time {
 // when the user alone holds it, or the user's claim is released when another
 // user claims a side (see storage.RemoveGameForUser). A deleted game is also
 // unloaded from memory; a released one keeps playing for the other side.
-func (s *Service) RemoveGame(gameID, userID string) (storage.RemovalOutcome, error) {
+func (s *Service) RemoveGame(ctx context.Context, gameID, userID string) (storage.RemovalOutcome, error) {
 	if s.store == nil {
 		return "", ErrStorageDisabled
 	}
-	outcome, err := s.store.RemoveGameForUser(gameID, userID)
+	outcome, err := s.store.RemoveGameForUser(ctx, gameID, userID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", fmt.Errorf("%w: %s", ErrGameNotFound, gameID)

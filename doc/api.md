@@ -119,9 +119,12 @@ hashing is saturated or `STORAGE_UNAVAILABLE` when storage is down.
 ### Request a Password Reset
 `POST /auth/recover`
 
-Emails a one-time reset link to the account's address. The response is the
-same whether or not the account exists or has an email, so nothing is
-revealed.
+Emails a one-time reset link to the account's address. The request is
+answered before the account is looked up, so the response, and how soon it
+comes, is the same whether or not the account exists or has an email. While
+a link is pending, a request within 5 minutes of it mails nothing and that
+link keeps working. A message the relay refuses is logged, and its link
+revoked.
 
 **Request:**
 ```json
@@ -132,12 +135,12 @@ revealed.
 
 **Response (202):**
 ```json
-{"message": "If the account has an email address, a reset link has been sent to it."}
+{"message": "If the account has an email address, a reset link is on its way to it."}
 ```
 
 Errors: 429 past 3 requests a minute per IP, 503 `NOT_CONFIGURED` when the
-server has no mail transport (`/health` reports `"mail": "disabled"`), 502
-when the relay refused the message.
+server has no mail transport (`/health` reports `"mail": "disabled"`), 503
+`RESOURCE_LIMIT` when 64 requests already wait for the sender.
 
 ### Reset a Password
 `POST /auth/reset`
@@ -263,8 +266,9 @@ entry is empty only for a move it cannot notate, which the server logs).
 
 **Timeout behavior:**
 - Returns current state after 30 seconds even if no changes
-- Client disconnection cancels wait immediately
-- Game deletion notifies all waiting clients
+- Game deletion notifies all waiting clients; server shutdown ends the wait
+- A client that disconnects is not noticed: the server holds its wait until
+  one of the above
 
 ### Get Durable Game History
 `GET /games/{gameId}/history`
@@ -323,7 +327,8 @@ and `termination` names how it was reached (see
 `moveNumber` counts plies from 1. `san` is omitted only for a stored move the
 rules core cannot notate, which the server logs. A claimed player's `name` is
 their username when the claim was recorded; it survives later renames and
-account deletion, and is omitted for anonymous and computer players.
+`db user delete` (self-service deletion clears it), and is omitted for
+anonymous and computer players.
 
 Undo stays available after most results (a finished game can be rewound and
 played on), so a stored game is never final. Responses carry a strong `ETag`
@@ -378,8 +383,8 @@ and `unterminated` otherwise.
 ### List My Stored Games
 `GET /users/me/games?limit=50&cursor=<nextCursor>&status=finished&color=white`
 
-Returns games associated with the authenticated user at creation time or by a
-later first-move slot claim, newest first. Requires
+Returns games associated with the authenticated user at creation time, by a
+later first-move slot claim, or by import, newest first. Requires
 `Authorization: Bearer <token>` and persistent storage.
 
 - `limit`: 1-100; defaults to 50
@@ -396,8 +401,9 @@ or the initial FEN when there is none), result, its `pgnResult` token and
 players, move count, `origin` (`played` or `imported`) and, for an imported
 game, its `event`. `nextCursor` is present only when another
 page exists; `nextOffset` also, on requests without a cursor. A game belongs
-to a user who created it while authenticated or claimed a slot with a first
-move; the association survives later player reconfiguration.
+to a user who created it while authenticated, claimed a slot with a first
+move, or imported it; `color` matches claims only. The association survives
+later player reconfiguration.
 
 Returns 400 `INVALID_REQUEST` for a malformed cursor or filter.
 
@@ -497,6 +503,9 @@ last rank without the piece returns 400 `INVALID_MOVE` with
 ```json
 {"move": "cccc"}
 ```
+
+When the engine already has two moves a worker waiting, the trigger returns
+503 `RESOURCE_LIMIT` and the game stays `ongoing`; repeat it shortly.
 
 A move that ends the game (mate, stalemate, or an automatic draw) returns the
 terminal state and `termination` in the same response.

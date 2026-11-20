@@ -57,7 +57,7 @@ func TestHistoryNotationAndPGN(t *testing.T) {
 	gameID := playLine(t, svc, uuid.NewString(), computer,
 		[]string{"f2f3", "e7e5", "g2g4", "d8h4"}, core.StateBlackWins)
 
-	history, err := svc.GetGameHistory(gameID)
+	history, err := svc.GetGameHistory(t.Context(), gameID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestHistoryNotationAndPGN(t *testing.T) {
 		t.Fatalf("history notation = %v, %q, %q", san, history.PGNResult, history.Termination)
 	}
 
-	pgn, err := svc.GetGamePGN(gameID, -1)
+	pgn, err := svc.GetGamePGN(t.Context(), gameID, -1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestHistoryNotationAndPGN(t *testing.T) {
 		t.Errorf("filename = %q", pgn.Filename)
 	}
 
-	partial, err := svc.GetGamePGN(gameID, 2)
+	partial, err := svc.GetGamePGN(t.Context(), gameID, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,13 +94,13 @@ func TestHistoryNotationAndPGN(t *testing.T) {
 		!strings.HasSuffix(partial.Filename, "-ply2.pgn") {
 		t.Errorf("partial PGN %q:\n%s", partial.Filename, partial.Text)
 	}
-	if full, err := svc.GetGamePGN(gameID, 4); err != nil || full.Text != pgn.Text {
+	if full, err := svc.GetGamePGN(t.Context(), gameID, 4); err != nil || full.Text != pgn.Text {
 		t.Errorf("ply equal to the line length should export the whole game: %v", err)
 	}
-	if _, err := svc.GetGamePGN(gameID, 5); !errors.Is(err, ErrPlyOutOfRange) {
+	if _, err := svc.GetGamePGN(t.Context(), gameID, 5); !errors.Is(err, ErrPlyOutOfRange) {
 		t.Errorf("ply 5 error = %v, want ErrPlyOutOfRange", err)
 	}
-	if _, err := svc.GetGamePGN(uuid.NewString(), -1); !errors.Is(err, ErrGameNotFound) {
+	if _, err := svc.GetGamePGN(t.Context(), uuid.NewString(), -1); !errors.Is(err, ErrGameNotFound) {
 		t.Errorf("unknown game error = %v, want ErrGameNotFound", err)
 	}
 }
@@ -119,7 +119,7 @@ func TestUserGamesCursorAndFilters(t *testing.T) {
 	var got []string
 	cursor := ""
 	for {
-		page, err := svc.GetUserGames(userID, UserGamesOptions{Limit: 3, Cursor: cursor})
+		page, err := svc.GetUserGames(t.Context(), userID, UserGamesOptions{Limit: 3, Cursor: cursor})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -138,7 +138,7 @@ func TestUserGamesCursorAndFilters(t *testing.T) {
 		t.Fatalf("cursor pages = %v, want %v", got, ids)
 	}
 
-	page, err := svc.GetUserGames(userID, UserGamesOptions{Limit: 10, Status: "finished", Color: "white"})
+	page, err := svc.GetUserGames(t.Context(), userID, UserGamesOptions{Limit: 10, Status: "finished", Color: "white"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestUserGamesCursorAndFilters(t *testing.T) {
 		{Limit: 1, Cursor: "!!"}, {Limit: 1, Cursor: "bm90LWEtY3Vyc29y"}, {Limit: 1, Offset: 1, Cursor: page.NextCursor + "x"},
 		{Limit: 1, Color: "red"}, {Limit: 1, Status: "paused"},
 	} {
-		if _, err := svc.GetUserGames(userID, bad); !errors.Is(err, ErrInvalidListQuery) {
+		if _, err := svc.GetUserGames(t.Context(), userID, bad); !errors.Is(err, ErrInvalidListQuery) {
 			t.Errorf("GetUserGames(%+v) error = %v, want ErrInvalidListQuery", bad, err)
 		}
 	}

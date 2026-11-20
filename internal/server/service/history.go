@@ -29,8 +29,8 @@ var (
 
 // GetGameHistory returns a durable replay even after the live game has been
 // evicted from memory or the server has restarted. SAN is derived on read.
-func (s *Service) GetGameHistory(gameID string) (*core.GameHistoryResponse, error) {
-	record, moves, err := s.loadHistory(gameID)
+func (s *Service) GetGameHistory(ctx context.Context, gameID string) (*core.GameHistoryResponse, error) {
+	record, moves, err := s.loadHistory(ctx, gameID)
 	if err != nil {
 		return nil, err
 	}
@@ -74,8 +74,8 @@ func (s *Service) GetGameHistory(gameID string) (*core.GameHistoryResponse, erro
 }
 
 // GetGamePGN exports the stored game in PGN; see replay.BuildPGN for ply.
-func (s *Service) GetGamePGN(gameID string, ply int) (*replay.PGN, error) {
-	record, moves, err := s.loadHistory(gameID)
+func (s *Service) GetGamePGN(ctx context.Context, gameID string, ply int) (*replay.PGN, error) {
+	record, moves, err := s.loadHistory(ctx, gameID)
 	if err != nil {
 		return nil, err
 	}
@@ -86,11 +86,11 @@ func (s *Service) GetGamePGN(gameID string, ply int) (*replay.PGN, error) {
 	return pgn, err
 }
 
-func (s *Service) loadHistory(gameID string) (*storage.GameRecord, []storage.MoveRecord, error) {
+func (s *Service) loadHistory(ctx context.Context, gameID string) (*storage.GameRecord, []storage.MoveRecord, error) {
 	if s.store == nil {
 		return nil, nil, ErrStorageDisabled
 	}
-	record, moves, err := s.store.GetGameHistory(gameID)
+	record, moves, err := s.store.GetGameHistory(ctx, gameID)
 	if err != nil {
 		if storage.IsGameNotFound(err) {
 			return nil, nil, fmt.Errorf("%w: %s", ErrGameNotFound, gameID)
@@ -113,9 +113,9 @@ type UserGamesOptions struct {
 	Status string // "", "ongoing", or "finished"
 }
 
-// GetUserGames returns a bounded page of games associated either at creation
-// or by a later slot claim.
-func (s *Service) GetUserGames(userID string, opts UserGamesOptions) (*core.GameListResponse, error) {
+// GetUserGames returns a bounded page of games associated at creation, by a
+// later slot claim, or by import.
+func (s *Service) GetUserGames(ctx context.Context, userID string, opts UserGamesOptions) (*core.GameListResponse, error) {
 	if s.store == nil {
 		return nil, ErrStorageDisabled
 	}
@@ -145,7 +145,7 @@ func (s *Service) GetUserGames(userID string, opts UserGamesOptions) (*core.Game
 		query.After = after
 	}
 
-	records, err := s.store.QueryGamesForUser(userID, query)
+	records, err := s.store.QueryGamesForUser(ctx, userID, query)
 	if err != nil {
 		if isStorageUnavailable(err) {
 			return nil, fmt.Errorf("%w: %v", ErrStorageUnavailable, err)
@@ -219,7 +219,8 @@ func isStorageUnavailable(err error) bool {
 	return errors.Is(err, storage.ErrStorageDegraded) ||
 		errors.Is(err, storage.ErrStoreClosed) ||
 		errors.Is(err, storage.ErrWriteQueueFull) ||
-		errors.Is(err, context.DeadlineExceeded)
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, context.Canceled)
 }
 
 func playersResponse(record storage.GameRecord) core.PlayersResponse {

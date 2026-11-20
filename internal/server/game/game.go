@@ -16,7 +16,6 @@ type Snapshot struct {
 	PlayerID      string          `json:"playerId"` // ID of the player whose turn it is
 }
 
-// MoveResult tracks the outcome of a move
 type MoveResult struct {
 	Move        string     `json:"move"`
 	PlayerColor core.Color `json:"playerColor"`
@@ -69,7 +68,6 @@ type View struct {
 }
 
 func New(initialFEN string, whitePlayer, blackPlayer *core.Player, startingTurnColor core.Color) *Game {
-	// Determine which player's turn it is initially
 	var initialPlayerID string
 	var initialPlayerType core.PlayerType
 	if startingTurnColor == core.ColorWhite {
@@ -142,12 +140,10 @@ func (g *Game) View() View {
 	return view
 }
 
-// BothHuman reports whether neither side is played by the computer.
 func (v View) BothHuman() bool {
 	return bothHuman(v.WhitePlayer, v.BlackPlayer)
 }
 
-// BothHuman reports whether neither side is played by the computer.
 func (g *Game) BothHuman() bool {
 	return bothHuman(g.players[core.ColorWhite], g.players[core.ColorBlack])
 }
@@ -183,12 +179,10 @@ func (g *Game) SetLastResult(result *MoveResult) {
 	g.lastResult = &copy
 }
 
-// CurrentSnapshot returns the latest game snapshot
 func (g *Game) CurrentSnapshot() Snapshot {
 	return g.snapshots[len(g.snapshots)-1]
 }
 
-// CurrentFEN returns the current position in FEN notation
 func (g *Game) CurrentFEN() string {
 	return g.CurrentSnapshot().FEN
 }
@@ -212,7 +206,6 @@ func (g *Game) AddSnapshot(fen string, move string, nextTurnColor core.Color) {
 	if g.drawOffer == nextTurnColor {
 		g.drawOffer = 0
 	}
-	// Get the player ID for the next turn
 	nextPlayer := g.players[nextTurnColor]
 	g.snapshots = append(g.snapshots, Snapshot{
 		FEN:           fen,
@@ -229,7 +222,6 @@ func (g *Game) UpdatePlayers(whitePlayer, blackPlayer *core.Player) {
 	g.players[core.ColorWhite] = &whiteCopy
 	g.players[core.ColorBlack] = &blackCopy
 
-	// Update current snapshot's PlayerID to reflect new player
 	if len(g.snapshots) > 0 {
 		currentSnap := &g.snapshots[len(g.snapshots)-1]
 		currentPlayer := g.players[currentSnap.NextTurnColor]
@@ -249,15 +241,14 @@ func (g *Game) UndoMoves(count int) error {
 	}
 
 	g.snapshots = g.snapshots[:len(g.snapshots)-count]
-	g.state = core.StateOngoing // Reset game state when undoing
+	g.state = core.StateOngoing
 	g.termination = core.TermNone
-	g.lastResult = nil // Clear last result
+	g.lastResult = nil
 	g.endTimeUTC = nil
 	g.ClearDrawOffers()
 	return nil
 }
 
-// Plies returns the number of moves played.
 func (g *Game) Plies() int {
 	return len(g.snapshots) - 1
 }
@@ -284,7 +275,6 @@ func (g *Game) RecordDeclinedOffer(color core.Color) {
 	g.offerPly[color] = g.Plies()
 }
 
-// DeclineDraw withdraws a pending offer.
 func (g *Game) DeclineDraw() {
 	g.drawOffer = 0
 }
@@ -302,7 +292,6 @@ func (g *Game) Concession() *Concession {
 	return g.concession
 }
 
-// Termination returns how a finished game ended.
 func (g *Game) Termination() core.Termination {
 	return g.termination
 }
@@ -386,8 +375,7 @@ func (g *Game) InitialFEN() string {
 	return chess.StartFEN
 }
 
-// ClaimSlot claims a player slot for a user
-// Caller must hold the lock
+// ClaimSlot requires the caller to hold the service lock.
 func (g *Game) ClaimSlot(color core.Color, userID string) error {
 	player := g.players[color]
 	if player == nil {
@@ -420,20 +408,12 @@ func (g *Game) ReleaseUser(userID string) bool {
 	return changed
 }
 
-// GetSlotOwner returns the userID that claimed the slot, empty if unclaimed
-// Caller must hold the lock
+// GetSlotOwner returns the slot's claimant, empty if unclaimed; the caller
+// holds the service lock.
 func (g *Game) GetSlotOwner(color core.Color) string {
 	player := g.players[color]
 	if player == nil {
 		return ""
 	}
 	return player.ClaimedBy
-}
-
-// HasComputerPlayer returns true if at least one player is computer
-func (g *Game) HasComputerPlayer() bool {
-	white := g.players[core.ColorWhite]
-	black := g.players[core.ColorBlack]
-	return (white != nil && white.Type == core.PlayerComputer) ||
-		(black != nil && black.Type == core.PlayerComputer)
 }
