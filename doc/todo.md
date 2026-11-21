@@ -97,9 +97,10 @@ batch under Done says what it delivered.
 - D10 Live SAN, done: the live game response carries `san`.
 - D11 Replay history, done: views push browser history entries; stepping a
   replay replaces its entry.
-- D12 Move authority, done: the rules core, without the production check
-  R7.1 planned: the database is re-initialised with the release that makes
-  the switch, so no stored game predates it.
+- D12 Move authority, done: the rules core, without R7.1's check of the
+  stored games as a gate: a stored game is verified before it resumes and
+  stays replay-only when it fails; `db verify` checks them all at any time
+  (R7.3).
 
 ## Web Client Constraints
 
@@ -241,7 +242,8 @@ and replays each ruling of the core as a shadow.
 ### R7.3 Retire the engine shadow
 
 - Priority: P3, after a release whose log holds no `rules core and engine
-  disagree` and no `rules core cannot parse game position`
+  disagree` and no `rules core cannot parse game position`, and a `db verify`
+  of the stored games without a problem
 - Affected files: `internal/server/processor/processor.go`,
   `internal/server/processor/rules_test.go`,
   `internal/server/engine/engine.go`, `doc/architecture.md`,
