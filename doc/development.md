@@ -168,7 +168,7 @@ run against a missing or outdated schema.
 chess/
 ├── cmd/
 │   ├── chess-server/            # Server: entry point, PID file, proxies, JWT key
-│   │   └── cli/                 # db subcommands: schema, users, games, PGN
+│   │   └── cli/                 # db subcommands: schema, users, games, PGN, archive
 │   └── chess-client-cli/        # Terminal client, native and WASM
 ├── internal/
 │   ├── client/                  # Terminal client
@@ -184,9 +184,10 @@ chess/
 │       ├── game/                # Live game state and claims
 │       ├── http/                # Fiber routes, handlers, auth, middleware
 │       ├── mail/                # Password-reset email
-│       ├── processor/           # Command execution, engine queue
+│       ├── metrics/             # Timers and the periodic metrics log line
+│       ├── processor/           # Command execution, engine queue, analysis
 │       ├── replay/              # Stored games: SAN, PGN, verification
-│       ├── service/             # Live games, users, sessions, cleanup
+│       ├── service/             # Live games, users, sessions, archive, cleanup
 │       ├── storage/             # PostgreSQL persistence (pgtest: per-test schemas)
 │       └── webserver/           # Embedded web client
 ├── web/chess-client-wasm/       # Page that runs the WASM terminal client
@@ -315,5 +316,6 @@ CHESS_E2E_MAIL_DIR=/tmp/chess-mail make test-e2e                 # terminal 2
 - No push-based game updates (30-second long-polling is used)
 - A restart drops a computer move in flight: the game resumes with the computer to move
 - Database history has no automatic retention policy
-- Curated games are planned in the [Roadmap](./todo.md#r5-imported-and-curated-games)
+- The archive ships empty: collections are imported and published by the operator
+- A partial PGN date is stored as a full one ([Roadmap](./todo.md#r55-partial-dates-of-games-read-from-pgn))
 - REST API only

@@ -72,7 +72,6 @@ this file, and the line of its batch under Done says what it delivered.
   the turn strip names the opponent. Schema v6. A signed-in viewer turns the
   Engine on in a replay: the evaluation and best three lines of the position
   shown, from `POST /api/analysis` (D13).
-
 - R10 Observability: the measures (queues, retries, degraded transitions,
   flush, replay-read and KDF-slot latency, loaded games, long-poll waiters,
   engine restarts, shadow disagreements) as one `msg=metrics` log line every
