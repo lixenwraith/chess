@@ -16,7 +16,6 @@ batch under Done says what it delivered.
   - R7.1 P1: verify production data against the rules core (operations)
   - R8.1 P1: deliver mail through the mail jail (operations)
 - Phase 2, next, in this order:
-  - R9.1 P2: interrupt long-running CLI commands
   - R6.2 P2: resume unfinished games after a restart
   - R7.2 P2: validate human moves with the core, after R7.1
   - R8.2 P2: email verification, after R8.1
@@ -53,6 +52,8 @@ batch under Done says what it delivered.
   a request's 35-second deadline and the server's lifetime reach its storage
   calls, while queued writes keep the writer's own (the processor needs none:
   its writes are queued). A disconnect stays unnoticed: that needs net/http.
+- R9, in part: Ctrl-C stops a running `auto`, `poll` or `computer` in the
+  terminal client, natively and in the browser, and the session stays.
 
 ## Decisions
 
@@ -446,30 +447,6 @@ email.
 
 The web client plays the computer and replays stored games; the terminal
 client drives the whole API, natively and in the browser.
-
-### R9.1 Interrupt long-running CLI commands
-
-- Priority: P2, small and contained
-- Affected files: `internal/client/command/replay.go`,
-  `internal/client/command/game.go`, `internal/client/api/client.go`,
-  `internal/client/session/session.go`, `cmd/chess-client-cli/main.go`, a
-  native and browser pair in `internal/client/command` (as `pass_native.go`
-  and `pass_wasm.go`), `web/chess-client-wasm/terminal.js`, `doc/client.md`
-- Guide: [auto](client.md#auto), [poll](client.md#poll--p),
-  [Limitations](client.md#limitations)
-
-`auto` sleeps between plies to the end of the line, `poll` waits up to 30
-seconds, and `computer` up to three polls. Natively Ctrl-C ends the client,
-and with it the session, whose login and current game live in memory only.
-In the browser, terminal.js passes keys to Go only while it waits on a read,
-so nothing reaches a running command.
-
-- One interrupt for a running command: natively `signal.NotifyContext`
-  around it; in the browser terminal.js turns Ctrl-C outside a read into a
-  call the Go side registered (`syscall/js`), which cancels the same context.
-- `auto` checks it between plies; `poll` and `computer` pass it to their
-  requests, so the API client gains calls that take a context.
-- At the prompt Ctrl-C keeps today's behaviour.
 
 ### R9.2 Analysis on a replay
 

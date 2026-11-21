@@ -114,7 +114,8 @@ chess > move g7g8q
 ```
 
 #### `computer` / `c`
-Trigger computer move calculation.
+Trigger computer move calculation and wait for the move. Ctrl-C stops the
+wait, not the computer: `poll` or `show` picks up its move.
 ```
 chess > computer
 ```
@@ -150,10 +151,10 @@ chess > delete <gameId>      # Unload specific live game
 ```
 
 #### `poll` / `p`
-Long-poll for game updates (waits up to 30 seconds). Returns on a move, an
-undo, a result (a resignation or an accepted draw), or a draw offer, and
-prints the outcome or offer. In a two-player game, `poll` is how you learn
-that the opponent moved, offered a draw, or resigned.
+Long-poll for game updates (waits up to 30 seconds, or until Ctrl-C). Returns
+on a move, an undo, a result (a resignation or an accepted draw), or a draw
+offer, and prints the outcome or offer. In a two-player game, `poll` is how
+you learn that the opponent moved, offered a draw, or resigned.
 ```
 chess > poll
 ```
@@ -244,7 +245,7 @@ chess > first
 
 #### `auto`
 Play forward from the current ply to the end of the line, one board per ply,
-with a delay in milliseconds (default 1000).
+with a delay in milliseconds (default 1000). Ctrl-C stops at the ply shown.
 ```
 chess > auto        # one ply a second
 chess > auto 250
@@ -312,6 +313,13 @@ chess > exit
 time when their output is taller than the terminal: `-- More (N lines left;
 Enter continues, q quits) --`. The terminal's size comes from the TTY, or in
 the browser from xterm.js; output piped to another program is never paged.
+
+### Interrupting
+
+Ctrl-C stops a running `auto`, `poll` or `computer` and returns to the prompt
+with the login, current game and replay intact, in the terminal and in the
+browser. At the prompt it keeps its meaning: the native client ends, the
+browser client clears the line.
 
 ### Verbose Mode
 
@@ -402,7 +410,6 @@ A replay lists the stored game in SAN, with the current ply in brackets:
 - No algebraic notation input (UCI format only)
 - Single game context at a time (plus one replay)
 - No persistent authentication across restarts
-- `auto` runs to the end of the line; it cannot be interrupted
 
 ## Error Handling
 

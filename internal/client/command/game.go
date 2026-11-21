@@ -2,6 +2,7 @@ package command
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"strconv"
@@ -41,8 +42,8 @@ func (r *Registry) registerGameCommands() {
 		Name:        "computer",
 		ShortName:   "c",
 		Description: "Trigger computer move",
-		Usage:       "computer",
-		Handler:     computerMoveHandler,
+		Usage:       "computer  (Ctrl-C stops waiting)",
+		Handler:     interruptible(computerMoveHandler),
 	})
 
 	r.Register(&Command{
@@ -125,8 +126,8 @@ func (r *Registry) registerGameCommands() {
 		Name:        "poll",
 		ShortName:   "p",
 		Description: "Long-poll for game updates",
-		Usage:       "poll",
-		Handler:     pollHandler,
+		Usage:       "poll  (Ctrl-C stops waiting)",
+		Handler:     interruptible(pollHandler),
 	})
 }
 
@@ -136,7 +137,6 @@ func newGameHandler(s *session.Session, args []string) error {
 
 	display.Println(display.Cyan, "\nCreating new game...")
 
-	// White player
 	display.Print(display.Yellow, "White player type (h/c) [h]: ")
 	scanner.Scan()
 	whiteType := strings.ToLower(strings.TrimSpace(scanner.Text()))
@@ -169,7 +169,6 @@ func newGameHandler(s *session.Session, args []string) error {
 		}
 	}
 
-	// Black player (same pattern)
 	display.Print(display.Yellow, "Black player type (h/c) [h]: ")
 	scanner.Scan()
 	blackType := strings.ToLower(strings.TrimSpace(scanner.Text()))
@@ -202,7 +201,6 @@ func newGameHandler(s *session.Session, args []string) error {
 		}
 	}
 
-	// Starting position
 	display.Print(display.Yellow, "Starting position (FEN) [default]: ")
 	scanner.Scan()
 	fen := strings.TrimSpace(scanner.Text())
@@ -222,7 +220,6 @@ func newGameHandler(s *session.Session, args []string) error {
 	s.LastMoveCount = len(resp.Moves)
 	s.CurrentGameState = resp
 
-	// Determine player color if authenticated
 	if s.CurrentUser != "" {
 		if resp.Players.White.ID == s.CurrentUser {
 			s.PlayerColor = "w"
@@ -234,7 +231,6 @@ func newGameHandler(s *session.Session, args []string) error {
 	display.Println(display.Green, "Game created: %s", resp.GameID)
 	display.Println(display.Cyan, "Current game set to: %s", resp.GameID)
 
-	// If white is computer, inform user to trigger move
 	if white.Type == 2 {
 		display.Println(display.Magenta, "\nWhite is computer. Use 'computer' or 'c' to trigger first move.")
 	}
@@ -250,7 +246,6 @@ func joinGameHandler(s *session.Session, args []string) error {
 	gameID := args[0]
 	c := s.GetClient().(*api.Client)
 
-	// Verify game exists
 	resp, err := c.GetGame(gameID)
 	if err != nil {
 		return err
@@ -260,7 +255,6 @@ func joinGameHandler(s *session.Session, args []string) error {
 	s.SetLastMoveCount(len(resp.Moves))
 	s.SetGameState(resp)
 
-	// Determine player color if authenticated
 	if s.GetCurrentUser() != "" {
 		if resp.Players.White.ID == s.GetCurrentUser() {
 			s.SetPlayerColor("w")
@@ -277,9 +271,6 @@ func joinGameHandler(s *session.Session, args []string) error {
 	return nil
 }
 
-// moveHandler submits a human move. Terminal/error outcomes are reported via
-// the shared printOutcome (no-op on "ongoing"/"pending"); the computer-turn
-// hint stays local since it only applies after a successful human move.
 func moveHandler(s *session.Session, args []string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("usage: move <uci-move> (promotion appends q, r, b, or n: e7e8q)")
@@ -304,7 +295,6 @@ func moveHandler(s *session.Session, args []string) error {
 
 	printOutcome(resp)
 
-	// Hint to trigger the computer if the game continues on a computer's turn
 	if resp.State == "ongoing" {
 		isComputerTurn := (resp.Turn == "w" && resp.Players.White.Type == 2) ||
 			(resp.Turn == "b" && resp.Players.Black.Type == 2)
@@ -316,13 +306,10 @@ func moveHandler(s *session.Session, args []string) error {
 	return nil
 }
 
-// computerMoveHandler triggers a computer move and waits for the result via
-// the server's long-poll. With the state-aware waiter, a single poll wakes on
-// either the applied move (move count delta) or a state-only settle
-// (mate-without-move, stuck) — no fixed-interval GET hammering, no hard cap
-// below the server's max searchTime. Polls loop only if the wake races the
-// pending window (e.g. queue wait), each round costing at most WaitTimeout.
-func computerMoveHandler(s *session.Session, args []string) error {
+// computerMoveHandler triggers a computer move and long-polls for it: a poll
+// wakes on the move or on a settled state, and loops only when it timed out
+// while still pending. An interrupt stops the wait, not the computer.
+func computerMoveHandler(ctx context.Context, s *session.Session, args []string) error {
 	gameID := s.CurrentGame
 	if gameID == "" {
 		return fmt.Errorf("no current game, use 'new' or 'join <gameId>'")
@@ -358,7 +345,11 @@ func computerMoveHandler(s *session.Session, args []string) error {
 	const maxPolls = 3
 	var final *api.GameResponse
 	for i := 0; i < maxPolls; i++ {
-		polled, err := c.GetGameWithPoll(gameID, baselineMoves)
+		polled, err := c.GetGameWithPoll(ctx, gameID, baselineMoves)
+		if ctx.Err() != nil {
+			display.Println(display.Yellow, "Interrupted; the computer keeps thinking: 'poll' or 'show' picks up its move")
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -542,13 +533,11 @@ func showBoardHandler(s *session.Session, args []string) error {
 
 	c := s.GetClient().(*api.Client)
 
-	// Get full game state
 	game, err := c.GetGame(gameID)
 	if err != nil {
 		return err
 	}
 
-	// Get ASCII board
 	board, err := c.GetBoard(gameID)
 	if err != nil {
 		return err
@@ -557,16 +546,13 @@ func showBoardHandler(s *session.Session, args []string) error {
 	s.SetLastMoveCount(len(game.Moves))
 	s.SetGameState(game)
 
-	// Display board with colors
 	display.Line()
 	display.RenderBoard(board.Board)
 
-	// Display game info
 	display.Printf("\nFEN: %s\n", game.FEN)
 	display.Printf("Turn: %s | State: %s | Moves: %d\n",
 		display.ColorForTurn(game.Turn), game.State, len(game.Moves))
 
-	// Display move history
 	if len(game.Moves) > 0 {
 		display.Printf("\nHistory: ")
 		for i, move := range game.Moves {
@@ -582,7 +568,6 @@ func showBoardHandler(s *session.Session, args []string) error {
 		display.Line()
 	}
 
-	// Display last move info
 	if game.LastMove != nil {
 		color := "White"
 		if game.LastMove.PlayerColor == "b" {
@@ -614,7 +599,6 @@ func gameStateHandler(s *session.Session, args []string) error {
 
 	s.SetLastMoveCount(len(resp.Moves))
 
-	// Pretty print JSON
 	display.Println(display.Cyan, "Game State:")
 	display.PrettyPrintJSON(resp)
 
@@ -646,7 +630,7 @@ func deleteGameHandler(s *session.Session, args []string) error {
 	return nil
 }
 
-func pollHandler(s *session.Session, args []string) error {
+func pollHandler(ctx context.Context, s *session.Session, args []string) error {
 	gameID := s.GetCurrentGame()
 	if gameID == "" {
 		return fmt.Errorf("no current game, use 'new' or 'join <gameId>'")
@@ -661,7 +645,11 @@ func pollHandler(s *session.Session, args []string) error {
 
 	// The server answers at once for a finished game, and wakes a poll for a
 	// move, an undo, a result, or a draw offer.
-	resp, err := c.GetGameWithPoll(gameID, moveCount)
+	resp, err := c.GetGameWithPoll(ctx, gameID, moveCount)
+	if ctx.Err() != nil {
+		display.Println(display.Yellow, "Interrupted")
+		return nil
+	}
 	if err != nil {
 		return err
 	}

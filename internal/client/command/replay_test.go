@@ -1,7 +1,11 @@
 package command
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/lixenwraith/chess/internal/client/api"
 	"github.com/lixenwraith/chess/internal/client/replay"
@@ -60,5 +64,35 @@ func TestReplayRefusesLiveCommandsAndPrompt(t *testing.T) {
 		if !liveOnly[name] {
 			t.Errorf("%s is not refused while replaying", name)
 		}
+	}
+}
+
+func TestInterruptStopsAutoAtItsPlyAndPollWithoutAnError(t *testing.T) {
+	// A server that never answers a long-poll within the test.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	s := &session.Session{APIBaseURL: server.URL, Client: api.New(server.URL), CurrentGame: "g"}
+	s.Replay = replay.New(&api.GameHistoryResponse{
+		GameID: "g", InitialFEN: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+		Moves: []api.HistoryMove{{MoveNumber: 1, MoveUCI: "e2e4", SAN: "e4", FENAfterMove: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1", PlayerColor: "w"}},
+	})
+
+	// Each command is interrupted while it waits.
+	interrupted := func() context.Context {
+		ctx, interrupt := context.WithCancel(t.Context())
+		time.AfterFunc(50*time.Millisecond, interrupt)
+		return ctx
+	}
+	started := time.Now()
+	if err := autoHandler(interrupted(), s, []string{"60000"}); err != nil || s.Replay.Ply != 0 {
+		t.Errorf("interrupted auto: ply %d, %v", s.Replay.Ply, err)
+	}
+	if err := pollHandler(interrupted(), s, nil); err != nil || s.CurrentGame != "g" {
+		t.Errorf("interrupted poll: game %q, %v", s.CurrentGame, err)
+	}
+	if waited := time.Since(started); waited < 100*time.Millisecond || waited > 5*time.Second {
+		t.Errorf("the two interrupts took %v", waited)
 	}
 }
