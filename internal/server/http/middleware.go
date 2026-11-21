@@ -7,14 +7,14 @@ import (
 	"github.com/lixenwraith/chess/internal/server/core"
 	"github.com/lixenwraith/chess/internal/server/service"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/lixenwraith/auth"
 )
 
 type TokenValidator func(ctx context.Context, token string) (userID string, claims map[string]any, err error)
 
 func AuthRequired(validateToken TokenValidator) fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		header := c.Get(fiber.HeaderAuthorization)
 		if header == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(core.ErrorResponse{
@@ -35,7 +35,7 @@ func AuthRequired(validateToken TokenValidator) fiber.Handler {
 // or invalid one instead of silently downgrading an intended authenticated
 // request to anonymous access.
 func OptionalAuth(validateToken TokenValidator) fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		header := c.Get(fiber.HeaderAuthorization)
 		if header == "" {
 			return c.Next()
@@ -48,8 +48,8 @@ func OptionalAuth(validateToken TokenValidator) fiber.Handler {
 	}
 }
 
-func authenticate(c *fiber.Ctx, validateToken TokenValidator, token string) error {
-	userID, claims, err := validateToken(c.UserContext(), token)
+func authenticate(c fiber.Ctx, validateToken TokenValidator, token string) error {
+	userID, claims, err := validateToken(c.Context(), token)
 	if err != nil {
 		if errors.Is(err, service.ErrStorageDisabled) || errors.Is(err, service.ErrStorageUnavailable) {
 			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
@@ -69,7 +69,7 @@ func authenticate(c *fiber.Ctx, validateToken TokenValidator, token string) erro
 	return c.Next()
 }
 
-func invalidToken(c *fiber.Ctx) error {
+func invalidToken(c fiber.Ctx) error {
 	return c.Status(fiber.StatusUnauthorized).JSON(core.ErrorResponse{
 		Error: "invalid or expired token", Code: core.ErrUnauthorized,
 	})

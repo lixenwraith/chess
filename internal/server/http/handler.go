@@ -15,11 +15,11 @@ import (
 	"github.com/lixenwraith/chess/internal/server/processor"
 	"github.com/lixenwraith/chess/internal/server/service"
 
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/cors"
-	"github.com/gofiber/fiber/v2/middleware/limiter"
-	"github.com/gofiber/fiber/v2/middleware/logger"
-	"github.com/gofiber/fiber/v2/middleware/recover"
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/cors"
+	"github.com/gofiber/fiber/v3/middleware/limiter"
+	"github.com/gofiber/fiber/v3/middleware/logger"
+	"github.com/gofiber/fiber/v3/middleware/recover"
 )
 
 const (
@@ -47,9 +47,9 @@ type Options struct {
 	// TrustedProxies lists reverse-proxy IPs or CIDRs whose ProxyHeader value
 	// is the client address. Empty means the TCP peer is the client.
 	TrustedProxies []string
-	// ProxyHeader names a single-address header the proxy overwrites, such as
-	// X-Real-IP (nginx: proxy_set_header X-Real-IP $remote_addr). Avoid
-	// X-Forwarded-For: its first entry is supplied by the client.
+	// ProxyHeader names the header carrying the client address, such as
+	// X-Real-IP (nginx: proxy_set_header X-Real-IP $remote_addr). An
+	// X-Forwarded-For chain is read from the right, past the trusted proxies.
 	ProxyHeader string
 	// Version is the build identifier /health reports.
 	Version string
@@ -59,32 +59,27 @@ type Options struct {
 	Context context.Context
 }
 
-// appConfig returns the Fiber configuration. Client-IP resolution only honors
-// ProxyHeader on connections from a trusted proxy, so rate-limit keys cannot be
-// chosen by a client that reaches the API directly.
+// appConfig returns the Fiber configuration. c.IP(), the limiters' key, only
+// honors ProxyHeader on connections from a trusted proxy, so a client that
+// reaches the API directly cannot choose its key; with IP validation, a
+// missing or malformed header yields the TCP peer.
 func appConfig(opts Options) fiber.Config {
 	config := fiber.Config{
 		ErrorHandler: customErrorHandler,
+		// Request strings are copies: a game ID from the path outlives its
+		// request as a map key and in the engine's callbacks.
+		Immutable:    true,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: requestTimeout,
 		IdleTimeout:  60 * time.Second,
 	}
 	if len(opts.TrustedProxies) > 0 && opts.ProxyHeader != "" {
-		config.EnableTrustedProxyCheck = true
-		config.TrustedProxies = opts.TrustedProxies
+		config.TrustProxy = true
+		config.TrustProxyConfig = fiber.TrustProxyConfig{Proxies: opts.TrustedProxies}
 		config.ProxyHeader = opts.ProxyHeader
 		config.EnableIPValidation = true
 	}
 	return config
-}
-
-// clientIP is the rate-limit key: the proxy-reported address from a trusted
-// proxy, otherwise the TCP peer.
-func clientIP(c *fiber.Ctx) string {
-	if ip := c.IP(); ip != "" {
-		return ip
-	}
-	return c.Context().RemoteIP().String()
 }
 
 func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) *fiber.App {
@@ -93,16 +88,17 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 
 	app := fiber.New(appConfig(opts))
 
-	// fasthttp's own context ends only at shutdown, and a disconnect cancels
-	// nothing: each request gets a deadline within the server's lifetime.
+	// A fiber.Ctx is never cancelled and fasthttp's context ends only at
+	// shutdown, so a disconnect cancels nothing: each request's Context() gets
+	// a deadline within the server's lifetime.
 	serverCtx := opts.Context
 	if serverCtx == nil {
 		serverCtx = context.Background()
 	}
-	app.Use(func(c *fiber.Ctx) error {
+	app.Use(func(c fiber.Ctx) error {
 		ctx, cancel := context.WithTimeout(serverCtx, requestTimeout)
 		defer cancel()
-		c.SetUserContext(ctx)
+		c.SetContext(ctx)
 		return c.Next()
 	})
 
@@ -119,10 +115,10 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 	// on another origin (the embedded web server's port, in development) can
 	// only revalidate histories and name PGN downloads when they are exposed.
 	app.Use(cors.New(cors.Config{
-		AllowOrigins:  "*",
-		AllowMethods:  "GET,POST,PUT,DELETE,OPTIONS",
-		AllowHeaders:  "Origin,Content-Type,Accept,Authorization,If-None-Match," + seatHeader,
-		ExposeHeaders: "ETag,Content-Disposition",
+		AllowOrigins:  []string{"*"},
+		AllowMethods:  []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowHeaders:  []string{"Origin", "Content-Type", "Accept", "Authorization", "If-None-Match", seatHeader},
+		ExposeHeaders: []string{"ETag", "Content-Disposition"},
 	}))
 
 	app.Get("/health", h.Health)
@@ -132,10 +128,9 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 	auth := api.Group("/auth")
 
 	auth.Post("/register", limiter.New(limiter.Config{
-		Max:          5,
-		Expiration:   1 * time.Minute,
-		KeyGenerator: clientIP,
-		LimitReached: func(c *fiber.Ctx) error {
+		Max:        5,
+		Expiration: 1 * time.Minute,
+		LimitReached: func(c fiber.Ctx) error {
 			return c.Status(fiber.StatusTooManyRequests).JSON(core.ErrorResponse{
 				Error:   "rate limit exceeded",
 				Code:    core.ErrRateLimitExceeded,
@@ -145,10 +140,9 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 	}), h.RegisterHandler)
 
 	auth.Post("/login", limiter.New(limiter.Config{
-		Max:          10,
-		Expiration:   1 * time.Minute,
-		KeyGenerator: clientIP,
-		LimitReached: func(c *fiber.Ctx) error {
+		Max:        10,
+		Expiration: 1 * time.Minute,
+		LimitReached: func(c fiber.Ctx) error {
 			return c.Status(fiber.StatusTooManyRequests).JSON(core.ErrorResponse{
 				Error:   "rate limit exceeded",
 				Code:    core.ErrRateLimitExceeded,
@@ -160,10 +154,9 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 	// Password recovery: 3 requests a minute per IP, each of which may send
 	// an email; the reset itself is limited like login.
 	auth.Post("/recover", limiter.New(limiter.Config{
-		Max:          3,
-		Expiration:   1 * time.Minute,
-		KeyGenerator: clientIP,
-		LimitReached: func(c *fiber.Ctx) error {
+		Max:        3,
+		Expiration: 1 * time.Minute,
+		LimitReached: func(c fiber.Ctx) error {
 			return c.Status(fiber.StatusTooManyRequests).JSON(core.ErrorResponse{
 				Error:   "rate limit exceeded",
 				Code:    core.ErrRateLimitExceeded,
@@ -172,10 +165,9 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 		},
 	}), h.RecoverHandler)
 	auth.Post("/reset", limiter.New(limiter.Config{
-		Max:          10,
-		Expiration:   1 * time.Minute,
-		KeyGenerator: clientIP,
-		LimitReached: func(c *fiber.Ctx) error {
+		Max:        10,
+		Expiration: 1 * time.Minute,
+		LimitReached: func(c fiber.Ctx) error {
 			return c.Status(fiber.StatusTooManyRequests).JSON(core.ErrorResponse{
 				Error:   "rate limit exceeded",
 				Code:    core.ErrRateLimitExceeded,
@@ -193,10 +185,9 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 	// It takes a password, so it is limited like login; authentication runs
 	// first, so only a signed-in caller reaches the password check.
 	auth.Delete("/me", AuthRequired(validateToken), limiter.New(limiter.Config{
-		Max:          5,
-		Expiration:   1 * time.Minute,
-		KeyGenerator: clientIP,
-		LimitReached: func(c *fiber.Ctx) error {
+		Max:        5,
+		Expiration: 1 * time.Minute,
+		LimitReached: func(c fiber.Ctx) error {
 			return c.Status(fiber.StatusTooManyRequests).JSON(core.ErrorResponse{
 				Error:   "rate limit exceeded",
 				Code:    core.ErrRateLimitExceeded,
@@ -210,10 +201,9 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 		maxReq = rateLimitRate * 2
 	}
 	api.Use(limiter.New(limiter.Config{
-		Max:          maxReq,
-		Expiration:   1 * time.Second,
-		KeyGenerator: clientIP,
-		LimitReached: func(c *fiber.Ctx) error {
+		Max:        maxReq,
+		Expiration: 1 * time.Second,
+		LimitReached: func(c fiber.Ctx) error {
 			return c.Status(fiber.StatusTooManyRequests).JSON(core.ErrorResponse{
 				Error:   "rate limit exceeded",
 				Code:    core.ErrRateLimitExceeded,
@@ -244,10 +234,9 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 	api.Get("/archive/collections", h.GetCollections)
 	// Importing replays a whole game through the rules core: 5 a minute per IP.
 	api.Post("/games/import", AuthRequired(validateToken), limiter.New(limiter.Config{
-		Max:          5,
-		Expiration:   1 * time.Minute,
-		KeyGenerator: clientIP,
-		LimitReached: func(c *fiber.Ctx) error {
+		Max:        5,
+		Expiration: 1 * time.Minute,
+		LimitReached: func(c fiber.Ctx) error {
 			return c.Status(fiber.StatusTooManyRequests).JSON(core.ErrorResponse{
 				Error:   "rate limit exceeded",
 				Code:    core.ErrRateLimitExceeded,
@@ -257,10 +246,9 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 	}), h.ImportGame)
 	// An analysis is a search of about a second on one engine: 30 a minute per IP.
 	api.Post("/analysis", AuthRequired(validateToken), limiter.New(limiter.Config{
-		Max:          30,
-		Expiration:   1 * time.Minute,
-		KeyGenerator: clientIP,
-		LimitReached: func(c *fiber.Ctx) error {
+		Max:        30,
+		Expiration: 1 * time.Minute,
+		LimitReached: func(c fiber.Ctx) error {
 			return c.Status(fiber.StatusTooManyRequests).JSON(core.ErrorResponse{
 				Error:   "rate limit exceeded",
 				Code:    core.ErrRateLimitExceeded,
@@ -272,7 +260,7 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 	return app
 }
 
-func contentTypeValidator(c *fiber.Ctx) error {
+func contentTypeValidator(c fiber.Ctx) error {
 	method := c.Method()
 	if method == fiber.MethodPost || method == fiber.MethodPut {
 		contentType := c.Get("Content-Type")
@@ -287,7 +275,7 @@ func contentTypeValidator(c *fiber.Ctx) error {
 	return c.Next()
 }
 
-func customErrorHandler(c *fiber.Ctx, err error) error {
+func customErrorHandler(c fiber.Ctx, err error) error {
 	code := fiber.StatusInternalServerError
 	response := core.ErrorResponse{
 		Error: "internal server error",
@@ -314,7 +302,7 @@ func customErrorHandler(c *fiber.Ctx, err error) error {
 	return c.Status(code).JSON(response)
 }
 
-func (h *HTTPHandler) Health(c *fiber.Ctx) error {
+func (h *HTTPHandler) Health(c fiber.Ctx) error {
 	storageHealth := h.svc.GetStorageHealth()
 	status := "healthy"
 	if storageHealth == "degraded" {
@@ -329,7 +317,7 @@ func (h *HTTPHandler) Health(c *fiber.Ctx) error {
 	})
 }
 
-func (h *HTTPHandler) CreateGame(c *fiber.Ctx) error {
+func (h *HTTPHandler) CreateGame(c fiber.Ctx) error {
 	validated, ok := c.Locals("validated").(bool)
 	if !ok || !validated {
 		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
@@ -351,7 +339,7 @@ func (h *HTTPHandler) CreateGame(c *fiber.Ctx) error {
 	cmd := processor.NewCreateGameCommand(req)
 	cmd.Actor = actor(c)
 
-	resp := h.proc.Execute(c.UserContext(), cmd)
+	resp := h.proc.Execute(c.Context(), cmd)
 
 	if !resp.Success {
 		return c.Status(fiber.StatusBadRequest).JSON(resp.Error)
@@ -360,7 +348,7 @@ func (h *HTTPHandler) CreateGame(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(resp.Data)
 }
 
-func (h *HTTPHandler) ConfigurePlayers(c *fiber.Ctx) error {
+func (h *HTTPHandler) ConfigurePlayers(c fiber.Ctx) error {
 	gameID := c.Params("gameId")
 
 	if !isValidUUID(gameID) {
@@ -391,7 +379,7 @@ func (h *HTTPHandler) ConfigurePlayers(c *fiber.Ctx) error {
 
 	cmd := processor.NewConfigurePlayersCommand(gameID, req)
 	cmd.Actor = actor(c)
-	resp := h.proc.Execute(c.UserContext(), cmd)
+	resp := h.proc.Execute(c.Context(), cmd)
 
 	if !resp.Success {
 		return c.Status(statusForCode(resp.Error.Code)).JSON(resp.Error)
@@ -400,12 +388,12 @@ func (h *HTTPHandler) ConfigurePlayers(c *fiber.Ctx) error {
 	return c.JSON(resp.Data)
 }
 
-func (h *HTTPHandler) GetGame(c *fiber.Ctx) error {
+func (h *HTTPHandler) GetGame(c fiber.Ctx) error {
 	gameID := c.Params("gameId")
 	if !isValidUUID(gameID) {
 		return invalidGameID(c)
 	}
-	ctx := c.UserContext()
+	ctx := c.Context()
 	current := func() error {
 		resp := h.proc.Execute(ctx, processor.NewGetGameCommand(gameID))
 		if !resp.Success {
@@ -449,7 +437,7 @@ func (h *HTTPHandler) GetGame(c *fiber.Ctx) error {
 	return current()
 }
 
-func (h *HTTPHandler) MakeMove(c *fiber.Ctx) error {
+func (h *HTTPHandler) MakeMove(c fiber.Ctx) error {
 	gameID := c.Params("gameId")
 
 	if !isValidUUID(gameID) {
@@ -481,7 +469,7 @@ func (h *HTTPHandler) MakeMove(c *fiber.Ctx) error {
 	cmd := processor.NewMakeMoveCommand(gameID, req)
 	cmd.Actor = actor(c)
 
-	resp := h.proc.Execute(c.UserContext(), cmd)
+	resp := h.proc.Execute(c.Context(), cmd)
 
 	if !resp.Success {
 		return c.Status(statusForCode(resp.Error.Code)).JSON(resp.Error)
@@ -490,7 +478,7 @@ func (h *HTTPHandler) MakeMove(c *fiber.Ctx) error {
 	return c.JSON(resp.Data)
 }
 
-func (h *HTTPHandler) UndoMove(c *fiber.Ctx) error {
+func (h *HTTPHandler) UndoMove(c fiber.Ctx) error {
 	gameID := c.Params("gameId")
 
 	if !isValidUUID(gameID) {
@@ -521,7 +509,7 @@ func (h *HTTPHandler) UndoMove(c *fiber.Ctx) error {
 
 	cmd := processor.NewUndoMoveCommand(gameID, req)
 	cmd.Actor = actor(c)
-	resp := h.proc.Execute(c.UserContext(), cmd)
+	resp := h.proc.Execute(c.Context(), cmd)
 
 	if !resp.Success {
 		return c.Status(statusForCode(resp.Error.Code)).JSON(resp.Error)
@@ -530,21 +518,21 @@ func (h *HTTPHandler) UndoMove(c *fiber.Ctx) error {
 	return c.JSON(resp.Data)
 }
 
-func (h *HTTPHandler) Resign(c *fiber.Ctx) error {
+func (h *HTTPHandler) Resign(c fiber.Ctx) error {
 	return h.executeWithBody(c, func(gameID string, body any) processor.Command {
 		return processor.NewResignCommand(gameID, *body.(*core.ResignRequest))
 	})
 }
 
 // Draw offers, accepts, or declines a draw by agreement.
-func (h *HTTPHandler) Draw(c *fiber.Ctx) error {
+func (h *HTTPHandler) Draw(c fiber.Ctx) error {
 	return h.executeWithBody(c, func(gameID string, body any) processor.Command {
 		return processor.NewDrawCommand(gameID, *body.(*core.DrawRequest))
 	})
 }
 
 // Join gives the caller an open human side of the game.
-func (h *HTTPHandler) Join(c *fiber.Ctx) error {
+func (h *HTTPHandler) Join(c fiber.Ctx) error {
 	return h.executeWithBody(c, func(gameID string, body any) processor.Command {
 		return processor.NewJoinGameCommand(gameID, *body.(*core.JoinRequest))
 	})
@@ -552,7 +540,7 @@ func (h *HTTPHandler) Join(c *fiber.Ctx) error {
 
 // actor is who the request acts as: the signed-in user, when it carries a
 // token, and the guest whose seat secret it presents.
-func actor(c *fiber.Ctx) core.Actor {
+func actor(c fiber.Ctx) core.Actor {
 	var a core.Actor
 	a.UserID, _ = c.Locals("userID").(string)
 	a.Name, _ = c.Locals("username").(string)
@@ -564,7 +552,7 @@ func actor(c *fiber.Ctx) core.Actor {
 
 // executeWithBody runs a game command built from the validated request body,
 // on behalf of the request's actor.
-func (h *HTTPHandler) executeWithBody(c *fiber.Ctx, build func(gameID string, body any) processor.Command) error {
+func (h *HTTPHandler) executeWithBody(c fiber.Ctx, build func(gameID string, body any) processor.Command) error {
 	gameID := c.Params("gameId")
 	if !isValidUUID(gameID) {
 		return invalidGameID(c)
@@ -578,7 +566,7 @@ func (h *HTTPHandler) executeWithBody(c *fiber.Ctx, build func(gameID string, bo
 	cmd := build(gameID, body)
 	cmd.Actor = actor(c)
 
-	resp := h.proc.Execute(c.UserContext(), cmd)
+	resp := h.proc.Execute(c.Context(), cmd)
 	if !resp.Success {
 		return c.Status(statusForCode(resp.Error.Code)).JSON(resp.Error)
 	}
@@ -602,7 +590,7 @@ func statusForCode(code string) int {
 }
 
 // DeleteGame unloads a live game while retaining its durable history.
-func (h *HTTPHandler) DeleteGame(c *fiber.Ctx) error {
+func (h *HTTPHandler) DeleteGame(c fiber.Ctx) error {
 	gameID := c.Params("gameId")
 
 	if !isValidUUID(gameID) {
@@ -615,7 +603,7 @@ func (h *HTTPHandler) DeleteGame(c *fiber.Ctx) error {
 
 	cmd := processor.NewDeleteGameCommand(gameID)
 	cmd.Actor = actor(c)
-	resp := h.proc.Execute(c.UserContext(), cmd)
+	resp := h.proc.Execute(c.Context(), cmd)
 
 	if !resp.Success {
 		return c.Status(statusForCode(resp.Error.Code)).JSON(resp.Error)
@@ -624,7 +612,7 @@ func (h *HTTPHandler) DeleteGame(c *fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *HTTPHandler) GetBoard(c *fiber.Ctx) error {
+func (h *HTTPHandler) GetBoard(c fiber.Ctx) error {
 	gameID := c.Params("gameId")
 
 	if !isValidUUID(gameID) {
@@ -636,7 +624,7 @@ func (h *HTTPHandler) GetBoard(c *fiber.Ctx) error {
 	}
 
 	cmd := processor.NewGetBoardCommand(gameID)
-	resp := h.proc.Execute(c.UserContext(), cmd)
+	resp := h.proc.Execute(c.Context(), cmd)
 
 	if !resp.Success {
 		return c.Status(statusForCode(resp.Error.Code)).JSON(resp.Error)
@@ -647,13 +635,13 @@ func (h *HTTPHandler) GetBoard(c *fiber.Ctx) error {
 
 // GetGameHistory serves persisted replay data. Histories are public by game ID,
 // matching the existing public live-game read model.
-func (h *HTTPHandler) GetGameHistory(c *fiber.Ctx) error {
+func (h *HTTPHandler) GetGameHistory(c fiber.Ctx) error {
 	gameID := c.Params("gameId")
 	if !isValidUUID(gameID) {
 		return invalidGameID(c)
 	}
 
-	history, err := h.svc.GetGameHistory(c.UserContext(), gameID)
+	history, err := h.svc.GetGameHistory(c.Context(), gameID)
 	if err != nil {
 		return storedGameError(c, err)
 	}
@@ -666,7 +654,7 @@ func (h *HTTPHandler) GetGameHistory(c *fiber.Ctx) error {
 
 // GetGamePGN exports a stored game as a PGN attachment; ?ply=N stops after N
 // plies. Same visibility as the history.
-func (h *HTTPHandler) GetGamePGN(c *fiber.Ctx) error {
+func (h *HTTPHandler) GetGamePGN(c fiber.Ctx) error {
 	gameID := c.Params("gameId")
 	if !isValidUUID(gameID) {
 		return invalidGameID(c)
@@ -678,7 +666,7 @@ func (h *HTTPHandler) GetGamePGN(c *fiber.Ctx) error {
 		})
 	}
 
-	pgn, err := h.svc.GetGamePGN(c.UserContext(), gameID, ply)
+	pgn, err := h.svc.GetGamePGN(c.Context(), gameID, ply)
 	if err != nil {
 		return storedGameError(c, err)
 	}
@@ -691,7 +679,7 @@ func (h *HTTPHandler) GetGamePGN(c *fiber.Ctx) error {
 // answers a matching If-None-Match with 304. Stored games still change
 // (moves, undo after a result), so caches must revalidate on every use
 // rather than keep a copy for a fixed time.
-func sendRevalidated(c *fiber.Ctx, contentType string, body []byte) error {
+func sendRevalidated(c fiber.Ctx, contentType string, body []byte) error {
 	sum := sha256.Sum256(body)
 	etag := `"` + hex.EncodeToString(sum[:16]) + `"`
 	c.Set(fiber.HeaderETag, etag)
@@ -715,14 +703,14 @@ func etagMatches(header, etag string) bool {
 	return false
 }
 
-func invalidGameID(c *fiber.Ctx) error {
+func invalidGameID(c fiber.Ctx) error {
 	return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
 		Error: "invalid game ID format", Code: core.ErrInvalidRequest,
 		Details: "game ID must be a valid UUID",
 	})
 }
 
-func storedGameError(c *fiber.Ctx, err error) error {
+func storedGameError(c fiber.Ctx, err error) error {
 	switch {
 	case errors.Is(err, service.ErrStorageDisabled), errors.Is(err, service.ErrStorageUnavailable):
 		return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
@@ -749,7 +737,7 @@ func storedGameError(c *fiber.Ctx, err error) error {
 
 // GetCurrentUserGames returns a bounded list suitable for CLI and web game
 // pickers. The extra row used to detect a next page stays internal.
-func (h *HTTPHandler) GetCurrentUserGames(c *fiber.Ctx) error {
+func (h *HTTPHandler) GetCurrentUserGames(c fiber.Ctx) error {
 	userID, ok := c.Locals("userID").(string)
 	if !ok || userID == "" {
 		return c.Status(fiber.StatusUnauthorized).JSON(core.ErrorResponse{
@@ -770,7 +758,7 @@ func (h *HTTPHandler) GetCurrentUserGames(c *fiber.Ctx) error {
 		})
 	}
 
-	games, err := h.svc.GetUserGames(c.UserContext(), userID, service.UserGamesOptions{
+	games, err := h.svc.GetUserGames(c.Context(), userID, service.UserGamesOptions{
 		Limit:  limit,
 		Offset: offset,
 		Cursor: c.Query("cursor"),
@@ -783,7 +771,7 @@ func (h *HTTPHandler) GetCurrentUserGames(c *fiber.Ctx) error {
 	return c.JSON(games)
 }
 
-func listError(c *fiber.Ctx, err error) error {
+func listError(c fiber.Ctx, err error) error {
 	switch {
 	case errors.Is(err, service.ErrInvalidListQuery):
 		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
@@ -804,7 +792,7 @@ func listError(c *fiber.Ctx, err error) error {
 const archiveCache = "public, max-age=300"
 
 // GetArchive lists the games of published collections, to anyone.
-func (h *HTTPHandler) GetArchive(c *fiber.Ctx) error {
+func (h *HTTPHandler) GetArchive(c fiber.Ctx) error {
 	limit, err := queryInt(c, "limit", 20, 1, 100)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
@@ -819,7 +807,7 @@ func (h *HTTPHandler) GetArchive(c *fiber.Ctx) error {
 			})
 		}
 	}
-	games, err := h.svc.GetArchive(c.UserContext(), service.ArchiveOptions{
+	games, err := h.svc.GetArchive(c.Context(), service.ArchiveOptions{
 		Limit: limit, Cursor: c.Query("cursor"), Collection: c.Query("collection"),
 		ECO: c.Query("eco"), Player: c.Query("player"), Featured: featured,
 	})
@@ -831,8 +819,8 @@ func (h *HTTPHandler) GetArchive(c *fiber.Ctx) error {
 }
 
 // GetCollections lists the published collections.
-func (h *HTTPHandler) GetCollections(c *fiber.Ctx) error {
-	collections, err := h.svc.GetCollections(c.UserContext())
+func (h *HTTPHandler) GetCollections(c fiber.Ctx) error {
+	collections, err := h.svc.GetCollections(c.Context())
 	if err != nil {
 		return listError(c, err)
 	}
@@ -841,7 +829,7 @@ func (h *HTTPHandler) GetCollections(c *fiber.Ctx) error {
 }
 
 // ImportGame stores a PGN game for the signed-in user and names it.
-func (h *HTTPHandler) ImportGame(c *fiber.Ctx) error {
+func (h *HTTPHandler) ImportGame(c fiber.Ctx) error {
 	userID, _ := c.Locals("userID").(string)
 	if userID == "" {
 		return c.Status(fiber.StatusUnauthorized).JSON(core.ErrorResponse{
@@ -856,7 +844,7 @@ func (h *HTTPHandler) ImportGame(c *fiber.Ctx) error {
 	}
 	req := *(body.(*core.ImportGameRequest))
 
-	imported, err := h.svc.ImportGame(c.UserContext(), userID, req.PGN)
+	imported, err := h.svc.ImportGame(c.Context(), userID, req.PGN)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrInvalidPGN):
@@ -880,7 +868,7 @@ func (h *HTTPHandler) ImportGame(c *fiber.Ctx) error {
 }
 
 // Analyse answers a signed-in user with the engine's view of a position.
-func (h *HTTPHandler) Analyse(c *fiber.Ctx) error {
+func (h *HTTPHandler) Analyse(c fiber.Ctx) error {
 	body := c.Locals("validatedBody")
 	if validated, _ := c.Locals("validated").(bool); !validated || body == nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
@@ -889,7 +877,7 @@ func (h *HTTPHandler) Analyse(c *fiber.Ctx) error {
 	}
 	req := body.(*core.AnalysisRequest)
 
-	analysis, err := h.proc.Analyse(c.UserContext(), req.FEN, req.Lines)
+	analysis, err := h.proc.Analyse(c.Context(), req.FEN, req.Lines)
 	switch {
 	case err == nil:
 		return c.JSON(analysis)
@@ -897,7 +885,7 @@ func (h *HTTPHandler) Analyse(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
 			Error: "invalid FEN", Code: core.ErrInvalidFEN, Details: err.Error(),
 		})
-	case errors.Is(err, processor.ErrAnalysisBusy), c.UserContext().Err() != nil:
+	case errors.Is(err, processor.ErrAnalysisBusy), c.Context().Err() != nil:
 		return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
 			Error: "analysis is busy", Code: core.ErrResourceLimit, Details: "try again shortly",
 		})
@@ -909,7 +897,7 @@ func (h *HTTPHandler) Analyse(c *fiber.Ctx) error {
 
 // RemoveGame takes a stored game off the signed-in user's list: deleted when
 // the user alone holds it, released when another player keeps it.
-func (h *HTTPHandler) RemoveGame(c *fiber.Ctx) error {
+func (h *HTTPHandler) RemoveGame(c fiber.Ctx) error {
 	userID, _ := c.Locals("userID").(string)
 	if userID == "" {
 		return c.Status(fiber.StatusUnauthorized).JSON(core.ErrorResponse{
@@ -920,7 +908,7 @@ func (h *HTTPHandler) RemoveGame(c *fiber.Ctx) error {
 	if !isValidUUID(gameID) {
 		return invalidGameID(c)
 	}
-	outcome, err := h.svc.RemoveGame(c.UserContext(), gameID, userID)
+	outcome, err := h.svc.RemoveGame(c.Context(), gameID, userID)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrGameNotFound):
@@ -939,7 +927,7 @@ func (h *HTTPHandler) RemoveGame(c *fiber.Ctx) error {
 	return c.JSON(core.RemoveGameResponse{Removed: string(outcome)})
 }
 
-func queryInt(c *fiber.Ctx, name string, defaultValue, minimum, maximum int) (int, error) {
+func queryInt(c fiber.Ctx, name string, defaultValue, minimum, maximum int) (int, error) {
 	raw := c.Query(name)
 	if raw == "" {
 		return defaultValue, nil
