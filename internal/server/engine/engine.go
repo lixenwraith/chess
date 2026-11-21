@@ -16,7 +16,6 @@ const (
 	handshakeTimeout = 5 * time.Second
 	barrierTimeout   = 5 * time.Second
 	diagnoseTimeout  = 3 * time.Second
-	probeTimeout     = 3 * time.Second
 	lineBuffer       = 512
 )
 
@@ -43,8 +42,7 @@ type SearchResult struct {
 }
 
 type Diagnosis struct {
-	FEN     string
-	InCheck bool
+	FEN string
 }
 
 func New() (*UCI, error) {
@@ -200,12 +198,12 @@ func (u *UCI) SetPosition(fen string, moves []string) error {
 	return err
 }
 
-// Diagnose runs `d` and consumes its full output. Terminal line is "Checkers:"
-// (last line of `d` in current Stockfish; verify against the jailed build —
-// see context requests).
+// Diagnose runs `d`, a Stockfish debug command outside UCI, and reads to its
+// last line, "Checkers:". Only the shadow check of the rules core depends on
+// it.
 func (u *UCI) Diagnose() (Diagnosis, error) {
 	var d Diagnosis
-	last, err := u.tx(diagnoseTimeout, []string{"d"}, "Checkers:", func(ln string) {
+	_, err := u.tx(diagnoseTimeout, []string{"d"}, "Checkers:", func(ln string) {
 		if s, ok := strings.CutPrefix(ln, "Fen: "); ok {
 			d.FEN = strings.TrimSpace(s)
 		}
@@ -216,18 +214,7 @@ func (u *UCI) Diagnose() (Diagnosis, error) {
 	if d.FEN == "" {
 		return Diagnosis{}, errors.New("d output missing Fen line")
 	}
-	d.InCheck = strings.TrimSpace(strings.TrimPrefix(last, "Checkers:")) != ""
 	return d, nil
-}
-
-// HasLegalMoves probes with a depth-1 search: deterministic, milliseconds.
-func (u *UCI) HasLegalMoves() (bool, error) {
-	last, err := u.tx(probeTimeout, []string{"go depth 1"}, "bestmove ", nil)
-	if err != nil {
-		return false, err
-	}
-	f := strings.Fields(last)
-	return len(f) >= 2 && f[1] != "(none)", nil
 }
 
 func (u *UCI) Search(timeMs int) (*SearchResult, error) {

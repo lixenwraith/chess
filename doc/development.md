@@ -231,6 +231,7 @@ CHESS_E2E_MAIL_DIR=/tmp/chess-mail make test-e2e                 # terminal 2
 - Worker count: 2 (internal/server/processor/processor.go)
 - Engine queue: two waiting tasks a worker, so each meets its deadline (internal/server/processor/queue.go)
 - Min search time: 100ms (internal/server/processor/processor.go)
+- Shadow backlog: 64 rulings wait for the engine's re-check; more go unchecked (internal/server/processor/processor.go)
 - Write queue: 1000 operations (internal/server/storage/storage.go)
 - DB connections: 10 max, 5 idle (internal/server/storage/storage.go)
 - DB operation deadline: 5 seconds, within the caller's context; write transactions 10 seconds

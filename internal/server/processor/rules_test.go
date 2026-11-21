@@ -1,7 +1,10 @@
 package processor
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
+	"os/exec"
 	"reflect"
 	"strings"
 	"testing"
@@ -9,21 +12,101 @@ import (
 	"github.com/lixenwraith/chess/internal/server/chess"
 	"github.com/lixenwraith/chess/internal/server/core"
 	"github.com/lixenwraith/chess/internal/server/game"
+	"github.com/lixenwraith/chess/internal/server/service"
 )
 
-func TestRulesCheck(t *testing.T) {
+func TestPlay(t *testing.T) {
 	const promotion = "8/5KP1/5n2/p3k3/1p3p2/1P6/P7/8 w - - 4 55"
-	if r := rulesCheck(promotion, "g7g8"); !errors.Is(r.err, chess.ErrPromotionRequired) {
-		t.Errorf("g7g8: error = %v, want ErrPromotionRequired", r.err)
+	if _, err := play(promotion, "g7g8"); !errors.Is(err, chess.ErrPromotionRequired) {
+		t.Errorf("g7g8: error = %v, want ErrPromotionRequired", err)
 	}
-	if r := rulesCheck(promotion, "g7g8q"); r.err != nil || r.fen != "6Q1/5K2/5n2/p3k3/1p3p2/1P6/P7/8 b - - 0 55" {
-		t.Errorf("g7g8q: %+v", r)
+	if pos, err := play(promotion, "g7g8q"); err != nil || pos.FEN() != "6Q1/5K2/5n2/p3k3/1p3p2/1P6/P7/8 b - - 0 55" {
+		t.Errorf("g7g8q: %v, %v", pos, err)
 	}
-	if r := rulesCheck(chess.StartFEN, "e2e5"); !errors.Is(r.err, chess.ErrIllegalMove) {
-		t.Errorf("e2e5: error = %v, want ErrIllegalMove", r.err)
+	if _, err := play(chess.StartFEN, "e2e5"); !errors.Is(err, chess.ErrIllegalMove) {
+		t.Errorf("e2e5: error = %v, want ErrIllegalMove", err)
 	}
-	if r := rulesCheck("not a fen", "e2e4"); !errors.Is(r.err, chess.ErrInvalidFEN) {
-		t.Errorf("bad FEN: error = %v, want ErrInvalidFEN", r.err)
+	if _, err := play("not a fen", "e2e4"); !errors.Is(err, chess.ErrInvalidFEN) {
+		t.Errorf("bad FEN: error = %v, want ErrInvalidFEN", err)
+	}
+}
+
+// TestGameBetweenHumansNeedsNoEngine plays through a processor that has none:
+// the rules alone accept, refuse and end the game.
+func TestGameBetweenHumansNeedsNoEngine(t *testing.T) {
+	svc, err := service.New(nil, []byte("test-secret-test-secret-test-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &Processor{svc: svc}
+	human := core.PlayerConfig{Type: core.PlayerHuman}
+	create := func(fen string) core.GameResponse {
+		t.Helper()
+		resp := p.Execute(t.Context(), NewCreateGameCommand(core.CreateGameRequest{White: human, Black: human, FEN: fen}))
+		if !resp.Success {
+			t.Fatalf("create %q: %+v", fen, resp.Error)
+		}
+		return resp.Data.(core.GameResponse)
+	}
+	move := func(gameID, uci string) ProcessorResponse {
+		return p.Execute(t.Context(), NewMakeMoveCommand(gameID, core.MoveRequest{Move: uci}))
+	}
+
+	game := create("")
+	for uci, code := range map[string]string{"e2e5": core.ErrInvalidMove, "e7e5": core.ErrInvalidMove} {
+		if resp := move(game.GameID, uci); resp.Success || resp.Error.Code != code {
+			t.Errorf("%s: %+v, want %s", uci, resp.Error, code)
+		}
+	}
+	var last core.GameResponse
+	for _, uci := range []string{"f2f3", "e7e5", "g2g4", "d8h4"} {
+		resp := move(game.GameID, uci)
+		if !resp.Success {
+			t.Fatalf("%s: %+v", uci, resp.Error)
+		}
+		last = resp.Data.(core.GameResponse)
+	}
+	if last.State != "black wins" || last.Termination != "checkmate" || last.SAN[3] != "Qh4#" {
+		t.Errorf("fool's mate ended %q by %q, SAN %v", last.State, last.Termination, last.SAN)
+	}
+
+	if stalemate := create("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1"); stalemate.State != "stalemate" {
+		t.Errorf("stalemated start is %q", stalemate.State)
+	}
+	if resp := p.Execute(t.Context(), NewCreateGameCommand(core.CreateGameRequest{
+		White: human, Black: human, FEN: "4k3/8/8/8/8/8/8/R3K2R w KQ - 0 1 extra",
+	})); resp.Success || resp.Error.Code != core.ErrInvalidFEN {
+		t.Errorf("malformed FEN: %+v", resp)
+	}
+}
+
+// TestShadowLogsOnlyDisagreement: the engine's position after a move is held
+// against the ruling, whatever en-passant convention it prints.
+func TestShadowLogsOnlyDisagreement(t *testing.T) {
+	var log bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&log, nil)))
+	defer slog.SetDefault(previous)
+
+	const afterE4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+	const engineAfterE4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
+	for name, tc := range map[string]struct {
+		check     shadowCheck
+		engineFEN string
+		want      string
+	}{
+		"agree, legal":           {shadowCheck{fen: chess.StartFEN, uci: "e2e4", ruled: afterE4}, engineAfterE4, ""},
+		"agree, illegal":         {shadowCheck{fen: chess.StartFEN, uci: "e2e5"}, chess.StartFEN, ""},
+		"engine refuses":         {shadowCheck{fen: chess.StartFEN, uci: "e2e4", ruled: afterE4}, chess.StartFEN, "disagree on legality"},
+		"engine accepts":         {shadowCheck{fen: chess.StartFEN, uci: "e2e5"}, engineAfterE4, "disagree on legality"},
+		"another position":       {shadowCheck{fen: chess.StartFEN, uci: "e2e4", ruled: afterE4}, "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1", "disagree on resulting position"},
+		"unreadable to the core": {shadowCheck{fen: chess.StartFEN, uci: "e2e4", ruled: afterE4}, "not a fen", "cannot parse game position"},
+	} {
+		log.Reset()
+		tc.check.compare(tc.engineFEN)
+		if got := log.String(); (tc.want == "") != (got == "") || !strings.Contains(got, tc.want) {
+			t.Errorf("%s: logged %q, want %q", name, got, tc.want)
+		}
 	}
 }
 
@@ -54,7 +137,7 @@ func TestNotateLine(t *testing.T) {
 	}
 }
 
-func TestAdjudicateDraw(t *testing.T) {
+func TestOutcome(t *testing.T) {
 	cycle := []string{"g1f3", "g8f6", "f3g1", "f6g8"}
 	line, err := chess.Replay(chess.StartFEN, append(cycle, cycle...))
 	if err != nil {
@@ -68,21 +151,28 @@ func TestAdjudicateDraw(t *testing.T) {
 	for name, tc := range map[string]struct {
 		history []string
 		fen     string
+		state   core.State
 		want    core.Termination
 	}{
-		"start":             {nil, chess.StartFEN, core.TermNone},
-		"bare kings":        {nil, "4k3/8/8/8/8/8/8/4K3 w - - 0 1", core.TermInsufficientMaterial},
-		"knight":            {nil, "4k3/8/8/8/8/8/8/3NK3 b - - 3 40", core.TermInsufficientMaterial},
-		"rook":              {nil, "4k3/8/8/8/8/8/8/R3K3 w - - 3 40", core.TermNone},
-		"fifty moves":       {nil, "4k3/8/8/8/8/8/8/R3K3 w - - 100 90", core.TermFiftyMoveRule},
-		"forty-nine":        {nil, "4k3/8/8/8/8/8/8/R3K3 w - - 99 90", core.TermNone},
-		"second occurrence": {fens[:4], fens[4], core.TermNone},
-		"third occurrence":  {fens[:8], fens[8], core.TermThreefoldRepetition},
-		"unparsable":        {nil, "not a fen", core.TermNone},
+		"start":             {nil, chess.StartFEN, core.StateOngoing, core.TermNone},
+		"white mated":       {nil, "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3", core.StateBlackWins, core.TermCheckmate},
+		"black mated":       {nil, "R5k1/5ppp/8/8/8/8/8/4K3 b - - 0 1", core.StateWhiteWins, core.TermCheckmate},
+		"stalemate":         {nil, "7k/5Q2/6K1/8/8/8/8/8 b - - 0 1", core.StateStalemate, core.TermStalemate},
+		"mate before draws": {nil, "R5k1/5ppp/8/8/8/8/8/4K3 b - - 100 90", core.StateWhiteWins, core.TermCheckmate},
+		"bare kings":        {nil, "4k3/8/8/8/8/8/8/4K3 w - - 0 1", core.StateDraw, core.TermInsufficientMaterial},
+		"knight":            {nil, "4k3/8/8/8/8/8/8/3NK3 b - - 3 40", core.StateDraw, core.TermInsufficientMaterial},
+		"rook":              {nil, "4k3/8/8/8/8/8/8/R3K3 w - - 3 40", core.StateOngoing, core.TermNone},
+		"fifty moves":       {nil, "4k3/8/8/8/8/8/8/R3K3 w - - 100 90", core.StateDraw, core.TermFiftyMoveRule},
+		"forty-nine":        {nil, "4k3/8/8/8/8/8/8/R3K3 w - - 99 90", core.StateOngoing, core.TermNone},
+		"second occurrence": {fens[:4], fens[4], core.StateOngoing, core.TermNone},
+		"third occurrence":  {fens[:8], fens[8], core.StateDraw, core.TermThreefoldRepetition},
 	} {
-		state, termination := adjudicateDraw(tc.history, tc.fen)
-		if termination != tc.want || (tc.want == core.TermNone) != (state == core.StateOngoing) {
-			t.Errorf("%s: got %v %q, want %q", name, state, termination, tc.want)
+		pos, err := chess.ParseFEN(tc.fen)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if state, termination := outcome(tc.history, pos); state != tc.state || termination != tc.want {
+			t.Errorf("%s: got %v %q, want %v %q", name, state, termination, tc.state, tc.want)
 		}
 	}
 }
@@ -122,5 +212,74 @@ func TestActingColor(t *testing.T) {
 		case tc.code == "" && (failure != nil || color != tc.want):
 			t.Errorf("%s: got %v %+v, want %v", name, color, failure, tc.want)
 		}
+	}
+}
+
+// benchLine is twenty legal plies from the start position, so every move of
+// the benchmarks is accepted.
+var benchLine = []string{
+	"e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6", "b5a4", "g8f6", "e1g1", "f8e7",
+	"f1e1", "b7b5", "a4b3", "d7d6", "c2c3", "e8g8", "h2h3", "c6b8", "d2d4", "b8d7",
+}
+
+func benchProcessor(b *testing.B) *Processor {
+	b.Helper()
+	if _, err := exec.LookPath("stockfish"); err != nil {
+		b.Skip("stockfish is not in PATH")
+	}
+	svc, err := service.New(nil, []byte("test-secret-test-secret-test-secret"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	p, err := New(svc)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { p.Close() })
+	return p
+}
+
+func benchGame(b *testing.B, p *Processor) string {
+	human := core.PlayerConfig{Type: core.PlayerHuman}
+	resp := p.Execute(b.Context(), NewCreateGameCommand(core.CreateGameRequest{White: human, Black: human}))
+	if !resp.Success {
+		b.Fatal(resp.Error.Error)
+	}
+	return resp.Data.(core.GameResponse).GameID
+}
+
+// BenchmarkHumanMove is one accepted human move: its latency alone, and the
+// throughput of games moving at once.
+func BenchmarkHumanMove(b *testing.B) {
+	play := func(b *testing.B, p *Processor, next func() bool) {
+		for ply, gameID := len(benchLine), ""; next(); ply++ {
+			if ply == len(benchLine) {
+				b.StopTimer()
+				ply, gameID = 0, benchGame(b, p)
+				b.StartTimer()
+			}
+			resp := p.Execute(b.Context(), NewMakeMoveCommand(gameID, core.MoveRequest{Move: benchLine[ply]}))
+			if !resp.Success {
+				b.Fatal(resp.Error.Error)
+			}
+		}
+	}
+	b.Run("one game", func(b *testing.B) {
+		p, i := benchProcessor(b), 0
+		b.ResetTimer()
+		play(b, p, func() bool { i++; return i <= b.N })
+	})
+	b.Run("parallel games", func(b *testing.B) {
+		p := benchProcessor(b)
+		b.ResetTimer()
+		b.RunParallel(func(pb *testing.PB) { play(b, p, pb.Next) })
+	})
+}
+
+func BenchmarkCreateGame(b *testing.B) {
+	p := benchProcessor(b)
+	b.ResetTimer()
+	for b.Loop() {
+		benchGame(b, p)
 	}
 }

@@ -28,7 +28,8 @@ Calculates best move with time constraint. Returns:
 ```
 d
 ```
-Debug command returning board visualization and FEN. Used for move validation.
+Debug command returning board visualization and FEN, outside UCI. Used only
+by the shadow check, so a release that changes it costs the check, not play.
 
 #### Configuration
 ```
@@ -56,12 +57,13 @@ Parse `d` output for line starting with `Fen: ` to get canonical position.
 
 ### Application Usage
 
-#### Synchronous Validation (Processor)
-Single mutex-protected engine instance validates moves:
-1. Set position with current FEN
-2. Attempt move
-3. Get new FEN via `d` command
-4. Compare FENs to determine legality
+#### Shadow Check and Draw Offers (Processor)
+The rules core decides every move. One mutex-protected engine instance
+re-checks its rulings off the request path, and answers draw offers:
+1. Set position with the FEN before the move, and the move
+2. Get the engine's FEN via `d`: unchanged means it refused the move
+3. Compare with the core's ruling, both normalized; log a disagreement
+4. For a draw offer, search the position briefly at full strength
 
 #### Asynchronous Calculation (EngineQueue)
 Worker pool with dedicated engines per worker:
@@ -75,11 +77,11 @@ Worker pool with dedicated engines per worker:
 - Timeout protection (2x search time + 1s buffer)
 - Process lifecycle management with graceful shutdown
 - Fallback to force kill if quit fails
-- "(none)" bestmove indicates no legal moves (checkmate/stalemate)
+- "(none)" bestmove indicates no legal moves; the rules core confirms mate or stalemate
 
 ### Performance Considerations
 
 - Reuse engine instances across multiple games
 - `ucinewgame` between games for cache clearing
-- Separate engines for validation vs calculation to avoid contention
+- Move validation needs no engine; the shadow and draw offers share one, apart from the workers
 - Fixed worker pool prevents resource exhaustion

@@ -6,13 +6,13 @@
 
 # Chess
 
-Go backend server providing a RESTful API for chess gameplay with user authentication. Integrates Stockfish engine for move validation and computer opponents.
+Go backend server providing a RESTful API for chess gameplay with user authentication. Its own rules core validates every move; Stockfish plays the computer opponents.
 
 ## Features
 
 - RESTful API for chess operations
 - User registration and JWT authentication
-- Stockfish engine integration for validation
+- Stockfish engine integration for computer opponents
 - Human vs human, human vs computer, computer vs computer modes
 - Resignation, draw offers (the computer answers from its evaluation), and
   automatic draws: dead material, threefold repetition, fifty-move rule
@@ -25,8 +25,9 @@ Go backend server providing a RESTful API for chess gameplay with user authentic
 - PostgreSQL 18 persistence with ordered async writes for games
 - Durable game results, player claims and names, ordered move history, and replay API
 - Unfinished games resume from storage after a restart or a week idle
-- Dependency-free rules core: SAN history, PGN export, FEN validation, and a
-  shadow check of every engine-validated move
+- Dependency-free rules core: move validation, mate, stalemate and draw
+  rules, SAN history, PGN export, FEN validation; Stockfish re-checks its
+  rulings in the background
 - Games without a registered player are purged 24 hours after their last activity
 - Authenticated stored-game listing with cursor pagination and filters
 - Configurable structured debug logs for persistence, cleanup, and engine work

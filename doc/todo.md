@@ -13,10 +13,8 @@ batch under Done says what it delivered.
 ## Order of Work
 
 - Phase 1, now:
-  - R7.1 P1: verify production data against the rules core (operations)
   - R8.1 P1: deliver mail through the mail jail (operations)
 - Phase 2, next, in this order:
-  - R7.2 P2: validate human moves with the core, after R7.1
   - R8.2 P2: email verification, after R8.1
   - R6.3 P2: recover from degraded storage
 - Phase 3, later, each after its decision:
@@ -24,13 +22,14 @@ batch under Done says what it delivered.
   - R10.1 P3: metrics
   - R9.2 P3: analysis on a replay
   - R8.4 P3: recovery timing through the sender
+  - R7.3 P3: retire the engine shadow, after a release without a finding
   - R5.1–R5.4 P3: the curated archive, rights first
 
 ## Done
 
 - R1 Notation core: `internal/server/chess` (strict FEN, legal moves, SAN,
   PGN, draw rules) and `db verify`; perft, a Stockfish cross-check and fuzz
-  targets. Its last test gate is R7.1.
+  targets.
 - R2 Replay API: history with SAN, PGN export (`?ply=`), keyset listing with
   filters, ETag revalidation.
 - R3 Web replay UI: My games, the replay pane (controls, keyboard, autoplay,
@@ -53,6 +52,11 @@ batch under Done says what it delivered.
   unnoticed: that needs net/http. An unfinished game played here loads from
   its rows on its next request, so a restart or the idle unload loses no
   game; the web client's lists offer Continue.
+- R7 Move authority: the rules core decides legality, the resulting
+  position, mate and stalemate for every move and every new game, so a human
+  move takes no engine round trip and no lock, and a game between humans no
+  engine. Stockfish replays each ruling off the request path and logs a
+  disagreement (R7.3 retires it).
 - R9, in part: Ctrl-C stops a running `auto`, `poll` or `computer` in the
   terminal client, natively and in the browser, and the session stays.
 
@@ -83,6 +87,9 @@ batch under Done says what it delivered.
 - D10 Live SAN, done: the live game response carries `san`.
 - D11 Replay history, done: views push browser history entries; stepping a
   replay replaces its entry.
+- D12 Move authority, done: the rules core, without the production check
+  R7.1 planned: the database is re-initialised with the release that makes
+  the switch, so no stored game predates it.
 
 ## Web Client Constraints
 
@@ -263,63 +270,30 @@ extends them.
 
 ## R7 Rules Core as the Move Authority
 
-The rules core (`internal/server/chess`) decides custom starting positions,
-the automatic draws, SAN and PGN, every imported move, and `db verify`.
-Stockfish still decides the legality, mate and stalemate of live moves,
-through one validation engine behind the processor's mutex, which every
-human move in every game waits on; the core shadows each live move and logs
-a disagreement.
+The rules core (`internal/server/chess`) decides every live move, custom
+starting positions, the automatic draws, SAN and PGN, every imported move,
+and `db verify`. Stockfish plays the computer's moves, answers draw offers,
+and replays each ruling of the core as a shadow.
 
-### R7.1 Verify production data against the core
+### R7.3 Retire the engine shadow
 
-- Priority: P1, an operations step for whoever runs the server; R1's last
-  test gate, and the gate of R7.2
-- Affected files: none
-- Guide: [Games](database.md#games),
-  [Integrity sweep](database.md#integrity-sweep)
-
-- `db verify` against production (`sudo chess-db verify` on Linux, the
-  jail's `chess-server db verify` on FreeBSD): it only reads, so it can run
-  in place, and a dump restored into a scratch database answers the same. A
-  problem names the game and the ply.
-- The shadow check's warnings in the server log over a few weeks of play:
-  `rules core and engine disagree` (on legality or the resulting position)
-  and `rules core cannot parse game position`. None is the gate.
-- To keep checking: `-db-cleanup report` verifies 200 stored games an hour
-  and only logs.
-- A finding is a bug in the core or in stored data, and becomes a P0 item.
-
-### R7.2 Validate human moves with the core
-
-- Priority: P2, after R7.1: no engine round trip or global lock per human
-  move, and no engine at all for games between humans
+- Priority: P3, after a release whose log holds no `rules core and engine
+  disagree` and no `rules core cannot parse game position`
 - Affected files: `internal/server/processor/processor.go`,
-  `internal/server/processor/rules_test.go`, `doc/architecture.md`,
+  `internal/server/processor/rules_test.go`,
+  `internal/server/engine/engine.go`, `doc/architecture.md`,
   `doc/stockfish.md`
 - Guide: [Human Move](architecture.md#human-move-authenticated),
-  [Concurrency](architecture.md#concurrency),
-  [Synchronous Validation](stockfish.md#synchronous-validation-processor)
+  [Shadow Check](stockfish.md#shadow-check-and-draw-offers-processor)
 
-`handleMakeMove` sets the position on the validation engine, reads the new
-FEN from Stockfish's `d` and probes for a reply with `go depth 1`, all under
-`p.mu`; an illegal move shows as an unchanged FEN. `handleCreateGame`
-classifies every new game the same way, games between humans included. `d`
-is a debug command outside UCI, and the parser waits for its `Checkers:`
-line, so a Stockfish release that changes it stops every move. The core has
-what the job needs (`ParseUCI` against `LegalMoves`, `Play`, `InCheck`,
-`HasLegalMoves`), with perft on six positions, a Stockfish cross-check of
-about 6,000 positions a run, and fuzz targets.
+The shadow compares legality and the resulting FEN of every ruling, not mate
+or stalemate; `db verify` and `-db-cleanup report` cover that classification
+on stored games. It reads the position through `d`, a debug command outside
+UCI.
 
-- Human moves and game creation: legality, the resulting FEN, mate and
-  stalemate from the core; `p.mu` then guards engine work only.
-- The shadow in reverse for a release: the engine checks the core's decision
-  off the request path and logs a disagreement.
-- Computer moves: the core can re-validate the worker's move as well, which
-  leaves the validation engine only the draw-offer evaluation.
-- The shadow compares legality and the resulting FEN, not mate or
-  stalemate; `db verify` (R7.1) covers that classification on stored games.
-- Move latency and throughput measured before and after, as the PR rule for
-  performance changes asks.
+- A finding is a bug in the core, and becomes a P0 item.
+- Without one: remove the shadow loop, its backlog and `engine.Diagnose`;
+  the processor's engine then only answers draw offers.
 
 ## R8 Accounts and Mail
 
@@ -497,7 +471,7 @@ write.
 
 - The measures asked for: write-queue depth, retries, degraded transitions,
   flush and replay-read latency, KDF slot wait. Beside them: shadow-check
-  disagreements (R7.1's gate as a counter rather than a log search), engine
+  disagreements (R7.3's gate as a counter rather than a log search), engine
   queue depth and engine restarts, loaded games and those with a computer,
   long-poll waiters.
 - Form: the Prometheus text format written with the standard library

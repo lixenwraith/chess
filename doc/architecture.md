@@ -10,7 +10,7 @@ call. At shutdown long-polls end first, then running requests get five seconds
 to finish.
 
 ### Processing Layer (`internal/server/processor`)
-Central command handler containing business logic. Single `Execute(ctx, Command)` entry point decouples transport from logic; a command that names a stored game loads it first. Uses synchronous UCI engine for validation, asynchronous EngineQueue for computer moves. Commands include optional user context for authenticated operations.
+Central command handler containing business logic. Single `Execute(ctx, Command)` entry point decouples transport from logic; a command that names a stored game loads it first. The rules core validates moves; the asynchronous EngineQueue computes the computer's, and one more engine answers draw offers and re-checks the core's rulings off the request path. Commands include optional user context for authenticated operations.
 
 ### Service Layer (`internal/server/service`)
 In-memory live-game storage with authentication support. A mutex protects each
@@ -70,9 +70,10 @@ start the server.
 - **Game** (`internal/server/game`): Game state with snapshot history and player associations
 - **Rules core** (`internal/server/chess`): dependency-free position model,
   legal move generation, SAN, PGN, ASCII board, dead-material and repetition
-  detection. It validates custom starting FENs, applies the automatic draw
-  rules, and shadows the engine on every live move; Stockfish stays the
-  authority for move legality, mate, and stalemate
+  detection. It is the move authority: it validates custom starting FENs and
+  every live move, gives the resulting position, classifies mate and
+  stalemate, and applies the automatic draw rules. Stockfish replays each
+  ruling in the background, and a disagreement is logged
 - **Replay** (`internal/server/replay`): works on stored game records: SAN
   for every ply, PGN assembly with the termination comment, and verification
   against the rules (used by `db verify`, `db pgn`, and the integrity sweep)
@@ -106,13 +107,15 @@ start the server.
 1. HTTP handler receives `POST /games/{id}/moves` with move
 2. Optional JWT validation for user verification
 3. Creates MakeMoveCommand, calls `processor.Execute()`
-4. The rules core checks the move first only to name a missing promotion
-   piece; the processor then validates it via the locked validation engine
-5. If legal, gets new FEN from engine, and logs a warning if the rules core
-   disagrees on legality or the resulting position
-6. If neither mate nor stalemate, the processor applies the automatic draw
-   rules to the new position and the game's position history: dead material,
-   threefold repetition, fifty-move rule
+4. The rules core checks the move against the game's position: an illegal
+   one is refused, a missing promotion piece named. No engine and no lock
+   are involved
+5. The core gives the new FEN and classifies it: mate or stalemate, else the
+   automatic draws over the game's position history (dead material,
+   threefold repetition, fifty-move rule)
+6. The ruling is handed to the engine shadow, which replays the move on
+   Stockfish later and logs `rules core and engine disagree` on legality or
+   on the resulting position; a full backlog skips the check
 7. Calls `service.ApplyMoveWithState()` with the FEN, turn, state, and
    termination that were decided
 8. Service rejects a stale concurrent commit or atomically updates the move,
@@ -127,7 +130,7 @@ start the server.
    claimed side, else the only human side) and checks slot ownership
 3. A draw offer to a human is recorded on the game and wakes long-polls; an
    offer to a computer is answered at once from a short full-strength search
-   on the validation engine (after twenty plies; accept when level or worse
+   on the processor's engine (after twenty plies; accept when level or worse
    for the computer); one offer per own move
 4. `service.EndGame()` re-checks under its lock that the game is unfinished,
    unchanged, and the accepted offer still stands, then sets result and
@@ -141,8 +144,9 @@ start the server.
    `RESOURCE_LIMIT` and leaves the game `ongoing`
 3. Returns immediately
 4. Worker goroutine calculates move with dedicated Stockfish instance
-5. Callback re-validates the move on the validation engine, applies the
-   automatic draw rules, and commits via the service
+5. Callback checks the move with the rules core, classifies the position as
+   for a human move, and commits via the service; a worker that reports no
+   move is believed only when the rules find none
 6. Client polls for completion
 7. Returns GameResponse
 
@@ -216,9 +220,9 @@ start the server.
 
 - **HTTP Server**: Fiber handles concurrent connections
 - **Game State**: Single RWMutex protects game map (concurrent reads, serial writes)
-- **Move Validation**: Optimistic FEN/state/turn checks reject a result if the game changed while Stockfish was validating
+- **Move Validation**: The rules core, on the request's goroutine; optimistic FEN/state/turn checks reject a result if the game changed meanwhile
 - **Engine Workers**: Fixed pool (2 workers) with dedicated Stockfish processes
-- **Validation Engine**: Single mutex-protected instance for synchronous validation
+- **Processor Engine**: Single mutex-protected instance for draw-offer evaluation and the shadow check (64 rulings may wait)
 - **Storage Writer**: Single goroutine processes game write queue sequentially
 - **User Operations**: Direct database access; account creation serialized by a PostgreSQL advisory lock
 - **Password Hashing**: Four Argon2id slots; waiters give up after five seconds (HTTP 503)
