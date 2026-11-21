@@ -90,6 +90,17 @@ func (w *WaitRegistry) RegisterWait(gameID string, moveCount int, ctx context.Co
 	return req.Notify
 }
 
+// Waiting is how many long-polls wait now.
+func (w *WaitRegistry) Waiting() int {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	waiting := 0
+	for _, list := range w.waiters {
+		waiting += len(list)
+	}
+	return waiting
+}
+
 // NotifyGame notifies all clients waiting on a game about state change
 func (w *WaitRegistry) NotifyGame(gameID string, currentMoveCount int, state core.State) {
 	w.mu.RLock()

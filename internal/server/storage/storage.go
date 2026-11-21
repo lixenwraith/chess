@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/lixenwraith/chess/internal/server/metrics"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -77,6 +79,22 @@ type Store struct {
 	lostMu     sync.Mutex
 	lost       map[string]struct{}
 	degradedAt time.Time
+
+	retries, degradations, recoveries atomic.Int64
+	flushes                           metrics.Timer
+}
+
+// Metrics reports the write queue's depth, the retries of transient
+// failures, the times storage degraded and recovered, and how long barriers
+// (Flush) waited for the writes queued before them.
+func (s *Store) Metrics() []slog.Attr {
+	return []slog.Attr{slog.Group("storage",
+		"write_queue", len(s.writeChan),
+		"write_retries", s.retries.Load(),
+		"degraded", s.degradations.Load(),
+		"recovered", s.recoveries.Load(),
+		s.flushes.Attr("flush"),
+	)}
 }
 
 // SetGameDroppedHandler registers the callback run, on its own goroutine,
@@ -237,6 +255,7 @@ func (s *Store) executeWrite(req writeRequest) error {
 			break
 		}
 		backoff := writeRetryBase << (attempt - 1)
+		s.retries.Add(1)
 		slog.Warn("storage write failed transiently; retrying",
 			"operation", req.operation, "game_id", req.gameID,
 			"attempt", attempt, "backoff", backoff, "error", err)
@@ -256,6 +275,7 @@ func (s *Store) degrade() bool {
 	if !s.healthStatus.CompareAndSwap(true, false) {
 		return false
 	}
+	s.degradations.Add(1)
 	s.lostMu.Lock()
 	s.degradedAt = time.Now()
 	s.lostMu.Unlock()
@@ -330,6 +350,7 @@ func (s *Store) tryRecover(resync func(readmit func() []string)) error {
 	s.lostMu.Lock()
 	outage := time.Since(s.degradedAt)
 	s.lostMu.Unlock()
+	s.recoveries.Add(1)
 	slog.Info("storage recovered: writes readmitted", "games_resynced", games, "degraded_for", outage)
 	return nil
 }
@@ -443,6 +464,7 @@ func (s *Store) Flush(ctx context.Context) error {
 	}
 
 	done := make(chan error, 1)
+	queued := time.Now()
 	select {
 	case s.writeChan <- writeRequest{operation: "flush", barrier: done}:
 		s.enqueueMu.RUnlock()
@@ -453,6 +475,7 @@ func (s *Store) Flush(ctx context.Context) error {
 
 	select {
 	case err := <-done:
+		s.flushes.Since(queued)
 		return err
 	case <-ctx.Done():
 		return ctx.Err()

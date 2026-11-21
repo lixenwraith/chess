@@ -52,6 +52,7 @@ type User struct {
 
 // acquireKDF reserves one Argon2id slot, waiting at most kdfWaitTimeout.
 func (s *Service) acquireKDF() (release func(), err error) {
+	defer s.kdfWaits.Since(time.Now())
 	timer := time.NewTimer(kdfWaitTimeout)
 	defer timer.Stop()
 	select {

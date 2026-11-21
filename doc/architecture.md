@@ -89,11 +89,27 @@ start the server.
   against the rules (used by `db verify`, `db pgn`, and the integrity sweep)
 - **Mail** (`internal/server/mail`): password-reset email through an SMTP
   relay, or `.eml` files in development
+- **Metrics** (`internal/server/metrics`): one `msg=metrics` log line every
+  `-metrics-interval` ([Metrics](#metrics))
 - **Web server** (`internal/server/webserver`): serves the embedded web client
   (`-serve`)
 - **Core** (`internal/server/core`): Shared types, API models, error constants
 - **CLI** (`cmd/chess-server/cli`): Database and user management commands
 - **Client** (`cmd/chess-client-cli`, `internal/client`): Interactive debugging client with command registry, session management, and colored terminal output
+
+### Metrics
+There is no scrape endpoint: every `-metrics-interval` (default one minute,
+`0` off) the server logs its measures as one INFO line, `msg=metrics`, which a
+log shipper filters out of the log. Counters run from the start; a timer
+gives `count`, `avg` and `max` since the last line.
+
+- `games`: `loaded`, `with_computer`, `longpoll_waiters`
+- `auth.kdf_wait`: a password's wait for an Argon2id slot
+- `replay.read`: a stored game's read, its barrier included
+- `storage`: `write_queue`, `write_retries`, `degraded` and `recovered`
+  (transitions), `flush` (a barrier's wait behind queued writes)
+- `engine`: `queue` (computer moves waiting), `restarts`
+- `rules.disagreements`: rulings the engine shadow contradicted
 
 ## Request Flow
 

@@ -34,6 +34,7 @@ go build ./cmd/chess-client-cli
 - `-pid-lock`: Enable exclusive locking (requires -pid)
 - `-log-level`: `debug`, `info`, `warn`, or `error` (default: `info`)
 - `-log-http`: Enable API and web request logs (default: `true`)
+- `-metrics-interval`: How often the server's measures are logged as one `msg=metrics` line (default: `1m`; `0` disables; see [Metrics](architecture.md#metrics))
 - `-finished-game-ttl`: How long terminal games stay in memory (default: `1h`; `0` disables eviction)
 - `-anonymous-game-ttl`: How long games without a registered player survive after their last activity, in memory and in the database (default: `24h`; `0` keeps them)
 - `-idle-game-ttl`: How long an unfinished game with a registered player stays in memory after its last activity; it stays stored and resumes on its next request (default: `168h`; `0` keeps it)

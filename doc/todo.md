@@ -17,7 +17,6 @@ batch under Done says what it delivered.
 - Phase 2, next, in this order:
   - R8.2 P2: email verification, after R8.1
 - Phase 3, later, each after its decision:
-  - R10.1 P3: metrics
   - R9.2 P3: analysis on a replay
   - R8.4 P3: recovery timing through the sender
   - R7.3 P3: retire the engine shadow, after a release without a finding
@@ -63,6 +62,11 @@ batch under Done says what it delivered.
   (`?game=<id>`) offers the open one, a join takes it without a move, the
   game is watched by long-poll, Draw shows and accepts a standing offer, and
   the turn strip names the opponent. Schema v6.
+
+- R10 Observability: the measures (queues, retries, degraded transitions,
+  flush, replay-read and KDF-slot latency, loaded games, long-poll waiters,
+  engine restarts, shadow disagreements) as one `msg=metrics` log line every
+  `-metrics-interval`, which LogWisp streams; no listener and no scraper.
 
 ## Decisions
 
@@ -379,32 +383,3 @@ evaluates a position. Three ways, cheapest first:
   cross-origin isolation that the embedding page would have to serve too; a
   full NNUE network weighs tens of megabytes; Stockfish is GPLv3, so its
   source is offered with the binary.
-
-## R10 Observability
-
-### R10.1 Metrics
-
-- Priority: P3, a decision first: whether a scraper exists; the logs carry
-  most of this today
-- Affected files: `internal/server/storage/storage.go`,
-  `internal/server/service/user.go`, `internal/server/service/history.go`,
-  `internal/server/service/service.go`, `internal/server/processor/queue.go`,
-  `internal/server/processor/processor.go`, `cmd/chess-server/main.go`,
-  `doc/architecture.md`, `doc/deployment.md`, `doc/deployment-linux.md`
-- Guide: [Storage Layer](architecture.md#storage-layer-internalserverstorage),
-  [Health Check](api.md#health-check)
-
-`/health` reports storage, mail and the build; everything else is in the
-log, where `-log-level debug` adds the queue depth and duration of each
-write.
-
-- The measures asked for: write-queue depth, retries, degraded transitions,
-  flush and replay-read latency, KDF slot wait. Beside them: shadow-check
-  disagreements (R7.3's gate as a counter rather than a log search), engine
-  queue depth and engine restarts, loaded games and those with a computer,
-  long-poll waiters.
-- Form: the Prometheus text format written with the standard library
-  (counters, gauges, fixed-bucket histograms) needs no dependency; `expvar`
-  serves JSON without histograms.
-- Exposure: a listener of its own (`-metrics-addr`, loopback or the jail's
-  address), not the API port that nginx proxies.

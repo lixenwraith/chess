@@ -12,6 +12,7 @@ import (
 
 	"github.com/lixenwraith/chess/internal/server/core"
 	"github.com/lixenwraith/chess/internal/server/game"
+	"github.com/lixenwraith/chess/internal/server/metrics"
 	"github.com/lixenwraith/chess/internal/server/storage"
 
 	"github.com/lixenwraith/auth"
@@ -50,6 +51,32 @@ type Service struct {
 
 	mail *mailer // password recovery; nil when no transport is configured
 	site string  // Site tag of exported games played here; empty is PGN's "?"
+
+	kdfWaits    metrics.Timer // waits for an Argon2id slot
+	replayReads metrics.Timer // stored-game reads, barrier included
+}
+
+// Metrics reports the games in memory, those with a computer side, the
+// long-polls waiting, how long passwords waited for a hashing slot and stored
+// games took to read, and the store's own measures.
+func (s *Service) Metrics() []slog.Attr {
+	s.mu.RLock()
+	loaded, computer := len(s.games), 0
+	for _, g := range s.games {
+		if !g.BothHuman() {
+			computer++
+		}
+	}
+	s.mu.RUnlock()
+	attrs := []slog.Attr{
+		slog.Group("games", "loaded", loaded, "with_computer", computer, "longpoll_waiters", s.waiter.Waiting()),
+		slog.Group("auth", s.kdfWaits.Attr("kdf_wait")),
+		slog.Group("replay", s.replayReads.Attr("read")),
+	}
+	if s.store != nil {
+		attrs = append(attrs, s.store.Metrics()...)
+	}
+	return attrs
 }
 
 // New creates a service with optional storage. jwtSecret signs session tokens

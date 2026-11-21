@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -20,6 +21,13 @@ const (
 )
 
 var ErrEngineTimeout = errors.New("engine timeout")
+
+// restarts counts the respawns of every engine since the process started.
+var restarts atomic.Int64
+
+// Restarts is how often an engine was killed and started again, after a
+// timeout, a closed pipe or a failed write.
+func Restarts() int64 { return restarts.Load() }
 
 // UCI wraps a stockfish process. All engine dialogue is a serialized
 // request/response transaction under mu; a single reader goroutine owns stdout
@@ -113,6 +121,7 @@ func (u *UCI) killLocked() {
 }
 
 func (u *UCI) restartLocked() {
+	restarts.Add(1)
 	u.killLocked()
 	_ = u.spawnLocked() // on failure alive stays false; next tx errors immediately
 }

@@ -159,9 +159,9 @@ func TestShadowLogsOnlyDisagreement(t *testing.T) {
 		"unreadable to the core": {shadowCheck{fen: chess.StartFEN, uci: "e2e4", ruled: afterE4}, "not a fen", "cannot parse game position"},
 	} {
 		log.Reset()
-		tc.check.compare(tc.engineFEN)
-		if got := log.String(); (tc.want == "") != (got == "") || !strings.Contains(got, tc.want) {
-			t.Errorf("%s: logged %q, want %q", name, got, tc.want)
+		agreed := tc.check.compare(tc.engineFEN)
+		if got := log.String(); agreed != (tc.want == "") || agreed != (got == "") || !strings.Contains(got, tc.want) {
+			t.Errorf("%s: agreed %v, logged %q, want %q", name, agreed, got, tc.want)
 		}
 	}
 }

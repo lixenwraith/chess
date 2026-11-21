@@ -35,6 +35,8 @@ Go backend server providing a RESTful API for chess gameplay with user authentic
 - Games without a registered player are purged 24 hours after their last activity
 - Authenticated stored-game listing with cursor pagination and filters
 - Configurable structured debug logs for persistence, cleanup, and engine work
+- Metrics without an endpoint: one `msg=metrics` log line a minute (queues,
+  retries, latencies, loaded games) for a log shipper to stream
 - User management with secure Argon2id password storage and scoped JWTs
 - Password recovery by email (SMTP relay, or a directory of `.eml` files in
   development) and administrative reset links

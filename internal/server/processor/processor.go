@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -46,6 +47,16 @@ type Processor struct {
 	shadows       chan shadowCheck
 	quit          chan struct{}
 	shadowDone    chan struct{}
+	disagreements atomic.Int64
+}
+
+// Metrics reports the engine queue's depth, the engines' restarts, and how
+// often the shadow found the engine at odds with the rules.
+func (p *Processor) Metrics() []slog.Attr {
+	return []slog.Attr{
+		slog.Group("engine", "queue", p.queue.Depth(), "restarts", engine.Restarts()),
+		slog.Group("rules", "disagreements", p.disagreements.Load()),
+	}
 }
 
 func New(svc *service.Service) (*Processor, error) {
@@ -541,6 +552,7 @@ func (p *Processor) triggerComputerMove(gameID string, g game.View) error {
 
 		next, err := play(fen, result.Move)
 		if err != nil {
+			p.disagreements.Add(1)
 			slog.Warn("rules core and engine disagree on legality",
 				"game_id", gameID, "move", result.Move, "engine_legal", true, "rules_error", err)
 			p.svc.UpdateGameState(gameID, core.StateStuck, core.TermNone)
@@ -736,20 +748,23 @@ func (p *Processor) shadowLoop() {
 				slog.Debug("engine shadow check skipped", "game_id", check.gameID, "error", err)
 				continue
 			}
-			check.compare(diagnosis.FEN)
+			if !check.compare(diagnosis.FEN) {
+				p.disagreements.Add(1)
+			}
 		}
 	}
 }
 
-// compare logs a disagreement between the ruling and the position the engine
-// holds after the move, which it leaves unchanged for an illegal one.
-func (c shadowCheck) compare(engineFEN string) {
+// compare holds the ruling against the position the engine has after the
+// move, which it leaves unchanged for an illegal one. It logs a disagreement
+// and reports whether the two agree.
+func (c shadowCheck) compare(engineFEN string) bool {
 	before, errBefore := chess.NormalizeFEN(c.fen)
 	after, errAfter := chess.NormalizeFEN(engineFEN)
 	if errBefore != nil || errAfter != nil {
 		slog.Warn("rules core cannot parse game position",
 			"game_id", c.gameID, "fen", c.fen, "engine_fen", engineFEN)
-		return
+		return false
 	}
 	engineLegal := after != before
 	switch {
@@ -759,7 +774,10 @@ func (c shadowCheck) compare(engineFEN string) {
 	case engineLegal && after != c.ruled:
 		slog.Warn("rules core and engine disagree on resulting position",
 			"game_id", c.gameID, "move", c.uci, "engine_fen", engineFEN, "rules_fen", c.ruled)
+	default:
+		return true
 	}
+	return false
 }
 
 // handleResign ends the game in the opponent's favor. It is allowed while the

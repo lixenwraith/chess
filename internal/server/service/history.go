@@ -90,6 +90,7 @@ func (s *Service) loadHistory(ctx context.Context, gameID string) (*storage.Game
 	if s.store == nil {
 		return nil, nil, ErrStorageDisabled
 	}
+	defer s.replayReads.Since(time.Now())
 	record, moves, err := s.store.GetGameHistory(ctx, gameID)
 	if err != nil {
 		if storage.IsGameNotFound(err) {

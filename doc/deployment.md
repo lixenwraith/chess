@@ -179,6 +179,7 @@ Server flags:
 | `-idle-game-ttl` | | Memory retention of an unfinished game with a registered player after its last activity; it stays stored (default `168h`) |
 | `-finished-game-ttl` | | Memory retention of finished games (default `1h`) |
 | `-db-cleanup` | | Hourly integrity sweep: `off` (default), `report` (log findings), or `delete` ([database.md](database.md#integrity-sweep)) |
+| `-metrics-interval` | | How often the measures are logged as one `msg=metrics` line (default `1m`, `0` = off); see [Metrics](#metrics) |
 | `-smtp-host`, `-smtp-port` | | SMTP relay for password-reset email (default port 25); recovery is off without a transport |
 | `-smtp-user`, `-smtp-password-file` | | Relay credentials, optional; the file is mode 0600 and only sent over TLS |
 | `-mail-from` | | Sender address of server email |
@@ -211,6 +212,21 @@ link to hand to the person, the same link the recovery email carries:
 ```sh
 jail# su -m chess -c '/home/chess/bin/chess-server db user reset-link -username <name> -url https://<site>/chess/web-client/ -dsn "postgres:///chess?host=/tmp"'
 ```
+
+## Metrics
+
+The server has no metrics endpoint: it logs its measures
+([architecture.md](architecture.md#metrics)) as one `msg=metrics` line an
+interval, and LogWisp streams those lines from the log file:
+
+```sh
+jail# lw --source 'file:directory=/var/log,pattern=chessd.log' \
+        --filter 'include:patterns=msg=metrics' --sink 'http:port=<port>'
+```
+
+The sink listens on loopback unless given a `host`. A counter that moves
+(`storage.degraded`, `rules.disagreements`, `engine.restarts`) has a WARN or
+ERROR line of its own in the same log.
 
 ## Password Recovery by Email
 
