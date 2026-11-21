@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/cors"
-	"github.com/gofiber/fiber/v2/middleware/logger"
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/cors"
+	"github.com/gofiber/fiber/v3/middleware/logger"
 )
 
 //go:embed chess-client-web
@@ -46,7 +46,7 @@ func Start(host string, port int, apiURL string, logRequests bool) error {
 	}
 
 	// Serve static files from the embedded client directory.
-	app.Get("*", func(c *fiber.Ctx) error {
+	app.Get("*", func(c fiber.Ctx) error {
 		// The path for the embedded filesystem must not have a leading slash
 		fsPath := strings.TrimPrefix(c.Path(), "/")
 

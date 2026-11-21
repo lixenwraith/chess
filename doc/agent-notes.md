@@ -2,10 +2,13 @@
 
 What earlier agents learned that neither AGENTS.md nor the other docs state.
 
-- A handler's context is `c.UserContext()`: the first middleware sets it to
-  the request's 35-second deadline within the server's lifetime. Fiber's
-  `c.Context()` is fasthttp's `RequestCtx`, whose `Done` closes only at
-  shutdown, never on a disconnect.
+- A handler's context is `c.Context()`: the first middleware sets it to the
+  request's 35-second deadline within the server's lifetime. `c` is itself a
+  `context.Context` that is never cancelled, and fasthttp's `c.RequestCtx()`
+  ends only at shutdown, never on a disconnect.
+- `app.Test(req, fiber.TestConfig{Timeout: d})` leaves `FailOnTimeout` false,
+  unlike `app.Test(req)`: a timed-out request is not an error unless the
+  config sets `FailOnTimeout: true` too.
 - HTTP handler tests need no Stockfish when no tested path calls
   `proc.Execute`: `service.New(nil, secret)` and a nil processor serve them
   (`TestLongPollEndsWhenServerContextIsCancelled`); `processor.New` starts

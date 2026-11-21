@@ -8,13 +8,13 @@ import (
 	"github.com/lixenwraith/chess/internal/server/core"
 
 	"github.com/go-playground/validator/v10"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 )
 
 var validate = validator.New()
 
-func validationMiddleware(c *fiber.Ctx) error {
+func validationMiddleware(c fiber.Ctx) error {
 	method := c.Method()
 	if method == fiber.MethodGet || method == fiber.MethodDelete || method == fiber.MethodOptions {
 		return c.Next()
@@ -46,7 +46,7 @@ func validationMiddleware(c *fiber.Ctx) error {
 		return c.Next() // No validation for unknown endpoints
 	}
 
-	if err := c.BodyParser(requestType); err != nil {
+	if err := c.Bind().Body(requestType); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
 			Error:   "invalid request body",
 			Code:    core.ErrInvalidRequest,

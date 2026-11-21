@@ -11,7 +11,7 @@ import (
 	"github.com/lixenwraith/chess/internal/server/core"
 	"github.com/lixenwraith/chess/internal/server/service"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 var emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
@@ -59,9 +59,9 @@ type UserResponse struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-func (h *HTTPHandler) RegisterHandler(c *fiber.Ctx) error {
+func (h *HTTPHandler) RegisterHandler(c fiber.Ctx) error {
 	var req RegisterRequest
-	if err := c.BodyParser(&req); err != nil {
+	if err := c.Bind().Body(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
 			Error:   "invalid request body",
 			Code:    core.ErrInvalidRequest,
@@ -100,7 +100,7 @@ func (h *HTTPHandler) RegisterHandler(c *fiber.Ctx) error {
 	}
 
 	// Create the user and initial session atomically.
-	user, sessionID, err := h.svc.RegisterUser(c.UserContext(), req.Username, req.Email, req.Password)
+	user, sessionID, err := h.svc.RegisterUser(c.Context(), req.Username, req.Email, req.Password)
 	if err != nil {
 		if errors.Is(err, service.ErrStorageDisabled) || errors.Is(err, service.ErrStorageUnavailable) {
 			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
@@ -177,9 +177,9 @@ func validatePassword(password string) error {
 	return nil
 }
 
-func (h *HTTPHandler) LoginHandler(c *fiber.Ctx) error {
+func (h *HTTPHandler) LoginHandler(c fiber.Ctx) error {
 	var req LoginRequest
-	if err := c.BodyParser(&req); err != nil {
+	if err := c.Bind().Body(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
 			Error:   "invalid request body",
 			Code:    core.ErrInvalidRequest,
@@ -191,7 +191,7 @@ func (h *HTTPHandler) LoginHandler(c *fiber.Ctx) error {
 	req.Identifier = strings.ToLower(req.Identifier)
 
 	// Authenticate user and create session (invalidates previous session)
-	user, sessionID, err := h.svc.AuthenticateUser(c.UserContext(), req.Identifier, req.Password)
+	user, sessionID, err := h.svc.AuthenticateUser(c.Context(), req.Identifier, req.Password)
 	if err != nil {
 		if errors.Is(err, service.ErrStorageDisabled) || errors.Is(err, service.ErrStorageUnavailable) {
 			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
@@ -226,7 +226,7 @@ func (h *HTTPHandler) LoginHandler(c *fiber.Ctx) error {
 	})
 }
 
-func (h *HTTPHandler) GetCurrentUserHandler(c *fiber.Ctx) error {
+func (h *HTTPHandler) GetCurrentUserHandler(c fiber.Ctx) error {
 	userID, ok := c.Locals("userID").(string)
 	if !ok || userID == "" {
 		return c.Status(fiber.StatusUnauthorized).JSON(core.ErrorResponse{
@@ -235,7 +235,7 @@ func (h *HTTPHandler) GetCurrentUserHandler(c *fiber.Ctx) error {
 		})
 	}
 
-	user, err := h.svc.GetUserByID(c.UserContext(), userID)
+	user, err := h.svc.GetUserByID(c.Context(), userID)
 	if errors.Is(err, service.ErrStorageUnavailable) {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
 			Error: "account storage unavailable", Code: core.ErrStorageUnavailable,
@@ -256,7 +256,7 @@ func (h *HTTPHandler) GetCurrentUserHandler(c *fiber.Ctx) error {
 	})
 }
 
-func (h *HTTPHandler) LogoutHandler(c *fiber.Ctx) error {
+func (h *HTTPHandler) LogoutHandler(c fiber.Ctx) error {
 	sessionID, ok := c.Locals("sessionID").(string)
 	if !ok || sessionID == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
@@ -265,7 +265,7 @@ func (h *HTTPHandler) LogoutHandler(c *fiber.Ctx) error {
 		})
 	}
 
-	err := h.svc.InvalidateSession(c.UserContext(), sessionID)
+	err := h.svc.InvalidateSession(c.Context(), sessionID)
 	if errors.Is(err, service.ErrStorageUnavailable) {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
 			Error: "account storage unavailable", Code: core.ErrStorageUnavailable,
@@ -284,7 +284,7 @@ func (h *HTTPHandler) LogoutHandler(c *fiber.Ctx) error {
 // DeleteAccountHandler deletes the caller's account after re-checking the
 // password. The caller's games lose the claim and the name; see
 // Service.DeleteAccount.
-func (h *HTTPHandler) DeleteAccountHandler(c *fiber.Ctx) error {
+func (h *HTTPHandler) DeleteAccountHandler(c fiber.Ctx) error {
 	userID, _ := c.Locals("userID").(string)
 	sessionID, _ := c.Locals("sessionID").(string)
 	if userID == "" || sessionID == "" {
@@ -295,7 +295,7 @@ func (h *HTTPHandler) DeleteAccountHandler(c *fiber.Ctx) error {
 	}
 
 	var req DeleteAccountRequest
-	if err := c.BodyParser(&req); err != nil || req.Password == "" {
+	if err := c.Bind().Body(&req); err != nil || req.Password == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
 			Error:   "invalid request body",
 			Code:    core.ErrInvalidRequest,
@@ -303,7 +303,7 @@ func (h *HTTPHandler) DeleteAccountHandler(c *fiber.Ctx) error {
 		})
 	}
 
-	if err := h.svc.DeleteAccount(c.UserContext(), userID, sessionID, req.Password); err != nil {
+	if err := h.svc.DeleteAccount(c.Context(), userID, sessionID, req.Password); err != nil {
 		switch {
 		case errors.Is(err, service.ErrInvalidCredentials):
 			return c.Status(fiber.StatusUnauthorized).JSON(core.ErrorResponse{
@@ -332,9 +332,9 @@ func (h *HTTPHandler) DeleteAccountHandler(c *fiber.Ctx) error {
 // RecoverHandler queues a password-reset email. The answer, and how soon it
 // comes, is the same whether or not the account exists or has an email; only
 // a missing transport or a full queue (503) is reported.
-func (h *HTTPHandler) RecoverHandler(c *fiber.Ctx) error {
+func (h *HTTPHandler) RecoverHandler(c fiber.Ctx) error {
 	var req RecoverRequest
-	if err := c.BodyParser(&req); err != nil || strings.TrimSpace(req.Identifier) == "" {
+	if err := c.Bind().Body(&req); err != nil || strings.TrimSpace(req.Identifier) == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
 			Error:   "invalid request body",
 			Code:    core.ErrInvalidRequest,
@@ -374,9 +374,9 @@ func (h *HTTPHandler) RecoverHandler(c *fiber.Ctx) error {
 
 // ResetPasswordHandler sets a new password from a reset link and signs the
 // user in, returning a session token like login.
-func (h *HTTPHandler) ResetPasswordHandler(c *fiber.Ctx) error {
+func (h *HTTPHandler) ResetPasswordHandler(c fiber.Ctx) error {
 	var req ResetPasswordRequest
-	if err := c.BodyParser(&req); err != nil || req.Token == "" || req.Password == "" {
+	if err := c.Bind().Body(&req); err != nil || req.Token == "" || req.Password == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
 			Error:   "invalid request body",
 			Code:    core.ErrInvalidRequest,
@@ -391,7 +391,7 @@ func (h *HTTPHandler) ResetPasswordHandler(c *fiber.Ctx) error {
 		})
 	}
 
-	user, sessionID, err := h.svc.ResetPassword(c.UserContext(), req.Token, req.Password)
+	user, sessionID, err := h.svc.ResetPassword(c.Context(), req.Token, req.Password)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrResetInvalid):

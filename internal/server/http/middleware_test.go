@@ -8,14 +8,14 @@ import (
 
 	"github.com/lixenwraith/chess/internal/server/service"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 func TestOptionalAuthAllowsAbsenceButRejectsInvalidToken(t *testing.T) {
 	app := fiber.New()
 	app.Get("/optional", OptionalAuth(func(context.Context, string) (string, map[string]any, error) {
 		return "", nil, errors.New("invalid token")
-	}), func(c *fiber.Ctx) error {
+	}), func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
 
@@ -44,7 +44,7 @@ func TestAuthMiddlewareReportsStorageUnavailable(t *testing.T) {
 		app := fiber.New()
 		app.Get("/protected", middleware(func(context.Context, string) (string, map[string]any, error) {
 			return "", nil, service.ErrStorageUnavailable
-		}), func(c *fiber.Ctx) error {
+		}), func(c fiber.Ctx) error {
 			return c.SendStatus(fiber.StatusNoContent)
 		})
 
@@ -69,7 +69,7 @@ func TestAuthMiddlewareParsesBearerHeaderStrictly(t *testing.T) {
 	}
 	for _, middleware := range []func(TokenValidator) fiber.Handler{AuthRequired, OptionalAuth} {
 		app := fiber.New()
-		app.Get("/route", middleware(validate), func(c *fiber.Ctx) error {
+		app.Get("/route", middleware(validate), func(c fiber.Ctx) error {
 			return c.SendString(c.Locals("userID").(string))
 		})
 		for header, want := range map[string]int{
