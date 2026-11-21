@@ -47,6 +47,16 @@ async function register(page, request) {
     return { ...auth, password: 'Passw0rd123' };
 }
 
+// Signs in as one of the accounts run-test-server.sh creates, which spares
+// the registration limit.
+async function signIn(page, request, username, password) {
+    const response = await request.post(`${API}/api/auth/login`, { data: { identifier: username, password } });
+    expect(response.status(), await response.text()).toBe(200);
+    const auth = await response.json();
+    await page.addInitScript(token => localStorage.setItem('authToken', token), auth.token);
+    return auth;
+}
+
 test.describe('web replay', () => {
     test('play, list, replay, export', async ({ page, request }) => {
         const user = await register(page, request);
@@ -341,6 +351,40 @@ test.describe('web replay', () => {
         await page.fill('#reset-password-2', 'NewPass125');
         await page.click('#reset-submit-btn');
         await expect(page.locator('#reset-modal-message')).toContainText('invalid or has expired');
+    });
+
+    test('an unfinished game continues from the list after the server unloaded it', async ({ page, request }) => {
+        const user = await signIn(page, request, 'alice', 'AlicePass123');
+        await page.goto('/');
+        await expect(page.locator('#auth-label')).toHaveText('alice');
+        await startGame(page);
+        await move(page, 'e2', 'e4');
+        await expectPlies(page, 2);
+        const gameId = await page.evaluate(() => live.gameId);
+        // Unloading does to one game what a restart does to all: the rows stay.
+        const unloaded = await request.delete(`${API}/api/games/${gameId}`, {
+            headers: { Authorization: `Bearer ${user.token}` },
+        });
+        expect(unloaded.status()).toBe(204);
+        await page.reload();
+        await expect(page.locator('#turn-text')).toHaveText('No game');
+
+        await page.click('#games-btn');
+        const item = page.locator(`#games-list .game-item:has([data-game-id="${gameId}"])`);
+        await expect(item.locator('.game-row')).toContainText('Ongoing');
+        await item.locator('.game-continue').click();
+        await expect(page.locator('#games-overlay')).not.toHaveClass(/show/);
+        await expect(page.locator('#live-moves .move')).toHaveCount(2);
+        await expect(page.locator('#live-moves .move').first()).toHaveText('e4');
+        await expect(page.locator('#turn-text')).toHaveText('Your move');
+        await move(page, 'g1', 'f3');
+        await expectPlies(page, 4);
+        const history = await (await request.get(`${API}/api/games/${gameId}/history`)).json();
+        expect(history.moves).toHaveLength(4);
+        // The game on the board offers no Continue of itself.
+        await page.click('#games-btn');
+        await expect(item.locator('.game-row')).toHaveClass(/current/);
+        await expect(item.locator('.game-continue')).toHaveCount(0);
     });
 
     test('an anonymous visitor replays from the device list', async ({ page }) => {

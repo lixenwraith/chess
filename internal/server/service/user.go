@@ -231,12 +231,15 @@ func (s *Service) DeleteAccount(ctx context.Context, userID, sessionID, password
 	if err := s.store.DeleteAccount(ctx, userID); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("%w: delete account: %v", ErrStorageUnavailable, err)
 	}
+	// Again for a game a load brought back between the two.
+	released += s.releaseClaims(userID)
 	slog.Info("account deleted by its owner", "user_id", userID, "live_games_released", released)
 	return nil
 }
 
 // releaseClaims makes userID's slots anonymous in every game in memory and
-// returns how many games changed.
+// returns how many games changed. A load in flight may hold the claim still:
+// it reads its rows again.
 func (s *Service) releaseClaims(userID string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -245,6 +248,9 @@ func (s *Service) releaseClaims(userID string) int {
 		if g.ReleaseUser(userID) {
 			released++
 		}
+	}
+	for _, load := range s.loading {
+		load.stale = true
 	}
 	return released
 }

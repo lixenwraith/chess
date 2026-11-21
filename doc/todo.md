@@ -16,12 +16,11 @@ batch under Done says what it delivered.
   - R7.1 P1: verify production data against the rules core (operations)
   - R8.1 P1: deliver mail through the mail jail (operations)
 - Phase 2, next, in this order:
-  - R6.2 P2: resume unfinished games after a restart
   - R7.2 P2: validate human moves with the core, after R7.1
   - R8.2 P2: email verification, after R8.1
-  - R6.3 P2: recover from degraded storage, after R6.2
+  - R6.3 P2: recover from degraded storage
 - Phase 3, later, each after its decision:
-  - R9.3 P3: human against human in the web client (D8), after R6.2
+  - R9.3 P3: human against human in the web client (D8)
   - R10.1 P3: metrics
   - R9.2 P3: analysis on a replay
   - R8.4 P3: recovery timing through the sender
@@ -50,8 +49,10 @@ batch under Done says what it delivered.
   worker and refuses more with 503, the game left `ongoing` for a retry;
   unfinished claimed games leave memory after a week idle (`-idle-game-ttl`);
   a request's 35-second deadline and the server's lifetime reach its storage
-  calls, while queued writes keep the writer's own (the processor needs none:
-  its writes are queued). A disconnect stays unnoticed: that needs net/http.
+  calls, while queued writes keep the writer's own. A disconnect stays
+  unnoticed: that needs net/http. An unfinished game played here loads from
+  its rows on its next request, so a restart or the idle unload loses no
+  game; the web client's lists offer Continue.
 - R9, in part: Ctrl-C stops a running `auto`, `poll` or `computer` in the
   terminal client, natively and in the browser, and the session stays.
 
@@ -216,49 +217,16 @@ history and PGN are public by ID (D2). The archive adds a public listing:
 ## R6 Live Games: Memory, Restarts and Outages
 
 A live game is held in memory (`Service.games`) and mirrored to the database
-through the ordered writer; memory is the authority while it is loaded.
-After a restart, or a week idle, an unfinished game is replay-only, and once
-storage degrades nothing is written until a restart. R6.2 and R6.3 share one
-mapping, between a loaded `game.Game` and its rows.
-
-### R6.2 Resume unfinished games after a restart
-
-- Priority: P2: every deploy turns unfinished games replay-only, and games
-  between people (R9.3) outlast a deploy cycle
-- Affected files: `internal/server/service/game.go`,
-  `internal/server/service/service.go`, `internal/server/game/game.go`,
-  `internal/server/storage/game.go`, `internal/server/processor/processor.go`,
-  `internal/server/webserver/chess-client-web/app.js`, `doc/api.md`,
-  `doc/architecture.md`, `doc/development.md`
-- Guide: [Durable Replay Read](architecture.md#durable-replay-read),
-  [Get Game](api.md#get-game), [Retention](architecture.md#retention)
-
-A lookup that misses `Service.games` answers `GAME_NOT_FOUND`, and after a
-restart every lookup misses. The rows hold what a game needs to resume: the
-initial FEN, each move with the FEN after it, the players with type, level,
-search time, claim and name, the result, termination and concession.
-
-- Load on a miss rather than at startup: read the row and moves behind the
-  write barrier, as `GetGameHistory` does, outside `s.mu`; rebuild a
-  `game.Game` and insert it under `s.mu`. Concurrent misses on one game load
-  it once.
-- What is not stored starts fresh: a standing draw offer and the per-side
-  offer ply lapse, `LastResult` (score, depth) is empty, last activity is the
-  last move's time. `pending` and `stuck` are not stored: a game whose
-  computer was thinking resumes `ongoing` with the computer to move.
-- Imported and archive games stay replay-only: they have no claims, so loaded
-  live they could be moved by anyone holding the ID.
-- No load while storage is degraded: the rows may lag memory (R6.3).
-- A loaded game joins the set the purge and the integrity sweep already
-  exclude; the idle unload (`-idle-game-ttl`) becomes lossless.
-- Clients: the CLI's `join` works on a stored game unchanged; the web
-  client's My games and device list offer Continue on an unfinished game
-  where today they only replay it.
+through the ordered writer; memory is the authority while it is loaded. An
+unfinished game that left memory loads again from its rows
+(`Service.LoadGame`), but once storage degrades nothing is written until a
+restart. R6.3 reuses the load's mapping, between a `game.View` and its rows
+(`storedView`), in the other direction.
 
 ### R6.3 Recover from degraded storage without a restart
 
-- Priority: P2, after R6.2, whose mapping it reuses: an outage longer than
-  the retry window stops durable history until someone restarts the server
+- Priority: P2: an outage longer than the retry window stops durable
+  history until someone restarts the server
 - Affected files: `internal/server/storage/storage.go`,
   `internal/server/storage/game.go`,
   `internal/server/storage/storage_test.go`,
@@ -280,13 +248,13 @@ Two ways out; pick one:
 - Resync from memory: while degraded, record which loaded games changed; a
   probe on an interval finds the database back; each changed game is written
   whole in one transaction (upsert the row, delete moves past memory's last
-  ply, insert the missing ones), the inverse of R6.2's load; then the latch
+  ply, insert the missing ones), the inverse of the load; then the latch
   clears. A game unloaded while degraded keeps only what was durable, as
   today.
 - Fail closed: while degraded, refuse moves, undo, resignation, draws and new
   games with `STORAGE_UNAVAILABLE`, so memory cannot run ahead; the probe
   clears the latch, and only the game whose write failed is reloaded from its
-  rows (R6.2) or unloaded.
+  rows or unloaded.
 
 Either way, a COMMIT error has an unknown outcome, so its game is re-read
 rather than assumed, and `/health` reports both transitions. The storage
@@ -480,8 +448,7 @@ evaluates a position. Three ways, cheapest first:
 
 ### R9.3 Human against human in the web client
 
-- Priority: P3, a decision first (D8); after R6.2, or a deploy ends every
-  game between people
+- Priority: P3, a decision first (D8)
 - Affected files: `internal/server/processor/processor.go`,
   `internal/server/service/game.go`, `internal/server/http/handler.go`,
   `internal/server/core/api.go`,

@@ -1,6 +1,7 @@
 package processor
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -51,7 +52,14 @@ func New(svc *service.Service) (*Processor, error) {
 	}, nil
 }
 
-func (p *Processor) Execute(cmd Command) ProcessorResponse {
+func (p *Processor) Execute(ctx context.Context, cmd Command) ProcessorResponse {
+	// A stored game resumes on the first command that names it; unloading
+	// one needs no load.
+	if cmd.GameID != "" && cmd.Type != CmdDeleteGame {
+		if err := p.svc.LoadGame(ctx, cmd.GameID); errors.Is(err, service.ErrStorageUnavailable) {
+			return p.errorResponse("stored game unavailable", core.ErrStorageUnavailable)
+		}
+	}
 	switch cmd.Type {
 	case CmdCreateGame:
 		return p.handleCreateGame(cmd)

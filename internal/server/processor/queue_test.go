@@ -59,7 +59,7 @@ func TestFullEngineQueueRefusesComputerMoveAndLeavesGameOngoing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp := p.Execute(NewMakeMoveCommand(gameID, core.MoveRequest{Move: "cccc"}))
+	resp := p.Execute(t.Context(), NewMakeMoveCommand(gameID, core.MoveRequest{Move: "cccc"}))
 	if resp.Success || resp.Error.Code != core.ErrResourceLimit {
 		t.Fatalf("full queue answered %+v, want RESOURCE_LIMIT", resp.Error)
 	}

@@ -247,7 +247,15 @@ rights whose king or rook has left its original square are dropped.
 ### Get Game
 `GET /games/{gameId}`
 
-Returns current game state.
+Returns current game state. An unfinished game that is stored but not in
+memory, after a restart or a week idle, is loaded from its rows by the first
+request that names it (this one, a move, undo, resign, draw, board or player
+change) and plays on. What the rows do not hold starts fresh: a standing
+draw offer and the one-offer-per-move allowance lapse, `lastMove` is empty,
+and a game whose computer was thinking is `ongoing` with the computer to
+move. Finished and imported games are not loaded: they answer 404 here and
+stay available through the history. A miss while storage cannot be read
+answers 503 `STORAGE_UNAVAILABLE`.
 
 **Long-polling support:**
 Add query parameters for real-time updates:
@@ -633,7 +641,8 @@ Returns ASCII board visualization.
 `DELETE /games/{gameId}`
 
 Unloads the live game from memory. Its persisted game and move history remain
-available through the history endpoint. Returns 204 on success, 403 to a
+available through the history endpoint, and an unfinished one resumes on its
+next request. Returns 204 on success, 404 when it is not in memory, 403 to a
 caller holding none of the game's claims.
 
 ## Error Format
@@ -646,14 +655,14 @@ caller holding none of the game's claims.
 ```
 
 Error codes:
-- `GAME_NOT_FOUND` - No live game with that ID
+- `GAME_NOT_FOUND` - No live game with that ID, and no unfinished stored one to resume
 - `NOT_FOUND` - No such endpoint (for example a server older than the client)
 - `UNAUTHORIZED` - A side or the game is claimed by another user
 - `INVALID_MOVE` - Illegal chess move
 - `NOT_HUMAN_TURN` - Wrong player type for turn
 - `GAME_OVER` - Game already ended
 - `GAME_CONFLICT` - Game changed while a move was being validated; refresh and retry
-- `STORAGE_UNAVAILABLE` - Durable history/list storage is disabled or degraded
+- `STORAGE_UNAVAILABLE` - Durable history/list storage is disabled or degraded, or a stored game could not be read to resume it
 - `RATE_LIMIT_EXCEEDED` - Request limit exceeded
 - `INVALID_REQUEST` - Malformed request
 - `INVALID_CONTENT_TYPE` - Missing/wrong Content-Type header

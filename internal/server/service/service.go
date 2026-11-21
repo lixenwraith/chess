@@ -26,12 +26,13 @@ const (
 	// after its last activity, in memory and in the database.
 	AnonymousGameTTL = 24 * time.Hour
 	// IdleGameTTL is how long an unfinished game a registered user claimed
-	// stays in memory after its last activity; its rows stay for replay.
+	// stays in memory after its last activity; its next request loads it again.
 	IdleGameTTL = 7 * 24 * time.Hour
 )
 
 type Service struct {
 	games        map[string]*game.Game
+	loading      map[string]*gameLoad // stored games being read back into games
 	mu           sync.RWMutex
 	store        *storage.Store
 	jwt          *auth.JWT
@@ -64,6 +65,7 @@ func New(store *storage.Store, jwtSecret []byte) (*Service, error) {
 	}
 	s := &Service{
 		games:        make(map[string]*game.Game),
+		loading:      make(map[string]*gameLoad),
 		store:        store,
 		jwt:          manager,
 		kdf:          make(chan struct{}, MaxConcurrentKDF),
@@ -99,8 +101,8 @@ func (s *Service) SetAnonymousGameTTL(ttl time.Duration) {
 }
 
 // SetIdleGameTTL configures how long an unfinished game a registered user
-// claimed stays in memory after its last activity; its rows stay. A
-// non-positive duration keeps such games loaded.
+// claimed stays in memory after its last activity; its rows stay, and resume
+// it. A non-positive duration keeps such games loaded.
 func (s *Service) SetIdleGameTTL(ttl time.Duration) {
 	s.mu.Lock()
 	s.idleTTL = ttl
@@ -208,9 +210,9 @@ func (s *Service) cleanupExpired(ctx context.Context) {
 
 // cleanupGames unloads terminal games past the finished TTL and idle games
 // past the anonymous TTL (unclaimed) or the idle TTL (claimed, unfinished),
-// then queues deletion of the idle anonymous ones. The loaded set is taken
-// under the eviction's lock and excluded from deletion, so no live game can
-// lose its row while writes for it are still possible.
+// then queues deletion of the idle anonymous ones. Games loaded or being
+// loaded are excluded under the eviction's lock, so no live game loses its
+// row while writes for it are still possible.
 func (s *Service) cleanupGames(now time.Time) {
 	s.mu.Lock()
 	finishedTTL, anonymousTTL, idleTTL := s.finishedTTL, s.anonymousTTL, s.idleTTL
@@ -236,6 +238,15 @@ func (s *Service) cleanupGames(now time.Time) {
 		}
 		delete(s.games, gameID)
 	}
+	for gameID := range s.loading {
+		live = append(live, gameID)
+	}
+	// Queued under the lock: a load that starts later reads behind the purge.
+	if s.store != nil && anonymousTTL > 0 {
+		if err := s.store.DeleteAnonymousGames(anonymousCutoff, live); err != nil {
+			slog.Error("cleanup failed to queue anonymous game deletion", "error", err)
+		}
+	}
 	s.mu.Unlock()
 
 	for _, gameID := range slices.Concat(finished, anonymous, claimed) {
@@ -250,12 +261,7 @@ func (s *Service) cleanupGames(now time.Time) {
 			"count", len(anonymous), "retention", anonymousTTL)
 	}
 	if len(claimed) > 0 {
-		slog.Info("cleanup evicted idle claimed games from memory; their rows stay",
+		slog.Info("cleanup evicted idle claimed games from memory; they resume from their rows",
 			"count", len(claimed), "retention", idleTTL)
-	}
-	if s.store != nil && anonymousTTL > 0 {
-		if err := s.store.DeleteAnonymousGames(anonymousCutoff, live); err != nil {
-			slog.Error("cleanup failed to queue anonymous game deletion", "error", err)
-		}
 	}
 }

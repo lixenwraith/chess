@@ -233,6 +233,10 @@ func (s *Service) RemoveGame(ctx context.Context, gameID, userID string) (storag
 		return "", fmt.Errorf("%w: remove game: %v", ErrStorageUnavailable, err)
 	}
 	s.mu.Lock()
+	// A load that read the rows before this removal reads them again.
+	if load := s.loading[gameID]; load != nil {
+		load.stale = true
+	}
 	if g, ok := s.games[gameID]; ok {
 		switch outcome {
 		case storage.RemovedGame:

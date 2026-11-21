@@ -24,6 +24,7 @@ Go backend server providing a RESTful API for chess gameplay with user authentic
 - Configurable engine strength and thinking time
 - PostgreSQL 18 persistence with ordered async writes for games
 - Durable game results, player claims and names, ordered move history, and replay API
+- Unfinished games resume from storage after a restart or a week idle
 - Dependency-free rules core: SAN history, PGN export, FEN validation, and a
   shadow check of every engine-validated move
 - Games without a registered player are purged 24 hours after their last activity
@@ -175,7 +176,8 @@ The chess server includes an embedded web UI for playing games through a browser
 - Configurable engine strength (0-20) and custom starting positions
 - Move list in standard algebraic notation; copy the FEN or the PGN
 - **My games**: a signed-in user's stored games with thumbnails, filters and
-  paging; games played anonymously on the device are listed for 24 hours
+  paging; games played anonymously on the device are listed for 24 hours;
+  **Continue** puts an unfinished one back on the board
 - **Replay** of any stored game: step, autoplay, flip, keyboard navigation,
   export FEN and PGN at any ply, and shareable links
   (`?replay=<gameId>&ply=<n>`)

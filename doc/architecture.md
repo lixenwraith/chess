@@ -10,7 +10,7 @@ call. At shutdown long-polls end first, then running requests get five seconds
 to finish.
 
 ### Processing Layer (`internal/server/processor`)
-Central command handler containing business logic. Single `Execute(Command)` entry point decouples transport from logic. Uses synchronous UCI engine for validation, asynchronous EngineQueue for computer moves. Commands include optional user context for authenticated operations.
+Central command handler containing business logic. Single `Execute(ctx, Command)` entry point decouples transport from logic; a command that names a stored game loads it first. Uses synchronous UCI engine for validation, asynchronous EngineQueue for computer moves. Commands include optional user context for authenticated operations.
 
 ### Service Layer (`internal/server/service`)
 In-memory live-game storage with authentication support. A mutex protects each
@@ -20,7 +20,8 @@ configuration, user accounts, JWT tokens, persistence, and cleanup. Finished
 games leave memory after an hour and unfinished ones a registered player
 claimed after a week idle, while their durable rows remain; games with no
 registered player leave memory and the database 24 hours after their last
-activity (see Retention below).
+activity (see Retention below). An unfinished game that is not in memory is
+loaded from its rows by its next request (see Resume below).
 
 #### Long-Polling Registry (`internal/server/service/waiter.go`)
 Manages clients waiting for game state changes via HTTP long-polling. Tracks move counts per client, sends notifications on state changes, enforces 30-second timeout. Non-blocking notification pattern handles slow clients gracefully. Coordinates with service layer for game updates and deletion events.
@@ -155,6 +156,18 @@ start the server.
    wait
 7. A client that disconnects is not noticed (fasthttp reports no disconnect
    to a running handler): its wait ends by one of the above
+
+### Resume
+1. A game command, or a long-poll, names a game that is not in memory
+2. The service registers the load, so concurrent misses share it and the
+   purge and the integrity sweep treat the game as loaded
+3. It reads the row and moves behind the write barrier, outside its lock
+4. Only an unfinished game that was played here and passes verification is
+   rebuilt; a finished or imported one stays replay-only
+5. The game is inserted under the lock; a removal or a released claim that
+   crossed the read makes the load read again
+6. The command runs on the loaded game; a miss while storage is degraded or
+   slow answers 503
 
 ### Durable Replay Read
 1. Client requests `GET /api/games/{id}/history`
@@ -332,12 +345,13 @@ outlives deleted accounts, and the name snapshot keeps it readable.
 - Sessions are deleted after expiry (7 days after the last login).
 - Finished games leave memory after `-finished-game-ttl` (1 hour); their rows stay.
 - Unfinished games a registered player claimed leave memory after a week
-  without activity (`-idle-game-ttl`); their rows stay, for replay.
+  without activity (`-idle-game-ttl`); their rows stay, and the next request
+  for one loads it again.
 - Games with no claimed slot are unloaded from memory and deleted from the
   database 24 hours after their last activity (`-anonymous-game-ttl`). The
   hourly cleanup evicts idle games first, then queues the delete through the
-  ordered writer while excluding every game still loaded, so no live game can
-  lose its row.
+  ordered writer while excluding every game still loaded or being loaded, so
+  no live game can lose its row.
 - A write whose game row was deleted by hand fails only that game: the
   writer drops it and the service unloads the game, instead of degrading
   storage for everyone.

@@ -1,8 +1,6 @@
-/* Chess web client: a board for live play against Stockfish, a list of the
-   signed-in user's stored games, and a replay viewer for any stored game.
-   Plain JavaScript, one file, no framework: the host's CSP allows only
+/* Chess web client: a board for live play, the stored-game lists and a replay
+   viewer. Plain JavaScript, one file, no framework: the host's CSP allows only
    same-origin scripts, no inline code and no eval.
-
    Sections: state · utilities · API · auth · board · live game · recent games
    on this device · My games drawer · replay · routing · keyboard · init. */
 'use strict';
@@ -1182,25 +1180,76 @@ async function startNewGame() {
         return;
     }
 
+    adoptGame(game, {
+        isPlayerWhite: willBePlayerWhite, initialFen: game.fen, level: computerLevel, anonymous: !auth.token,
+    });
+
+    setModalMessage('new-game-modal-message', `Game started — you play ${willBePlayerWhite ? 'White' : 'Black'}`, 'success');
+    setTimeout(hideNewGameModal, MODAL_SUCCESS_DISPLAY_MS);
+}
+
+// Makes a game the live one on the board, new or resumed, and sets the
+// computer going when it is to move or already thinking.
+function adoptGame(game, { isPlayerWhite, initialFen, level, anonymous }) {
     stopPolling();
-    live.isPlayerWhite = willBePlayerWhite;
+    live.isPlayerWhite = isPlayerWhite;
     live.gameId = game.gameId;
-    live.initialFen = game.fen;
-    live.level = computerLevel;
+    live.initialFen = initialFen;
+    live.level = level;
     live.moves = [];
     live.san = [];
     live.isLocked = false;
     live.selectedSquare = null;
-    live.anonymous = !auth.token;
+    live.anonymous = anonymous;
     buildBoard(!live.isPlayerWhite);
     updateGameDisplay(game);
-    const computerTurn = live.isPlayerWhite ? 'b' : 'w';
-    if (isPlayable(game.state) && game.turn === computerTurn) {
+    if (game.state === 'pending') {
+        lockBoard();
+        startPolling();
+    } else if (isPlayable(game.state) && game.turn !== playerColor()) {
         triggerComputerMove();
     }
+}
 
-    setModalMessage('new-game-modal-message', `Game started — you play ${willBePlayerWhite ? 'White' : 'Black'}`, 'success');
-    setTimeout(hideNewGameModal, MODAL_SUCCESS_DISPLAY_MS);
+// The side the visitor would continue an unfinished game as: the human side,
+// theirs, of a game against the computer. Null when there is nothing to
+// continue.
+function continueSide(summary) {
+    if (summary.result || summary.origin === 'imported' || summary.gameId === live.gameId) return null;
+    const white = summary.players?.white, black = summary.players?.black;
+    const mine = p => p?.type === 1 && (summary.local || (!!auth.userId && p.claimedBy === auth.userId));
+    if (mine(white) && black?.type === 2) return 'w';
+    if (mine(black) && white?.type === 2) return 'b';
+    return null;
+}
+
+// Puts an unfinished stored game back on the board. The server loads it from
+// its rows when a restart or a week idle took it out of memory.
+async function continueGame(summary, side) {
+    if (games.open) closeGames({ push: false });
+    if (replay.active) exitReplay({ push: false });
+    replaceURL();
+    let response;
+    try {
+        response = await apiJSON('GET', `/api/games/${summary.gameId}`);
+    } catch (error) {
+        handleApiError('continue game', error);
+        return;
+    }
+    if (!response.ok) {
+        const info = handleApiError('continue game', null, response);
+        if (response.status === 404) flashErrorMessage('This game can no longer be continued', 3000);
+        else if (response.status === 503) flashErrorMessage('Stored games unavailable; try again shortly', 3000);
+        else flashErrorMessage(info.statusMessage);
+        return;
+    }
+    const game = await response.json();
+    const opponent = side === 'w' ? game.players?.black : game.players?.white;
+    adoptGame(game, {
+        isPlayerWhite: side === 'w', initialFen: summary.initialFen, level: opponent?.level ?? 0,
+        anonymous: !!summary.local,
+    });
+    if (!isGameOver(game.state)) toast('Game resumed', 'success');
 }
 
 function handleSquareClick(e) {
@@ -1873,8 +1922,9 @@ function renderLocalGames() {
     for (const entry of entries) list.appendChild(renderGameRow(recentToSummary(entry)));
 }
 
-// One game in the list: thumbnail, players, outcome, date, and a replay
-// affordance. The whole row is a button.
+// One game in the list: thumbnail, players, outcome, date. The row is a
+// button that replays it; an unfinished game of the visitor's also offers
+// Continue, and every row a delete control.
 function renderGameRow(summary) {
     const li = document.createElement('li');
     li.className = 'game-item';
@@ -1930,6 +1980,18 @@ function renderGameRow(summary) {
     row.setAttribute('aria-label', `Replay ${players.textContent}, ${outcome.textContent}, ${when.textContent}`);
     row.addEventListener('click', () => enterReplay(summary.gameId, summary.moveCount || 0));
     li.appendChild(row);
+
+    const side = continueSide(summary);
+    if (side) {
+        const resume = document.createElement('button');
+        resume.type = 'button';
+        resume.className = 'btn btn-primary game-continue';
+        resume.textContent = 'Continue';
+        resume.title = 'Continue this game on the board';
+        resume.setAttribute('aria-label', `Continue ${players.textContent}`);
+        resume.addEventListener('click', () => continueGame(summary, side));
+        li.appendChild(resume);
+    }
 
     // Delete, with an in-row confirmation.
     const del = document.createElement('button');

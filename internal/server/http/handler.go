@@ -334,7 +334,7 @@ func (h *HTTPHandler) CreateGame(c *fiber.Ctx) error {
 	cmd := processor.NewCreateGameCommand(req)
 	cmd.UserID = userID
 
-	resp := h.proc.Execute(cmd)
+	resp := h.proc.Execute(c.UserContext(), cmd)
 
 	if !resp.Success {
 		return c.Status(fiber.StatusBadRequest).JSON(resp.Error)
@@ -374,7 +374,7 @@ func (h *HTTPHandler) ConfigurePlayers(c *fiber.Ctx) error {
 
 	cmd := processor.NewConfigurePlayersCommand(gameID, req)
 	cmd.UserID, _ = c.Locals("userID").(string)
-	resp := h.proc.Execute(cmd)
+	resp := h.proc.Execute(c.UserContext(), cmd)
 
 	if !resp.Success {
 		return c.Status(statusForCode(resp.Error.Code)).JSON(resp.Error)
@@ -385,34 +385,30 @@ func (h *HTTPHandler) ConfigurePlayers(c *fiber.Ctx) error {
 
 func (h *HTTPHandler) GetGame(c *fiber.Ctx) error {
 	gameID := c.Params("gameId")
-
 	if !isValidUUID(gameID) {
-		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
-			Error:   "invalid game ID format",
-			Code:    core.ErrInvalidRequest,
-			Details: "game ID must be a valid UUID",
-		})
+		return invalidGameID(c)
 	}
-
-	waitStr := c.Query("wait", "false")
-	moveCountStr := c.Query("moveCount", "-1")
-
-	if waitStr != "true" {
-		cmd := processor.NewGetGameCommand(gameID)
-		resp := h.proc.Execute(cmd)
-
+	ctx := c.UserContext()
+	current := func() error {
+		resp := h.proc.Execute(ctx, processor.NewGetGameCommand(gameID))
 		if !resp.Success {
-			return c.Status(fiber.StatusNotFound).JSON(resp.Error)
+			return c.Status(statusForCode(resp.Error.Code)).JSON(resp.Error)
 		}
-
 		return c.JSON(resp.Data)
 	}
+	if c.Query("wait", "false") != "true" {
+		return current()
+	}
 
-	moveCount, err := strconv.Atoi(moveCountStr)
+	moveCount, err := strconv.Atoi(c.Query("moveCount", "-1"))
 	if err != nil {
 		moveCount = -1
 	}
-
+	if err := h.svc.LoadGame(ctx, gameID); errors.Is(err, service.ErrStorageUnavailable) {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+			Error: "stored game unavailable", Code: core.ErrStorageUnavailable,
+		})
+	}
 	g, err := h.svc.GetGameView(gameID)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(core.ErrorResponse{
@@ -420,38 +416,20 @@ func (h *HTTPHandler) GetGame(c *fiber.Ctx) error {
 			Code:  core.ErrGameNotFound,
 		})
 	}
-
-	currentMoveCount := len(g.Moves)
-	st := g.State
-	settled := st != core.StateOngoing && st != core.StatePending
-	if moveCount != currentMoveCount || settled {
-		cmd := processor.NewGetGameCommand(gameID)
-		resp := h.proc.Execute(cmd)
-		if !resp.Success {
-			return c.Status(fiber.StatusNotFound).JSON(resp.Error)
-		}
-		return c.JSON(resp.Data)
+	settled := g.State != core.StateOngoing && g.State != core.StatePending
+	if moveCount != len(g.Moves) || settled {
+		return current()
 	}
-
-	ctx := c.UserContext()
-	notify := h.svc.RegisterWait(gameID, moveCount, ctx)
 
 	// notify closes on a change, after 30 s, or when shutdown ends the waits.
 	select {
-	case <-notify:
-		cmd := processor.NewGetGameCommand(gameID)
-		resp := h.proc.Execute(cmd)
-
-		// Game might have been deleted
-		if !resp.Success {
-			return c.Status(fiber.StatusNotFound).JSON(resp.Error)
-		}
-
-		return c.JSON(resp.Data)
-
+	case <-h.svc.RegisterWait(gameID, moveCount, ctx):
 	case <-ctx.Done():
+	}
+	if ctx.Err() != nil {
 		return nil
 	}
+	return current()
 }
 
 func (h *HTTPHandler) MakeMove(c *fiber.Ctx) error {
@@ -488,21 +466,10 @@ func (h *HTTPHandler) MakeMove(c *fiber.Ctx) error {
 	cmd := processor.NewMakeMoveCommand(gameID, req)
 	cmd.UserID = userID
 
-	resp := h.proc.Execute(cmd)
+	resp := h.proc.Execute(c.UserContext(), cmd)
 
 	if !resp.Success {
-		statusCode := fiber.StatusBadRequest
-		switch resp.Error.Code {
-		case core.ErrGameNotFound:
-			statusCode = fiber.StatusNotFound
-		case core.ErrUnauthorized:
-			statusCode = fiber.StatusForbidden
-		case core.ErrConflict:
-			statusCode = fiber.StatusConflict
-		case core.ErrResourceLimit:
-			statusCode = fiber.StatusServiceUnavailable
-		}
-		return c.Status(statusCode).JSON(resp.Error)
+		return c.Status(statusForCode(resp.Error.Code)).JSON(resp.Error)
 	}
 
 	return c.JSON(resp.Data)
@@ -539,7 +506,7 @@ func (h *HTTPHandler) UndoMove(c *fiber.Ctx) error {
 
 	cmd := processor.NewUndoMoveCommand(gameID, req)
 	cmd.UserID, _ = c.Locals("userID").(string)
-	resp := h.proc.Execute(cmd)
+	resp := h.proc.Execute(c.UserContext(), cmd)
 
 	if !resp.Success {
 		return c.Status(statusForCode(resp.Error.Code)).JSON(resp.Error)
@@ -577,7 +544,7 @@ func (h *HTTPHandler) executeWithBody(c *fiber.Ctx, build func(gameID string, bo
 	cmd := build(gameID, body)
 	cmd.UserID, _ = c.Locals("userID").(string)
 
-	resp := h.proc.Execute(cmd)
+	resp := h.proc.Execute(c.UserContext(), cmd)
 	if !resp.Success {
 		return c.Status(statusForCode(resp.Error.Code)).JSON(resp.Error)
 	}
@@ -592,6 +559,8 @@ func statusForCode(code string) int {
 		return fiber.StatusForbidden
 	case core.ErrConflict:
 		return fiber.StatusConflict
+	case core.ErrResourceLimit, core.ErrStorageUnavailable:
+		return fiber.StatusServiceUnavailable
 	case core.ErrInternalError:
 		return fiber.StatusInternalServerError
 	}
@@ -612,7 +581,7 @@ func (h *HTTPHandler) DeleteGame(c *fiber.Ctx) error {
 
 	cmd := processor.NewDeleteGameCommand(gameID)
 	cmd.UserID, _ = c.Locals("userID").(string)
-	resp := h.proc.Execute(cmd)
+	resp := h.proc.Execute(c.UserContext(), cmd)
 
 	if !resp.Success {
 		return c.Status(statusForCode(resp.Error.Code)).JSON(resp.Error)
@@ -633,10 +602,10 @@ func (h *HTTPHandler) GetBoard(c *fiber.Ctx) error {
 	}
 
 	cmd := processor.NewGetBoardCommand(gameID)
-	resp := h.proc.Execute(cmd)
+	resp := h.proc.Execute(c.UserContext(), cmd)
 
 	if !resp.Success {
-		return c.Status(fiber.StatusNotFound).JSON(resp.Error)
+		return c.Status(statusForCode(resp.Error.Code)).JSON(resp.Error)
 	}
 
 	return c.JSON(resp.Data)

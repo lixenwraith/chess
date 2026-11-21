@@ -99,7 +99,7 @@ func (s *Service) CreateGame(
 	}
 
 	now := time.Now().UTC()
-	g := game.New(initialFEN, whitePlayer, blackPlayer, startingTurn)
+	g := game.New(initialFEN, whitePlayer, blackPlayer, startingTurn, now)
 	g.SetOutcome(initialState, termination, now)
 	s.games[id] = g
 
@@ -279,7 +279,7 @@ func (s *Service) ApplyMoveWithState(gameID string, commit MoveCommit) error {
 	if commit.State.IsTerminal() && !commit.Termination.ValidFor(commit.State) {
 		return fmt.Errorf("termination %q cannot produce %s", commit.Termination, commit.State)
 	}
-	g.AddSnapshot(commit.NewFEN, commit.MoveUCI, core.OppositeColor(currentTurn))
+	g.AddSnapshot(commit.NewFEN, commit.MoveUCI, core.OppositeColor(currentTurn), at)
 	g.SetOutcome(commit.State, commit.Termination, at)
 	if commit.Result != nil {
 		g.SetLastResult(commit.Result)

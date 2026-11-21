@@ -1061,6 +1061,8 @@ input[type="range"]:focus-visible { outline: 2px solid var(--periwinkle); outlin
 
 .game-delete:hover:not(:disabled) { color: var(--red); border-color: var(--red); transform: none; }
 
+.game-continue { flex: none; align-self: center; padding: 0.35rem 0.55rem; font-size: 0.8rem; }
+
 .game-confirm {
     flex: none;
     display: flex;
