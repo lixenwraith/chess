@@ -53,7 +53,8 @@ type PGN struct {
 // BuildPGN exports a stored game. ply < 0 exports every move; otherwise the
 // first ply moves, with result "*" and no termination when that stops short
 // of the end of the line. site is the Site tag of a game played on this
-// server (PGN's "?" when empty); an imported game keeps its own.
+// server (PGN's "?" when empty); a game read from PGN keeps its own, and an
+// archive game adds its ratings, opening code and its collection's rights.
 func BuildPGN(record *storage.GameRecord, moves []storage.MoveRecord, ply int, site string) (*PGN, error) {
 	if ply > len(moves) {
 		return nil, fmt.Errorf("%w: game has %d plies", ErrPlyOutOfRange, len(moves))
@@ -77,7 +78,7 @@ func BuildPGN(record *storage.GameRecord, moves []storage.MoveRecord, ply int, s
 	}
 	start := record.StartTimeUTC.UTC()
 	event, round := "Casual game", ""
-	if record.ImportedBy != "" {
+	if record.FromPGN() {
 		event, site, round = record.Event, record.Site, record.Round
 		if event == "" {
 			event = "Imported game"
@@ -96,6 +97,17 @@ func BuildPGN(record *storage.GameRecord, moves []storage.MoveRecord, ply int, s
 		{Name: "WhiteType", Value: playerType(record.WhiteType)},
 		{Name: "BlackType", Value: playerType(record.BlackType)},
 		{Name: "PlyCount", Value: strconv.Itoa(len(san))},
+	}
+	if a := record.Archive; a != nil {
+		for _, tag := range []chess.Tag{
+			{Name: "WhiteElo", Value: eloTag(a.WhiteElo)}, {Name: "BlackElo", Value: eloTag(a.BlackElo)},
+			{Name: "ECO", Value: a.ECO}, {Name: "Source", Value: a.Collection.SourceURL},
+			{Name: "Licence", Value: a.Collection.Licence}, {Name: "Attribution", Value: a.Collection.Attribution},
+		} {
+			if tag.Value != "" {
+				tags = append(tags, tag)
+			}
+		}
 	}
 	if complete {
 		// PGN's Termination values describe how play stopped; mate, draws,
@@ -182,6 +194,13 @@ func playerName(playerType, level int, name string) string {
 		return name
 	}
 	return "Anonymous"
+}
+
+func eloTag(elo int) string {
+	if elo == 0 {
+		return ""
+	}
+	return strconv.Itoa(elo)
 }
 
 func playerType(t int) string {

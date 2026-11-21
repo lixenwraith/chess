@@ -23,6 +23,9 @@ import (
 )
 
 const (
+	// seatHeader carries a guest's seat secret for the game the request names.
+	seatHeader = "X-Chess-Seat"
+
 	rateLimitRate = 10 // req/sec
 	// requestTimeout outlasts the long-poll, which waits 30 s.
 	requestTimeout = 35 * time.Second
@@ -118,7 +121,7 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 	app.Use(cors.New(cors.Config{
 		AllowOrigins:  "*",
 		AllowMethods:  "GET,POST,PUT,DELETE,OPTIONS",
-		AllowHeaders:  "Origin,Content-Type,Accept,Authorization,If-None-Match",
+		AllowHeaders:  "Origin,Content-Type,Accept,Authorization,If-None-Match," + seatHeader,
 		ExposeHeaders: "ETag,Content-Disposition",
 	}))
 
@@ -233,9 +236,12 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 	api.Post("/games/:gameId/undo", OptionalAuth(validateToken), h.UndoMove)
 	api.Post("/games/:gameId/resign", OptionalAuth(validateToken), h.Resign)
 	api.Post("/games/:gameId/draw", OptionalAuth(validateToken), h.Draw)
+	api.Post("/games/:gameId/join", OptionalAuth(validateToken), h.Join)
 	api.Get("/games/:gameId/board", h.GetBoard)
 	api.Get("/users/me/games", AuthRequired(validateToken), h.GetCurrentUserGames)
 	api.Delete("/users/me/games/:gameId", AuthRequired(validateToken), h.RemoveGame)
+	api.Get("/archive", h.GetArchive)
+	api.Get("/archive/collections", h.GetCollections)
 	// Importing replays a whole game through the rules core: 5 a minute per IP.
 	api.Post("/games/import", AuthRequired(validateToken), limiter.New(limiter.Config{
 		Max:          5,
@@ -249,6 +255,19 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 			})
 		},
 	}), h.ImportGame)
+	// An analysis is a search of about a second on one engine: 30 a minute per IP.
+	api.Post("/analysis", AuthRequired(validateToken), limiter.New(limiter.Config{
+		Max:          30,
+		Expiration:   1 * time.Minute,
+		KeyGenerator: clientIP,
+		LimitReached: func(c *fiber.Ctx) error {
+			return c.Status(fiber.StatusTooManyRequests).JSON(core.ErrorResponse{
+				Error:   "rate limit exceeded",
+				Code:    core.ErrRateLimitExceeded,
+				Details: "30 analyses per minute allowed",
+			})
+		},
+	}), h.Analyse)
 
 	return app
 }
@@ -329,12 +348,10 @@ func (h *HTTPHandler) CreateGame(c *fiber.Ctx) error {
 	var req core.CreateGameRequest
 	req = *(validatedBody.(*core.CreateGameRequest))
 
-	userID, _ := c.Locals("userID").(string)
-
 	cmd := processor.NewCreateGameCommand(req)
-	cmd.UserID = userID
+	cmd.Actor = actor(c)
 
-	resp := h.proc.Execute(cmd)
+	resp := h.proc.Execute(c.UserContext(), cmd)
 
 	if !resp.Success {
 		return c.Status(fiber.StatusBadRequest).JSON(resp.Error)
@@ -373,8 +390,8 @@ func (h *HTTPHandler) ConfigurePlayers(c *fiber.Ctx) error {
 	req = *(validatedBody.(*core.ConfigurePlayersRequest))
 
 	cmd := processor.NewConfigurePlayersCommand(gameID, req)
-	cmd.UserID, _ = c.Locals("userID").(string)
-	resp := h.proc.Execute(cmd)
+	cmd.Actor = actor(c)
+	resp := h.proc.Execute(c.UserContext(), cmd)
 
 	if !resp.Success {
 		return c.Status(statusForCode(resp.Error.Code)).JSON(resp.Error)
@@ -385,34 +402,30 @@ func (h *HTTPHandler) ConfigurePlayers(c *fiber.Ctx) error {
 
 func (h *HTTPHandler) GetGame(c *fiber.Ctx) error {
 	gameID := c.Params("gameId")
-
 	if !isValidUUID(gameID) {
-		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
-			Error:   "invalid game ID format",
-			Code:    core.ErrInvalidRequest,
-			Details: "game ID must be a valid UUID",
-		})
+		return invalidGameID(c)
 	}
-
-	waitStr := c.Query("wait", "false")
-	moveCountStr := c.Query("moveCount", "-1")
-
-	if waitStr != "true" {
-		cmd := processor.NewGetGameCommand(gameID)
-		resp := h.proc.Execute(cmd)
-
+	ctx := c.UserContext()
+	current := func() error {
+		resp := h.proc.Execute(ctx, processor.NewGetGameCommand(gameID))
 		if !resp.Success {
-			return c.Status(fiber.StatusNotFound).JSON(resp.Error)
+			return c.Status(statusForCode(resp.Error.Code)).JSON(resp.Error)
 		}
-
 		return c.JSON(resp.Data)
 	}
+	if c.Query("wait", "false") != "true" {
+		return current()
+	}
 
-	moveCount, err := strconv.Atoi(moveCountStr)
+	moveCount, err := strconv.Atoi(c.Query("moveCount", "-1"))
 	if err != nil {
 		moveCount = -1
 	}
-
+	if err := h.svc.LoadGame(ctx, gameID); errors.Is(err, service.ErrStorageUnavailable) {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+			Error: "stored game unavailable", Code: core.ErrStorageUnavailable,
+		})
+	}
 	g, err := h.svc.GetGameView(gameID)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(core.ErrorResponse{
@@ -420,38 +433,20 @@ func (h *HTTPHandler) GetGame(c *fiber.Ctx) error {
 			Code:  core.ErrGameNotFound,
 		})
 	}
-
-	currentMoveCount := len(g.Moves)
-	st := g.State
-	settled := st != core.StateOngoing && st != core.StatePending
-	if moveCount != currentMoveCount || settled {
-		cmd := processor.NewGetGameCommand(gameID)
-		resp := h.proc.Execute(cmd)
-		if !resp.Success {
-			return c.Status(fiber.StatusNotFound).JSON(resp.Error)
-		}
-		return c.JSON(resp.Data)
+	settled := g.State != core.StateOngoing && g.State != core.StatePending
+	if moveCount != len(g.Moves) || settled {
+		return current()
 	}
-
-	ctx := c.UserContext()
-	notify := h.svc.RegisterWait(gameID, moveCount, ctx)
 
 	// notify closes on a change, after 30 s, or when shutdown ends the waits.
 	select {
-	case <-notify:
-		cmd := processor.NewGetGameCommand(gameID)
-		resp := h.proc.Execute(cmd)
-
-		// Game might have been deleted
-		if !resp.Success {
-			return c.Status(fiber.StatusNotFound).JSON(resp.Error)
-		}
-
-		return c.JSON(resp.Data)
-
+	case <-h.svc.RegisterWait(gameID, moveCount, ctx):
 	case <-ctx.Done():
+	}
+	if ctx.Err() != nil {
 		return nil
 	}
+	return current()
 }
 
 func (h *HTTPHandler) MakeMove(c *fiber.Ctx) error {
@@ -483,26 +478,13 @@ func (h *HTTPHandler) MakeMove(c *fiber.Ctx) error {
 	var req core.MoveRequest
 	req = *(validatedBody.(*core.MoveRequest))
 
-	userID, _ := c.Locals("userID").(string)
-
 	cmd := processor.NewMakeMoveCommand(gameID, req)
-	cmd.UserID = userID
+	cmd.Actor = actor(c)
 
-	resp := h.proc.Execute(cmd)
+	resp := h.proc.Execute(c.UserContext(), cmd)
 
 	if !resp.Success {
-		statusCode := fiber.StatusBadRequest
-		switch resp.Error.Code {
-		case core.ErrGameNotFound:
-			statusCode = fiber.StatusNotFound
-		case core.ErrUnauthorized:
-			statusCode = fiber.StatusForbidden
-		case core.ErrConflict:
-			statusCode = fiber.StatusConflict
-		case core.ErrResourceLimit:
-			statusCode = fiber.StatusServiceUnavailable
-		}
-		return c.Status(statusCode).JSON(resp.Error)
+		return c.Status(statusForCode(resp.Error.Code)).JSON(resp.Error)
 	}
 
 	return c.JSON(resp.Data)
@@ -538,8 +520,8 @@ func (h *HTTPHandler) UndoMove(c *fiber.Ctx) error {
 	req = *(validatedBody.(*core.UndoRequest))
 
 	cmd := processor.NewUndoMoveCommand(gameID, req)
-	cmd.UserID, _ = c.Locals("userID").(string)
-	resp := h.proc.Execute(cmd)
+	cmd.Actor = actor(c)
+	resp := h.proc.Execute(c.UserContext(), cmd)
 
 	if !resp.Success {
 		return c.Status(statusForCode(resp.Error.Code)).JSON(resp.Error)
@@ -561,8 +543,27 @@ func (h *HTTPHandler) Draw(c *fiber.Ctx) error {
 	})
 }
 
+// Join gives the caller an open human side of the game.
+func (h *HTTPHandler) Join(c *fiber.Ctx) error {
+	return h.executeWithBody(c, func(gameID string, body any) processor.Command {
+		return processor.NewJoinGameCommand(gameID, *body.(*core.JoinRequest))
+	})
+}
+
+// actor is who the request acts as: the signed-in user, when it carries a
+// token, and the guest whose seat secret it presents.
+func actor(c *fiber.Ctx) core.Actor {
+	var a core.Actor
+	a.UserID, _ = c.Locals("userID").(string)
+	a.Name, _ = c.Locals("username").(string)
+	if secret := c.Get(seatHeader); secret != "" {
+		a.Seat = service.SeatHash(secret)
+	}
+	return a
+}
+
 // executeWithBody runs a game command built from the validated request body,
-// with the caller's user ID for slot authorization.
+// on behalf of the request's actor.
 func (h *HTTPHandler) executeWithBody(c *fiber.Ctx, build func(gameID string, body any) processor.Command) error {
 	gameID := c.Params("gameId")
 	if !isValidUUID(gameID) {
@@ -575,9 +576,9 @@ func (h *HTTPHandler) executeWithBody(c *fiber.Ctx, build func(gameID string, bo
 		})
 	}
 	cmd := build(gameID, body)
-	cmd.UserID, _ = c.Locals("userID").(string)
+	cmd.Actor = actor(c)
 
-	resp := h.proc.Execute(cmd)
+	resp := h.proc.Execute(c.UserContext(), cmd)
 	if !resp.Success {
 		return c.Status(statusForCode(resp.Error.Code)).JSON(resp.Error)
 	}
@@ -592,6 +593,8 @@ func statusForCode(code string) int {
 		return fiber.StatusForbidden
 	case core.ErrConflict:
 		return fiber.StatusConflict
+	case core.ErrResourceLimit, core.ErrStorageUnavailable:
+		return fiber.StatusServiceUnavailable
 	case core.ErrInternalError:
 		return fiber.StatusInternalServerError
 	}
@@ -611,8 +614,8 @@ func (h *HTTPHandler) DeleteGame(c *fiber.Ctx) error {
 	}
 
 	cmd := processor.NewDeleteGameCommand(gameID)
-	cmd.UserID, _ = c.Locals("userID").(string)
-	resp := h.proc.Execute(cmd)
+	cmd.Actor = actor(c)
+	resp := h.proc.Execute(c.UserContext(), cmd)
 
 	if !resp.Success {
 		return c.Status(statusForCode(resp.Error.Code)).JSON(resp.Error)
@@ -633,10 +636,10 @@ func (h *HTTPHandler) GetBoard(c *fiber.Ctx) error {
 	}
 
 	cmd := processor.NewGetBoardCommand(gameID)
-	resp := h.proc.Execute(cmd)
+	resp := h.proc.Execute(c.UserContext(), cmd)
 
 	if !resp.Success {
-		return c.Status(fiber.StatusNotFound).JSON(resp.Error)
+		return c.Status(statusForCode(resp.Error.Code)).JSON(resp.Error)
 	}
 
 	return c.JSON(resp.Data)
@@ -775,21 +778,66 @@ func (h *HTTPHandler) GetCurrentUserGames(c *fiber.Ctx) error {
 		Status: c.Query("status"),
 	})
 	if err != nil {
-		switch {
-		case errors.Is(err, service.ErrInvalidListQuery):
-			return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
-				Error: "invalid list query", Code: core.ErrInvalidRequest, Details: err.Error(),
-			})
-		case errors.Is(err, service.ErrStorageDisabled), errors.Is(err, service.ErrStorageUnavailable):
-			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
-				Error: "stored games unavailable", Code: core.ErrStorageUnavailable,
-			})
-		}
-		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
-			Error: "failed to load stored games", Code: core.ErrInternalError,
-		})
+		return listError(c, err)
 	}
 	return c.JSON(games)
+}
+
+func listError(c *fiber.Ctx, err error) error {
+	switch {
+	case errors.Is(err, service.ErrInvalidListQuery):
+		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
+			Error: "invalid list query", Code: core.ErrInvalidRequest, Details: err.Error(),
+		})
+	case errors.Is(err, service.ErrStorageDisabled), errors.Is(err, service.ErrStorageUnavailable):
+		return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+			Error: "stored games unavailable", Code: core.ErrStorageUnavailable,
+		})
+	}
+	return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
+		Error: "failed to load stored games", Code: core.ErrInternalError,
+	})
+}
+
+// archiveCache lets a shared cache hold the public archive: a page changes
+// only with an import or a publication, and shows that five minutes late.
+const archiveCache = "public, max-age=300"
+
+// GetArchive lists the games of published collections, to anyone.
+func (h *HTTPHandler) GetArchive(c *fiber.Ctx) error {
+	limit, err := queryInt(c, "limit", 20, 1, 100)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
+			Error: "invalid pagination", Code: core.ErrInvalidRequest, Details: err.Error(),
+		})
+	}
+	featured := false
+	if raw := c.Query("featured"); raw != "" {
+		if featured, err = strconv.ParseBool(raw); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
+				Error: "invalid list query", Code: core.ErrInvalidRequest, Details: "featured must be true or false",
+			})
+		}
+	}
+	games, err := h.svc.GetArchive(c.UserContext(), service.ArchiveOptions{
+		Limit: limit, Cursor: c.Query("cursor"), Collection: c.Query("collection"),
+		ECO: c.Query("eco"), Player: c.Query("player"), Featured: featured,
+	})
+	if err != nil {
+		return listError(c, err)
+	}
+	c.Set(fiber.HeaderCacheControl, archiveCache)
+	return c.JSON(games)
+}
+
+// GetCollections lists the published collections.
+func (h *HTTPHandler) GetCollections(c *fiber.Ctx) error {
+	collections, err := h.svc.GetCollections(c.UserContext())
+	if err != nil {
+		return listError(c, err)
+	}
+	c.Set(fiber.HeaderCacheControl, archiveCache)
+	return c.JSON(collections)
 }
 
 // ImportGame stores a PGN game for the signed-in user and names it.
@@ -828,6 +876,34 @@ func (h *HTTPHandler) ImportGame(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(core.ImportGameResponse{
 		GameID: imported.GameID, MoveCount: imported.Plies, Result: imported.Result,
 		PGNResult: chess.ResultToken(imported.Result),
+	})
+}
+
+// Analyse answers a signed-in user with the engine's view of a position.
+func (h *HTTPHandler) Analyse(c *fiber.Ctx) error {
+	body := c.Locals("validatedBody")
+	if validated, _ := c.Locals("validated").(bool); !validated || body == nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
+			Error: "validation bypass detected", Code: core.ErrInternalError,
+		})
+	}
+	req := body.(*core.AnalysisRequest)
+
+	analysis, err := h.proc.Analyse(c.UserContext(), req.FEN, req.Lines)
+	switch {
+	case err == nil:
+		return c.JSON(analysis)
+	case errors.Is(err, chess.ErrInvalidFEN):
+		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
+			Error: "invalid FEN", Code: core.ErrInvalidFEN, Details: err.Error(),
+		})
+	case errors.Is(err, processor.ErrAnalysisBusy), c.UserContext().Err() != nil:
+		return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+			Error: "analysis is busy", Code: core.ErrResourceLimit, Details: "try again shortly",
+		})
+	}
+	return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
+		Error: "analysis failed", Code: core.ErrInternalError,
 	})
 }
 

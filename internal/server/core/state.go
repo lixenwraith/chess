@@ -60,6 +60,16 @@ func (s State) Result() (string, bool) {
 	}
 }
 
+// ResultState is the terminal state a stored result names.
+func ResultState(result string) (State, bool) {
+	for _, s := range []State{StateWhiteWins, StateBlackWins, StateDraw, StateStalemate} {
+		if name, _ := s.Result(); name == result {
+			return s, true
+		}
+	}
+	return StateOngoing, false
+}
+
 // Termination names how a game reached its result.
 type Termination string
 

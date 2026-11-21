@@ -9,19 +9,10 @@ import (
 )
 
 // Verify checks a stored game against the rules and returns one line per
-// problem, empty when the game is consistent:
-//
-//   - the initial position parses, and moves are numbered 1..n with no gap
-//     (a gap means rows were deleted);
-//   - each move is made by the side to move, is legal from the stored
-//     position before it, and produces the stored position after it;
-//   - the result and its termination belong together, and a termination
-//     decided by the position (mate, stalemate, dead material, repetition,
-//     fifty moves) holds in the final position;
-//   - a mated or stalemated final position has its result recorded.
-//
-// Draw rules that became automatic later are not required of older games:
-// an unfinished game in a drawn position is not a problem.
+// problem: moves numbered 1..n, each made by the side to move, legal, and
+// producing the stored position; the result and its termination holding in
+// the final position, and a mate or stalemate there recorded. An unfinished
+// game in a position a later draw rule would end is not a problem.
 func Verify(record *storage.GameRecord, moves []storage.MoveRecord) []string {
 	var problems []string
 	pos, err := chess.ParseFEN(record.InitialFEN)
@@ -71,7 +62,7 @@ func verifyOutcome(result, termination string, positions []*chess.Position) []st
 		return nil
 	}
 
-	state, ok := stateOf(result)
+	state, ok := core.ResultState(result)
 	if !ok || !core.Termination(termination).ValidFor(state) {
 		return []string{fmt.Sprintf("result %q cannot come from termination %q", result, termination)}
 	}
@@ -95,20 +86,6 @@ func verifyOutcome(result, termination string, positions []*chess.Position) []st
 		return []string{fmt.Sprintf("stored %s by %s does not hold in the final position", result, termination)}
 	}
 	return nil
-}
-
-func stateOf(result string) (core.State, bool) {
-	switch result {
-	case "white_wins":
-		return core.StateWhiteWins, true
-	case "black_wins":
-		return core.StateBlackWins, true
-	case "stalemate":
-		return core.StateStalemate, true
-	case "draw":
-		return core.StateDraw, true
-	}
-	return 0, false
 }
 
 func sameFEN(a, b string) bool {

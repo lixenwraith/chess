@@ -171,7 +171,12 @@
     let esc = 0;                    // 0 none, 1 saw ESC, 2 inside CSI/SS3
 
     term.onData((data) => {
-        if (!pendingRead) return;
+        if (!pendingRead) {
+            // A running command reads nothing; Ctrl-C alone reaches it, through
+            // the function the client registered (interrupt_wasm.go).
+            if (data.includes('\x03') && globalThis.chessInterrupt?.()) term.write('^C\r\n');
+            return;
+        }
         for (const ch of data) {
             // Escape sequences (an arrow key) type nothing; CSI/SS3 end on 0x40-0x7E.
             if (esc === 1) { esc = (ch === '[' || ch === 'O') ? 2 : 0; continue; }

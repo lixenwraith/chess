@@ -1,0 +1,60 @@
+% The test server's archive: three games to store, one the rules refuse
+% (game 3) and one that repeats game 2. See run-test-server.sh.
+[Event "Paris Opera"]
+[Site "Paris FRA"]
+[Date "1858.??.??"]
+[Round "?"]
+[White "Morphy, Paul"]
+[Black "Duke Karl / Count Isouard"]
+[Result "1-0"]
+[ECO "C41"]
+
+1. e4 e5 2. Nf3 d6 3. d4 Bg4 {This pin is the start of Black's trouble.
+[%clk 0:10:00]} 4. dxe5 Bxf3 5. Qxf3 dxe5 6. Bc4 Nf6 7. Qb3 Qe7 8. Nc3 c6
+9. Bg5 b5 10. Nxb5 cxb5 11. Bxb5+ Nbd7 12. O-O-O Rd8 13. Rxd7 Rxd7 14. Rd1 Qe6
+15. Bxd7+ Nxd7 16. Qb8+ Nxb8 17. Rd8# 1-0
+
+[Event "Casual"]
+[Site "?"]
+[Date "2001.03.04"]
+[Round "1"]
+[White "Novice, A"]
+[Black "Beginner, B"]
+[Result "1-0"]
+[WhiteElo "1210"]
+[BlackElo "1105"]
+[ECO "C20"]
+
+1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6 4. Qxf7# 1-0
+
+[Event "Illegal"]
+[Site "?"]
+[Date "2001.03.05"]
+[Round "2"]
+[White "Novice, A"]
+[Black "Beginner, B"]
+[Result "*"]
+
+1. e4 e5 2. Ke3 *
+
+[Event "Repetition"]
+[Site "?"]
+[Date "2002.06.07"]
+[Round "3"]
+[White "Shuffler, C"]
+[Black "novice, a"]
+[Result "1/2-1/2"]
+[WhiteElo "?"]
+[ECO "A04"]
+
+1. Nf3 Nf6 2. Ng1 Ng8 3. Nf3 Nf6 4. Ng1 Ng8 1/2-1/2
+
+[Event "Casual"]
+[Site "?"]
+[Date "2001.03.04"]
+[Round "1"]
+[White "Novice, A"]
+[Black "Beginner, B"]
+[Result "1-0"]
+
+1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6 4. Qxf7# 1-0

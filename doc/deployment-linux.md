@@ -126,7 +126,8 @@ Server flags worth knowing: `-max-users` (registration cap, default 100),
 `-anonymous-game-ttl` (default `24h`), `-idle-game-ttl` (default `168h`),
 `-finished-game-ttl` (default `1h`),
 `-db-cleanup off|report|delete` (the integrity sweep, see
-[database.md](database.md#integrity-sweep)), `-log-level`, `-log-http`.
+[database.md](database.md#integrity-sweep)), `-metrics-interval` (the
+`msg=metrics` log line, default `1m`), `-log-level`, `-log-http`.
 
 Changes to the unit belong in a drop-in (`sudo systemctl edit chessd`), which
 the script never overwrites.
@@ -136,6 +137,8 @@ the script never overwrites.
 ```sh
 systemctl status chessd
 journalctl -u chessd -f                       # server log
+journalctl -u chessd -f -o cat | lw --filter 'include:patterns=msg=metrics' \
+    --sink 'http:port=<port>'                 # where LogWisp is installed: metrics alone, as a stream
 sudo chess-db user add -username <name>       # accounts; see database.md
 sudo chess-db verify                          # check stored games; run after upgrades
 curl -s http://127.0.0.1:8080/health          # "storage":"ok", "version" = the build

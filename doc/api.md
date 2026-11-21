@@ -190,7 +190,7 @@ predates.
 Storage states:
 - `"disabled"` - No database configured (`-dsn` or `CHESS_DSN`)
 - `"ok"` - Database operational with auth enabled
-- `"degraded"` - A persistence write failed or the write queue filled; live games continue in memory, but durable history is no longer complete
+- `"degraded"` - A persistence write failed or the write queue filled; live games continue in memory, and history, listings and resuming a stored game answer 503. The server tries the database every 5 seconds; when it answers, the games that changed are written whole and the state returns to `"ok"`
 
 The top-level `status` is also `"degraded"` when storage is degraded.
 
@@ -203,6 +203,13 @@ Creates new game with specified players. Optional authentication associates game
 ```
 Authorization: Bearer <token>
 ```
+
+`side` (`w`, `b`, `white`, `black`; optional) is the human side the creator
+takes: a claim when signed in, a guest's seat otherwise (see [Claims, seats
+and control](#claims-seats-and-control)). Without it a signed-in creator
+claims White if human, else Black, and a guest takes nothing. The response
+then carries `side`, and for a guest `seat`, the secret of that seat, which
+no later response repeats.
 
 **Request:**
 ```json
@@ -225,6 +232,7 @@ Authorization: Bearer <token>
 ```json
 {
   "gameId": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
+  "initialFen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
   "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
   "turn": "w",
   "state": "ongoing",
@@ -238,6 +246,8 @@ Authorization: Bearer <token>
 ```
 
 Note: When authenticated, human player IDs match the user's ID. Anonymous players receive unique UUIDs.
+A claimed side also carries `claimedBy` and `name`, the claimant's username
+when the claim was made; a side a guest holds carries `"seated": true`.
 
 A custom `fen` must describe a position that can arise in a game: one king
 per side, no pawn on the first or last rank, and the side not to move not in
@@ -247,7 +257,15 @@ rights whose king or rook has left its original square are dropped.
 ### Get Game
 `GET /games/{gameId}`
 
-Returns current game state.
+Returns current game state. An unfinished game that is stored but not in
+memory, after a restart or a week idle, is loaded from its rows by the first
+request that names it (this one, a move, undo, resign, draw, board or player
+change) and plays on. What the rows do not hold starts fresh: a standing
+draw offer and the one-offer-per-move allowance lapse, `lastMove` is empty,
+and a game whose computer was thinking is `ongoing` with the computer to
+move. Finished and imported games are not loaded: they answer 404 here and
+stay available through the history. A miss while storage cannot be read
+answers 503 `STORAGE_UNAVAILABLE`.
 
 **Long-polling support:**
 Add query parameters for real-time updates:
@@ -317,8 +335,11 @@ resignation or agreed draw, in stored-result form (`"result": "black_wins"`);
 see [Continuing after a resignation or agreed
 draw](#continuing-after-a-resignation-or-agreed-draw).
 
-`origin` is `played` or `imported`; an imported game also carries the
-`event`, `site` and `round` its PGN had.
+`origin` is `played`, `imported` or `archive`; a game read from PGN also
+carries the `event`, `site` and `round` it had. An archive game adds
+`archive`: its `collection` with the `title`, `sourceUrl`, `licence` and
+`attribution` it is published under, and the `whiteElo`, `blackElo` and `eco`
+its PGN gave.
 `result` is omitted while a game is ongoing. Persisted terminal values are
 `white_wins`, `black_wins`, `draw`, and `stalemate`. `pgnResult` is the PGN
 token for the same outcome (`1-0`, `0-1`, `1/2-1/2`, or `*` while ongoing),
@@ -349,7 +370,9 @@ Same visibility, `ETag`, and error responses as the history. `ply` (optional,
 result is then `*`, the `Termination` tag is left out, and the filename ends
 `-ply<N>.pgn`. A `fetch` of the URL returns the text, so clients can copy it
 as well as download it. `Site` is the host of the server's `-public-url` (`?`
-without one); an imported game keeps its own.
+without one); a game read from PGN keeps its own. An archive game adds, where
+known, `WhiteElo`, `BlackElo` and `ECO`, and its collection's `Source`,
+`Licence` and `Attribution`.
 
 ```
 [Event "Casual game"]
@@ -434,6 +457,86 @@ Returns 400 `INVALID_REQUEST` for a malformed cursor or filter.
 }
 ```
 
+### Browse the Archive
+`GET /archive?collection=<name>&eco=<prefix>&player=<prefix>&cursor=<nextCursor>&limit=20`
+
+The curated archive: games read from PGN that belong to a collection, not an
+account. Lists the games of published collections, newest first, to anyone;
+no token. Needs persistent storage.
+
+- `limit`: 1-100; defaults to 20
+- `cursor`: the previous page's `nextCursor`, as in the list of your games
+- `collection`: a collection's name
+- `eco`: the start of an opening code, in any case: `B`, `B9`, `B90`
+- `player`: the start of either player's name, in any case, at least two
+  characters; names read as the PGN wrote them (`Fischer, Robert`)
+- `featured=true`: the featured games in their order, at most `limit`, with
+  no cursor
+
+Each item is a game summary as in [List My Stored Games](#list-my-stored-games)
+with `"origin": "archive"` and an `archive` object: `collection`, and
+`whiteElo`, `blackElo` and `eco` where the PGN gave them.
+
+**Response (200):**
+```json
+{
+  "games": [
+    {
+      "gameId": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
+      "initialFen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+      "finalFen": "1n1Rkb1r/p4ppp/4q3/4p1B1/4P3/8/PPP2PPP/2K5 b k - 1 17",
+      "result": "white_wins",
+      "pgnResult": "1-0",
+      "termination": "checkmate",
+      "startTimeUtc": "1858-01-01T00:00:00Z",
+      "endTimeUtc": "1858-01-01T00:00:00Z",
+      "moveCount": 33,
+      "origin": "archive",
+      "event": "Paris Opera",
+      "archive": {"collection": "classics", "eco": "C41"},
+      "players": {
+        "white": {"id": "player-id", "color": 1, "type": 1, "name": "Morphy, Paul"},
+        "black": {"id": "player-id", "color": 2, "type": 1, "name": "Duke Karl / Count Isouard"}
+      }
+    }
+  ],
+  "limit": 20,
+  "nextCursor": "LTM1MzQyNzIwMDAwMDAwMDAwMC5hMWIyYzNkNC1lNWY2LTc4OTAtMTIzNC01Njc4OTBhYmNkZWY"
+}
+```
+
+An archive game replays through its [history](#get-durable-game-history) and
+[PGN](#export-pgn) like any stored game, and is never live:
+`GET /games/{gameId}` answers 404. A game of an unpublished collection is
+absent from this list only; its history and PGN answer to its ID.
+
+Responses carry `Cache-Control: public, max-age=300`: the list changes only
+with an import or a publication, which a cache shows up to five minutes late.
+Returns 400 `INVALID_REQUEST` for a malformed cursor or filter, 503 without
+storage.
+
+### List Archive Collections
+`GET /archive/collections`
+
+The published collections, featured ones first, then by title; no token, and
+cached like the list.
+
+**Response (200):**
+```json
+{
+  "collections": [
+    {
+      "name": "classics",
+      "title": "Classic games",
+      "sourceUrl": "https://example.org/classics",
+      "licence": "Public domain",
+      "attribution": "Compiled by the example project",
+      "games": 3
+    }
+  ]
+}
+```
+
 ### Import a Game from PGN
 `POST /games/import`
 
@@ -466,6 +569,45 @@ PGN, 401 without a token, 429 past the limit, 503 `STORAGE_UNAVAILABLE`.
 An imported game has no claimed side: it is listed for its importer with
 `"origin": "imported"` and its `event`, is excluded from the `color` filter,
 and is never purged as anonymous. Its history and PGN carry the tags.
+
+### Analyse a Position
+`POST /analysis`
+
+The engine's view of one position: its best variations, best first. Requires
+`Authorization: Bearer <token>`; 30 requests a minute per IP. Stockfish
+searches at full strength within 500,000 nodes, about a second, on an engine
+of its own that no computer move waits for. One position is searched at a
+time and four requests may wait; an answer is kept in memory by position, so
+asking again costs nothing.
+
+**Request:** `lines` is 1 to 3 (default 1), and at most the legal moves.
+```json
+{"fen": "rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq - 0 2", "lines": 2}
+```
+
+**Response (200):**
+```json
+{
+  "fen": "rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq - 0 2",
+  "depth": 19,
+  "lines": [
+    {"score": 0, "mate": -1, "moves": ["d8h4"], "san": ["Qh4#"]},
+    {"score": -260, "moves": ["h7h5", "g4g5", "d8g5"], "san": ["h5", "g5", "Qxg5"]}
+  ]
+}
+```
+
+- `score` is White's, in centipawns. `mate`, when present, replaces it: the
+  moves to mate, negative when Black mates.
+- `moves` holds at most 12 plies in UCI (the second line above is cut short),
+  `san` the same moves in notation.
+- `fen` is the position as the rules core writes it.
+- Where the game is over (mate, stalemate, dead material, the fifty-move
+  rule) the rules answer without the engine: `lines` is empty, and `state`
+  and `termination` say how, as in a game response.
+
+Errors: 400 `INVALID_FEN` with `details`, 400 `INVALID_REQUEST`, 401 without
+a token, 429 past the limit, 503 `RESOURCE_LIMIT` when too many are waiting.
 
 ### Remove a Stored Game
 `DELETE /users/me/games/{gameId}`
@@ -544,8 +686,7 @@ already dead, or whose halfmove clock is at 100, is created drawn.
 
 Ends the game in the other side's favor, with `termination: "resignation"`.
 `color` (`w`, `b`, `white`, `black`) may be omitted when the server can infer
-the side: the one side the authenticated caller claimed, else the only human
-side. Allowed while the game is unfinished, including while the computer is
+the side: the one side the caller holds, else the only human side. Allowed while the game is unfinished, including while the computer is
 thinking (its move is discarded) or the engine is stuck.
 
 #### Offer, accept, or decline a draw
@@ -569,9 +710,9 @@ Allowed only while `state` is `ongoing`.
 - **One offer per move:** after an offer is declined, the same side must make
   a move before offering again (409 `GAME_CONFLICT`).
 
-Resign and draw share the move endpoint's authorization: a side claimed by a
-user acts only for that user (403 `UNAUTHORIZED`), and an authenticated
-resignation or acceptance claims an unclaimed side as a first move would.
+Resign and draw share the move endpoint's authorization: a held side acts
+only for its holder (403 `UNAUTHORIZED`), and an authenticated resignation
+or acceptance claims an open side as a first move would.
 Other errors are 400: `GAME_OVER` for a finished game, `INVALID_REQUEST` for
 an ambiguous or computer side, a missing offer, or a game that is not
 ongoing. Both return the game.
@@ -589,22 +730,49 @@ A resignation or agreed draw is a *concession*: a result the players chose.
   History reports it, and the full PGN notes it in the final comment, such as
   `{ White resigned at ply 24; play continued. }`.
 
-### Claims and control
+### Claims, seats and control
 
-Anyone holding the game ID may move for, undo, reconfigure, or unload an
-unclaimed side; a claim is what protects a player. Moves, resignation, and
-draws act for one side and need that side's claim (or none). The requests
-below affect both sides, so:
+A human side is open, or held: by an account's **claim**, or by a guest's
+**seat**.
 
-| Request | Allowed when |
-|---|---|
-| undo, configure players | no side is claimed by another user: the caller holds every claim, or nothing is claimed |
-| delete (unload) | the caller holds a claim, or nothing is claimed |
+- A claim is made by creating the game while signed in, by joining, or by a
+  first authenticated move, resignation or draw acceptance on an open side.
+  Requests act for it with the bearer token.
+- A seat is taken by a guest creating the game with `side`, or joining. The
+  answer carries its secret once, in `seat`; requests act for it with
+  `X-Chess-Seat: <seat>`. The server keeps only the secret's SHA-256.
+- An open side takes a move from anyone holding the game ID, and a guest's
+  move leaves it open.
 
-Otherwise they return 403 `UNAUTHORIZED`. Two players who each claimed a
-side therefore cannot take back each other's moves or swap the opponent for
-the computer: takebacks between players are not supported. Send the bearer
-token (optional authentication) with these requests.
+Moves, resignation, and draws act for one side and need to be its holder (or
+the side open). The requests below affect both sides, so:
+
+- undo, configure players: allowed when nobody else holds a side (the caller
+  holds every held side, or none is held)
+- delete (unload): allowed when the caller holds a side, or none is held
+
+Otherwise they return 403 `UNAUTHORIZED`. Two players who each hold a side
+therefore cannot take back each other's moves or swap the opponent for the
+computer: takebacks between players are not supported.
+
+A seat does not make a game a registered player's: a game no account claims
+is purged 24 hours after its last activity, seats or not.
+
+### Join a Game
+`POST /games/{gameId}/join`
+
+```json
+{"color": "b"}
+```
+
+Takes an open human side without a move: `color`, or the only open one (400
+when both are open and none is named). A signed-in caller claims it; a guest
+gets a seat. Returns the game with `side`, and for a guest `seat`. A caller
+who already holds a side gets it back unchanged. Waiting long-polls wake.
+
+Errors: 409 `GAME_CONFLICT` when the side is taken, 400 `GAME_OVER` for a
+finished game, 400 `INVALID_REQUEST` for a computer's side, 404 for an
+unknown game.
 
 ### Undo Moves
 `POST /games/{gameId}/undo`
@@ -615,14 +783,15 @@ token (optional authentication) with these requests.
 
 Reverts `count` plies (default 1). Allowed after a result: it rewinds the
 result and clears draw offers. Refused while the computer is thinking, after
-a resignation or agreed draw between two humans (400 `GAME_OVER`), and by
-another user's claim (403, see [Claims and control](#claims-and-control)).
+a resignation or agreed draw between two humans (400 `GAME_OVER`), and when
+another player holds a side (403, see [Claims, seats and
+control](#claims-seats-and-control)).
 
 ### Configure Players
 `PUT /games/{gameId}/players`
 
-Changes player configuration mid-game; subject to [Claims and
-control](#claims-and-control).
+Changes player configuration mid-game; subject to [Claims, seats and
+control](#claims-seats-and-control). A claim or a seat stays with its side.
 
 ### Get Board
 `GET /games/{gameId}/board`
@@ -633,8 +802,9 @@ Returns ASCII board visualization.
 `DELETE /games/{gameId}`
 
 Unloads the live game from memory. Its persisted game and move history remain
-available through the history endpoint. Returns 204 on success, 403 to a
-caller holding none of the game's claims.
+available through the history endpoint, and an unfinished one resumes on its
+next request. Returns 204 on success, 404 when it is not in memory, 403 to a
+caller holding none of the game's held sides.
 
 ## Error Format
 ```json
@@ -646,14 +816,14 @@ caller holding none of the game's claims.
 ```
 
 Error codes:
-- `GAME_NOT_FOUND` - No live game with that ID
+- `GAME_NOT_FOUND` - No live game with that ID, and no unfinished stored one to resume
 - `NOT_FOUND` - No such endpoint (for example a server older than the client)
-- `UNAUTHORIZED` - A side or the game is claimed by another user
+- `UNAUTHORIZED` - A side or the game is held by another player
 - `INVALID_MOVE` - Illegal chess move
 - `NOT_HUMAN_TURN` - Wrong player type for turn
 - `GAME_OVER` - Game already ended
-- `GAME_CONFLICT` - Game changed while a move was being validated; refresh and retry
-- `STORAGE_UNAVAILABLE` - Durable history/list storage is disabled or degraded
+- `GAME_CONFLICT` - Game changed while a move was being validated (refresh and retry), or the side to join is taken
+- `STORAGE_UNAVAILABLE` - Durable history/list storage is disabled or degraded, or a stored game could not be read to resume it
 - `RATE_LIMIT_EXCEEDED` - Request limit exceeded
 - `INVALID_REQUEST` - Malformed request
 - `INVALID_CONTENT_TYPE` - Missing/wrong Content-Type header
@@ -669,6 +839,7 @@ Error codes:
 - Account deletion: 5 requests/minute/IP
 - Password recovery: 3 requests/minute/IP; reset: 10 requests/minute/IP
 - PGN import: 5 requests/minute/IP
+- Analysis: 30 requests/minute/IP
 
 Exceeding limit returns 429 status. Behind a reverse proxy the client IP is the
 proxy's `X-Real-IP` header, trusted only from addresses listed in

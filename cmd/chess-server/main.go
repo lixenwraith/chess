@@ -19,6 +19,7 @@ import (
 	"github.com/lixenwraith/chess/cmd/chess-server/cli"
 	"github.com/lixenwraith/chess/internal/server/http"
 	"github.com/lixenwraith/chess/internal/server/mail"
+	"github.com/lixenwraith/chess/internal/server/metrics"
 	"github.com/lixenwraith/chess/internal/server/processor"
 	"github.com/lixenwraith/chess/internal/server/service"
 	"github.com/lixenwraith/chess/internal/server/storage"
@@ -58,6 +59,7 @@ func main() {
 		maxUsers    = flag.Int("max-users", service.DefaultMaxUsers, "Accounts at which public registration closes (0 = no limit; CLI-created accounts are not limited)")
 		jwtFile     = flag.String("jwt-secret-file", "", "File holding a stable JWT signing key, mode 0600, at least 32 bytes (default $CHESS_JWT_SECRET_FILE)")
 		dbCleanup   = flag.String("db-cleanup", "off", "Hourly integrity sweep of stored games and accounts: off, report (log only), or delete")
+		metricsTick = flag.Duration("metrics-interval", time.Minute, "How often the server's measures are logged as one \"metrics\" line (0 disables)")
 
 		// Password recovery by email: a transport (SMTP relay, or a directory
 		// of .eml files for development) and the web client's address, which
@@ -218,6 +220,10 @@ func main() {
 		<-cleanupDone
 		svc.Shutdown(gracefulShutdownTimeout)
 		log.Fatalf("Failed to initialize processor: %v", err)
+	}
+
+	if *metricsTick > 0 {
+		go metrics.Report(serverCtx, *metricsTick, svc.Metrics, proc.Metrics)
 	}
 
 	app := http.NewFiberApp(proc, svc, http.Options{

@@ -1,6 +1,7 @@
 package command
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -70,8 +71,8 @@ func (r *Registry) registerReplayCommands() {
 		Name:        "auto",
 		ShortName:   "",
 		Description: "Replay: play forward to the end",
-		Usage:       "auto [ms]  (delay per ply, default 1000)",
-		Handler:     autoHandler,
+		Usage:       "auto [ms]  (delay per ply, default 1000; Ctrl-C stops)",
+		Handler:     interruptible(autoHandler),
 	})
 	r.Register(&Command{
 		Name:        "fen",
@@ -187,8 +188,8 @@ func gotoHandler(s *session.Session, args []string) error {
 }
 
 // autoHandler plays forward from the current ply to the end, one board per
-// ply, pausing between them.
-func autoHandler(s *session.Session, args []string) error {
+// ply, pausing between them; an interrupt stops it at the ply it shows.
+func autoHandler(ctx context.Context, s *session.Session, args []string) error {
 	if s.Replay == nil {
 		return errNotReplaying
 	}
@@ -205,7 +206,12 @@ func autoHandler(s *session.Session, args []string) error {
 		return nil
 	}
 	for !s.Replay.AtEnd() {
-		time.Sleep(time.Duration(delay) * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			display.Println(display.Yellow, "Interrupted at ply %d of %d", s.Replay.Ply, s.Replay.Len())
+			return nil
+		case <-time.After(time.Duration(delay) * time.Millisecond):
+		}
 		s.Replay.Next()
 		if err := showReplayPosition(s); err != nil {
 			return err

@@ -31,12 +31,14 @@ type GameRecord struct {
 	WhiteSearchTime int
 	WhiteClaimedBy  string
 	WhiteName       string // claimant's username when the claim was recorded
+	WhiteSeat       []byte // SHA-256 of the secret a guest holds the side with
 	BlackPlayerID   string
 	BlackType       int
 	BlackLevel      int
 	BlackSearchTime int
 	BlackClaimedBy  string
 	BlackName       string
+	BlackSeat       []byte
 	Result          string
 	Termination     string // how Result was reached; empty while unfinished
 	StartTimeUTC    time.Time
@@ -47,20 +49,50 @@ type GameRecord struct {
 	ConcessionTermination string
 	ConcessionPly         int
 	ConcessionTimeUTC     *time.Time
-	// ImportedBy is the account that imported the game from PGN; empty for
-	// a game played here. Event, Site and Round come from its tags.
+	// Origin is how the game came to be stored: OriginPlayed, OriginImported
+	// (by ImportedBy, until that account is deleted) or OriginArchive. Event,
+	// Site and Round come from the PGN's tags.
+	Origin     string
 	ImportedBy string
 	Event      string
 	Site       string
 	Round      string
+	// Archive is set for an archive game read with its history or in a list.
+	Archive *ArchiveRecord
 }
 
-// Origin names how a game came to be stored.
-func (r GameRecord) Origin() string {
-	if r.ImportedBy != "" {
-		return "imported"
-	}
-	return "played"
+const (
+	OriginPlayed   = "played"
+	OriginImported = "imported"
+	OriginArchive  = "archive"
+)
+
+// FromPGN reports a game read from PGN, imported or archived: it is replayed
+// and never played on.
+func (r GameRecord) FromPGN() bool { return r.Origin == OriginImported || r.Origin == OriginArchive }
+
+// CollectionRecord is a curated set of archive games and the rights it is
+// published under: a collection is listed only once it names its source,
+// licence and attribution. Games is its size, where a query counts it.
+type CollectionRecord struct {
+	Name          string // lowercase slug, the key
+	Title         string
+	SourceURL     string
+	Licence       string
+	Attribution   string
+	Published     bool
+	FeaturedOrder int // place among the collections; 0 when not featured
+	Games         int
+}
+
+// ArchiveRecord is what the archive keeps of a game beside its row. A list
+// fills only the collection's name; a history reads the whole collection.
+type ArchiveRecord struct {
+	Collection    CollectionRecord
+	WhiteElo      int
+	BlackElo      int
+	ECO           string
+	FeaturedOrder int // place among the featured games; 0 when not featured
 }
 
 // GameSummaryRecord is a game row plus its replay extent. MoveCount and
@@ -95,21 +127,16 @@ type MovePersistence struct {
 // schemaVersion is the newest schema this binary understands. Migrations are
 // applied in order inside one transaction; PostgreSQL DDL is transactional, so
 // a failed upgrade leaves the previous version intact.
-const schemaVersion = 5
+const schemaVersion = 7
 
 // migrations[v-1] upgrades the schema from version v-1 to v. Never edit a
 // released migration; append a new one.
 var migrations = []string{
-	// v1: initial PostgreSQL schema.
-	//
-	// Identifiers are uuid (16 bytes, validated on input). Usernames and emails
-	// are stored lowercase, so plain unique constraints give case-insensitive
-	// uniqueness without citext or a nondeterministic collation. Game-to-user
-	// association is by claim: every authenticated human slot records its
-	// claimant, and claims survive player reconfiguration. The claimant's
-	// username is copied into the game when the claim is written, so replays
-	// and PGN keep the name after a rename or account deletion. Games with no
-	// claim belong to anonymous players and are purged after inactivity.
+	// v1: the initial schema. Usernames and emails are stored lowercase, so
+	// plain unique constraints are case-insensitive without citext. A game
+	// belongs to a user by claim, which survives reconfiguration; the name is
+	// copied in when the claim is written, so replays keep it after a rename
+	// or deletion. Games with no claim are purged after inactivity.
 	`
 CREATE TABLE schema_version (
 	singleton  boolean PRIMARY KEY DEFAULT true CHECK (singleton),
@@ -259,7 +286,73 @@ CREATE INDEX games_anonymous_start_idx ON games (start_time_utc)
 CREATE INDEX games_imported_by_idx ON games (imported_by, start_time_utc DESC, game_id DESC)
 	WHERE imported_by IS NOT NULL;
 `,
+
+	// v6: guest seats. A guest holds a side with a secret the server shows
+	// once and stores as its SHA-256; an account's claim and a seat exclude
+	// each other. A seat does not make a game a registered player's: the
+	// anonymous purge still applies.
+	`
+ALTER TABLE games
+	ADD COLUMN white_seat bytea,
+	ADD COLUMN black_seat bytea,
+	ADD CONSTRAINT games_white_seat_check
+		CHECK (white_seat IS NULL OR (octet_length(white_seat) = 32 AND white_claimed_by IS NULL)),
+	ADD CONSTRAINT games_black_seat_check
+		CHECK (black_seat IS NULL OR (octet_length(black_seat) = 32 AND black_claimed_by IS NULL));
+`,
+
+	// v7: the curated archive. origin says how a game was stored; an import
+	// disowned by its account's deletion keeps it. Archive games belong to a
+	// collection, not an account, and the anonymous purge passes them by.
+	// Search keys are lowercased by the server, so no locale decides a match.
+	`
+ALTER TABLE games ADD COLUMN origin text NOT NULL DEFAULT 'played'
+	CONSTRAINT games_origin_check CHECK (origin IN ('played', 'imported', 'archive'));
+UPDATE games SET origin = 'imported'
+	WHERE imported_by IS NOT NULL OR event IS NOT NULL OR site IS NOT NULL OR round IS NOT NULL;
+DROP INDEX games_anonymous_start_idx;
+CREATE INDEX games_anonymous_start_idx ON games (start_time_utc)
+	WHERE white_claimed_by IS NULL AND black_claimed_by IS NULL AND imported_by IS NULL
+		AND origin <> 'archive';
+
+CREATE TABLE collections (
+	name           text PRIMARY KEY CHECK (name ~ '^[a-z0-9][a-z0-9-]{0,62}$'),
+	title          text NOT NULL CHECK (char_length(title) BETWEEN 1 AND 200),
+	source_url     text CHECK (char_length(source_url) BETWEEN 1 AND 500),
+	licence        text CHECK (char_length(licence) BETWEEN 1 AND 200),
+	attribution    text CHECK (char_length(attribution) BETWEEN 1 AND 500),
+	published      boolean NOT NULL DEFAULT false,
+	featured_order integer CHECK (featured_order > 0),
+	created_at     timestamptz NOT NULL DEFAULT now(),
+	CONSTRAINT collections_published_check CHECK (NOT published
+		OR (source_url IS NOT NULL AND licence IS NOT NULL AND attribution IS NOT NULL))
+);
+
+-- start_time_utc copies the game's, which never changes, so one index orders
+-- a collection's list. content_hash makes a repeated import store nothing.
+CREATE TABLE archive_games (
+	game_id        uuid PRIMARY KEY REFERENCES games (game_id) ON DELETE CASCADE,
+	collection     text NOT NULL REFERENCES collections (name) ON UPDATE CASCADE,
+	content_hash   bytea NOT NULL CHECK (octet_length(content_hash) = 32),
+	start_time_utc timestamptz NOT NULL,
+	white_key      text COLLATE "C",
+	black_key      text COLLATE "C",
+	white_elo      integer CHECK (white_elo BETWEEN 1 AND 9999),
+	black_elo      integer CHECK (black_elo BETWEEN 1 AND 9999),
+	eco            text COLLATE "C" CHECK (eco ~ '^[A-E][0-9][0-9]$'),
+	featured_order integer CHECK (featured_order > 0),
+	CONSTRAINT archive_games_content_hash_key UNIQUE (content_hash)
+);
+CREATE INDEX archive_games_collection_idx ON archive_games (collection, start_time_utc DESC, game_id DESC);
+CREATE INDEX archive_games_start_idx ON archive_games (start_time_utc DESC, game_id DESC);
+CREATE INDEX archive_games_eco_idx ON archive_games (eco) WHERE eco IS NOT NULL;
+CREATE INDEX archive_games_white_key_idx ON archive_games (white_key) WHERE white_key IS NOT NULL;
+CREATE INDEX archive_games_black_key_idx ON archive_games (black_key) WHERE black_key IS NOT NULL;
+CREATE INDEX archive_games_featured_idx ON archive_games (featured_order) WHERE featured_order IS NOT NULL;
+`,
 }
 
 // ownedTables lists every table created by migrations, children first.
-var ownedTables = []string{"moves", "games", "password_resets", "sessions", "users", "schema_version"}
+var ownedTables = []string{
+	"moves", "archive_games", "games", "collections", "password_resets", "sessions", "users", "schema_version",
+}

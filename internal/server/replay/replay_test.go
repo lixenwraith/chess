@@ -155,22 +155,24 @@ func TestBuildPGN(t *testing.T) {
 	}
 }
 
-// A game played here names the server's site; an imported game keeps its own.
+// A game played here names the server's site; a game read from PGN keeps its
+// own.
 func TestBuildPGNSite(t *testing.T) {
 	moves := stored(t, chess.StartFEN, "e2e4")
 	rec := record(chess.StartFEN, "", "")
-	for _, tc := range []struct{ importedBy, recordSite, site, want string }{
-		{"", "", "lixen.com", "lixen.com"},
-		{"", "", "", "?"},
-		{"alice", "Linares ESP", "lixen.com", "Linares ESP"},
+	for _, tc := range []struct{ origin, recordSite, site, want string }{
+		{storage.OriginPlayed, "", "lixen.com", "lixen.com"},
+		{storage.OriginPlayed, "", "", "?"},
+		{storage.OriginImported, "Linares ESP", "lixen.com", "Linares ESP"},
+		{storage.OriginArchive, "Linares ESP", "lixen.com", "Linares ESP"},
 	} {
-		rec.ImportedBy, rec.Site = tc.importedBy, tc.recordSite
+		rec.Origin, rec.Site = tc.origin, tc.recordSite
 		pgn, err := BuildPGN(rec, moves, -1, tc.site)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if want := "[Site \"" + tc.want + "\"]\n"; !strings.Contains(pgn.Text, want) {
-			t.Errorf("site %q, imported by %q: PGN lacks %q:\n%s", tc.site, tc.importedBy, want, pgn.Text)
+			t.Errorf("site %q, origin %q: PGN lacks %q:\n%s", tc.site, tc.origin, want, pgn.Text)
 		}
 	}
 }

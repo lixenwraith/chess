@@ -114,7 +114,8 @@ chess > move g7g8q
 ```
 
 #### `computer` / `c`
-Trigger computer move calculation.
+Trigger computer move calculation and wait for the move. Ctrl-C stops the
+wait, not the computer: `poll` or `show` picks up its move.
 ```
 chess > computer
 ```
@@ -150,10 +151,10 @@ chess > delete <gameId>      # Unload specific live game
 ```
 
 #### `poll` / `p`
-Long-poll for game updates (waits up to 30 seconds). Returns on a move, an
-undo, a result (a resignation or an accepted draw), or a draw offer, and
-prints the outcome or offer. In a two-player game, `poll` is how you learn
-that the opponent moved, offered a draw, or resigned.
+Long-poll for game updates (waits up to 30 seconds, or until Ctrl-C). Returns
+on a move, an undo, a result (a resignation or an accepted draw), or a draw
+offer, and prints the outcome or offer. In a two-player game, `poll` is how
+you learn that the opponent moved, offered a draw, or resigned.
 ```
 chess > poll
 ```
@@ -192,6 +193,15 @@ chess > games more         # Next page
 chess > games delete 3     # Remove the third game of the last listing (or an ID)
 ```
 
+#### `archive`
+List the public archive, newest first, 20 per page, numbered for `replay
+<#>` as `games` is; no login. With a name, one collection of it.
+```
+chess > archive            # Every published collection
+chess > archive classics   # One collection
+chess > archive more       # Next page
+```
+
 #### `import`
 Store a PGN file (one game) under your account, for replay with `replay`.
 The server checks every move; tags such as `White`, `Black`, `Event` and
@@ -216,8 +226,8 @@ In the browser build there is no file system: `save` prints the PGN to copy.
 ### Replay Commands
 
 A replay steps through a stored game's history: any game by ID (histories
-are public to holders of the ID), or one of your own by its number in the
-last `games` listing. The replay is separate from the live session: the
+are public to holders of the ID), or one by its number in the last `games`
+or `archive` listing. The replay is separate from the live session: the
 current game, login and poll position are kept, and `new`, `join`, `move`,
 `computer`, `undo`, `delete`, `poll`, `resign` and `draw` are refused until
 `live` ends the replay.
@@ -244,7 +254,7 @@ chess > first
 
 #### `auto`
 Play forward from the current ply to the end of the line, one board per ply,
-with a delay in milliseconds (default 1000).
+with a delay in milliseconds (default 1000). Ctrl-C stops at the ply shown.
 ```
 chess > auto        # one ply a second
 chess > auto 250
@@ -312,6 +322,13 @@ chess > exit
 time when their output is taller than the terminal: `-- More (N lines left;
 Enter continues, q quits) --`. The terminal's size comes from the TTY, or in
 the browser from xterm.js; output piped to another program is never paged.
+
+### Interrupting
+
+Ctrl-C stops a running `auto`, `poll` or `computer` and returns to the prompt
+with the login, current game and replay intact, in the terminal and in the
+browser. At the prompt it keeps its meaning: the native client ends, the
+browser client clears the line.
 
 ### Verbose Mode
 
@@ -402,7 +419,7 @@ A replay lists the stored game in SAN, with the current ply in brackets:
 - No algebraic notation input (UCI format only)
 - Single game context at a time (plus one replay)
 - No persistent authentication across restarts
-- `auto` runs to the end of the line; it cannot be interrupted
+- No guest seats: `login` to hold a side of a game between two people
 
 ## Error Handling
 

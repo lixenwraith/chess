@@ -34,9 +34,10 @@ go build ./cmd/chess-client-cli
 - `-pid-lock`: Enable exclusive locking (requires -pid)
 - `-log-level`: `debug`, `info`, `warn`, or `error` (default: `info`)
 - `-log-http`: Enable API and web request logs (default: `true`)
+- `-metrics-interval`: How often the server's measures are logged as one `msg=metrics` line (default: `1m`; `0` disables; see [Metrics](architecture.md#metrics))
 - `-finished-game-ttl`: How long terminal games stay in memory (default: `1h`; `0` disables eviction)
 - `-anonymous-game-ttl`: How long games without a registered player survive after their last activity, in memory and in the database (default: `24h`; `0` keeps them)
-- `-idle-game-ttl`: How long an unfinished game with a registered player stays in memory after its last activity; it stays stored for replay (default: `168h`; `0` keeps it)
+- `-idle-game-ttl`: How long an unfinished game with a registered player stays in memory after its last activity; it stays stored and resumes on its next request (default: `168h`; `0` keeps it)
 - `-max-users`: Accounts at which public registration closes (default: `100`; `0` = no limit; the CLI is not limited)
 - `-web-api-url`: Browser-visible API origin for the embedded web client, set on its script element as `data-api`; useful when its public origin differs from the listen address
 - `-smtp-host`, `-smtp-port`, `-smtp-user`, `-smtp-password-file`, `-mail-from`: SMTP relay for password-reset email; without a transport, recovery is off
@@ -167,7 +168,7 @@ run against a missing or outdated schema.
 chess/
 ├── cmd/
 │   ├── chess-server/            # Server: entry point, PID file, proxies, JWT key
-│   │   └── cli/                 # db subcommands: schema, users, games, PGN
+│   │   └── cli/                 # db subcommands: schema, users, games, PGN, archive
 │   └── chess-client-cli/        # Terminal client, native and WASM
 ├── internal/
 │   ├── client/                  # Terminal client
@@ -183,9 +184,10 @@ chess/
 │       ├── game/                # Live game state and claims
 │       ├── http/                # Fiber routes, handlers, auth, middleware
 │       ├── mail/                # Password-reset email
-│       ├── processor/           # Command execution, engine queue
+│       ├── metrics/             # Timers and the periodic metrics log line
+│       ├── processor/           # Command execution, engine queue, analysis
 │       ├── replay/              # Stored games: SAN, PGN, verification
-│       ├── service/             # Live games, users, sessions, cleanup
+│       ├── service/             # Live games, users, sessions, archive, cleanup
 │       ├── storage/             # PostgreSQL persistence (pgtest: per-test schemas)
 │       └── webserver/           # Embedded web client
 ├── web/chess-client-wasm/       # Page that runs the WASM terminal client
@@ -231,11 +233,13 @@ CHESS_E2E_MAIL_DIR=/tmp/chess-mail make test-e2e                 # terminal 2
 - Worker count: 2 (internal/server/processor/processor.go)
 - Engine queue: two waiting tasks a worker, so each meets its deadline (internal/server/processor/queue.go)
 - Min search time: 100ms (internal/server/processor/processor.go)
+- Shadow backlog: 64 rulings wait for the engine's re-check; more go unchecked (internal/server/processor/processor.go)
 - Write queue: 1000 operations (internal/server/storage/storage.go)
 - DB connections: 10 max, 5 idle (internal/server/storage/storage.go)
 - DB operation deadline: 5 seconds, within the caller's context; write transactions 10 seconds
 - Request deadline: 35 seconds, the response write timeout too (internal/server/http/handler.go)
 - Transient write retries: 6 attempts, 100 ms doubling backoff
+- Degraded storage is tried again every 5 seconds (internal/server/service/service.go)
 - JWT expiration: 7 days (internal/server/service/service.go)
 - Concurrent Argon2id derivations: 4, five-second wait (internal/server/service/user.go)
 - Long-poll timeout: 30 seconds (internal/server/service/waiter.go)
@@ -250,12 +254,12 @@ CHESS_E2E_MAIL_DIR=/tmp/chess-mail make test-e2e                 # terminal 2
 ### Storage Configuration
 - PostgreSQL via pgx; schema chosen by `search_path`; migrations run at startup
 - Async write pattern for games; shutdown drains every accepted write
-- Transient failures before COMMIT are retried; others degrade storage
+- Transient failures before COMMIT are retried; others degrade storage until it recovers
 - Replay reads wait for prior queued writes and use one REPEATABLE READ transaction
 - Synchronous writes for user operations (data consistency)
 - Registration limit check, user creation, and initial session are atomic
 - Games without a registered player are deleted 24 hours after their last activity
-- A full queue or unrecovered write failure degrades to memory-only and is visible in logs and `/health`
+- A full queue or unrecovered write failure degrades to memory-only and is visible in logs and `/health`; once the database answers again the games that changed are written whole
 - Usernames and emails stored lowercase with unique constraints
 
 ### Rate Limiting Configuration
@@ -310,7 +314,8 @@ CHESS_E2E_MAIL_DIR=/tmp/chess-mail make test-e2e                 # terminal 2
 - No email verification for registration
 - Fixed worker pool size for engine calculations
 - No push-based game updates (30-second long-polling is used)
-- Live games are not rehydrated after restart; persisted games are currently replay-only
+- A restart drops a computer move in flight: the game resumes with the computer to move
 - Database history has no automatic retention policy
-- Curated games are planned in the [Roadmap](./todo.md#r5-imported-and-curated-games)
+- The archive ships empty: collections are imported and published by the operator
+- A partial PGN date is stored as a full one ([Roadmap](./todo.md#r55-partial-dates-of-games-read-from-pgn))
 - REST API only

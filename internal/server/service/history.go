@@ -43,10 +43,11 @@ func (s *Service) GetGameHistory(ctx context.Context, gameID string) (*core.Game
 		Termination:  record.Termination,
 		StartTimeUTC: record.StartTimeUTC,
 		EndTimeUTC:   record.EndTimeUTC,
-		Origin:       record.Origin(),
+		Origin:       record.Origin,
 		Event:        record.Event,
 		Site:         record.Site,
 		Round:        record.Round,
+		Archive:      archiveInfo(record.Archive),
 		Players:      playersResponse(*record),
 		Moves:        make([]core.HistoryMove, 0, len(moves)),
 	}
@@ -90,6 +91,7 @@ func (s *Service) loadHistory(ctx context.Context, gameID string) (*storage.Game
 	if s.store == nil {
 		return nil, nil, ErrStorageDisabled
 	}
+	defer s.replayReads.Since(time.Now())
 	record, moves, err := s.store.GetGameHistory(ctx, gameID)
 	if err != nil {
 		if storage.IsGameNotFound(err) {
@@ -171,22 +173,27 @@ func (s *Service) GetUserGames(ctx context.Context, userID string, opts UserGame
 		}
 	}
 	for _, record := range records {
-		response.Games = append(response.Games, core.GameSummary{
-			GameID:       record.GameID,
-			InitialFEN:   record.InitialFEN,
-			Result:       record.Result,
-			PGNResult:    chess.ResultToken(record.Result),
-			Termination:  record.Termination,
-			StartTimeUTC: record.StartTimeUTC,
-			EndTimeUTC:   record.EndTimeUTC,
-			MoveCount:    record.MoveCount,
-			FinalFEN:     record.FinalFEN,
-			Origin:       record.Origin(),
-			Event:        record.Event,
-			Players:      playersResponse(record.GameRecord),
-		})
+		response.Games = append(response.Games, gameSummary(record))
 	}
 	return response, nil
+}
+
+func gameSummary(record storage.GameSummaryRecord) core.GameSummary {
+	return core.GameSummary{
+		GameID:       record.GameID,
+		InitialFEN:   record.InitialFEN,
+		Result:       record.Result,
+		PGNResult:    chess.ResultToken(record.Result),
+		Termination:  record.Termination,
+		StartTimeUTC: record.StartTimeUTC,
+		EndTimeUTC:   record.EndTimeUTC,
+		MoveCount:    record.MoveCount,
+		FinalFEN:     record.FinalFEN,
+		Origin:       record.Origin,
+		Event:        record.Event,
+		Archive:      archiveInfo(record.Archive),
+		Players:      playersResponse(record.GameRecord),
+	}
 }
 
 // Cursors are opaque to clients: base64url of "<start µs>.<game ID>". The
@@ -228,12 +235,12 @@ func playersResponse(record storage.GameRecord) core.PlayersResponse {
 		White: &core.Player{
 			ID: record.WhitePlayerID, Color: core.ColorWhite, Type: core.PlayerType(record.WhiteType),
 			Level: record.WhiteLevel, SearchTime: record.WhiteSearchTime, ClaimedBy: record.WhiteClaimedBy,
-			Name: record.WhiteName,
+			Name: record.WhiteName, Seat: record.WhiteSeat, Seated: len(record.WhiteSeat) > 0,
 		},
 		Black: &core.Player{
 			ID: record.BlackPlayerID, Color: core.ColorBlack, Type: core.PlayerType(record.BlackType),
 			Level: record.BlackLevel, SearchTime: record.BlackSearchTime, ClaimedBy: record.BlackClaimedBy,
-			Name: record.BlackName,
+			Name: record.BlackName, Seat: record.BlackSeat, Seated: len(record.BlackSeat) > 0,
 		},
 	}
 }

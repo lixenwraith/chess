@@ -17,12 +17,14 @@ const (
 	CmdGetBoard
 	CmdResign
 	CmdDraw
+	CmdJoinGame
 )
 
-// Command is a unified structure for all processor operations
+// Command is one processor operation, on behalf of Actor: the signed-in user
+// and the guest seat the request presented, either of which may be absent.
 type Command struct {
 	Type   CommandType
-	UserID string
+	Actor  core.Actor
 	GameID string // For game-specific commands
 	Args   any    // Command-specific arguments
 }
@@ -98,6 +100,14 @@ func NewResignCommand(gameID string, req core.ResignRequest) Command {
 func NewDrawCommand(gameID string, req core.DrawRequest) Command {
 	return Command{
 		Type:   CmdDraw,
+		GameID: gameID,
+		Args:   req,
+	}
+}
+
+func NewJoinGameCommand(gameID string, req core.JoinRequest) Command {
+	return Command{
+		Type:   CmdJoinGame,
 		GameID: gameID,
 		Args:   req,
 	}

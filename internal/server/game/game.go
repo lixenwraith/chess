@@ -14,6 +14,7 @@ type Snapshot struct {
 	NextTurnColor core.Color      `json:"nextTurnColor"`
 	PlayerType    core.PlayerType `json:"playerType"`
 	PlayerID      string          `json:"playerId"` // ID of the player whose turn it is
+	At            time.Time       `json:"at"`       // when PreviousMove was made; the start, for the first
 }
 
 type MoveResult struct {
@@ -30,6 +31,7 @@ type Game struct {
 	state        core.State
 	termination  core.Termination
 	lastResult   *MoveResult
+	startTime    time.Time
 	endTimeUTC   *time.Time
 	lastActivity time.Time // last create, move, undo, reconfiguration, or state change
 	drawOffer    core.Color
@@ -39,11 +41,12 @@ type Game struct {
 	concession *Concession
 }
 
-// Concession is a result the players chose, and the ply it was chosen at.
+// Concession is a result the players chose, the ply it was chosen at, and when.
 type Concession struct {
 	State       core.State
 	Termination core.Termination
 	Ply         int
+	At          time.Time
 }
 
 // View is an immutable copy of the state needed by processors and transports.
@@ -54,20 +57,23 @@ type View struct {
 	InitialFEN    string
 	NextTurnColor core.Color
 	Moves         []string
-	// FENs holds the position before the first move and after every move.
-	FENs        []string
-	WhitePlayer *core.Player
-	BlackPlayer *core.Player
-	State       core.State
-	Termination core.Termination
-	DrawOffer   core.Color // color whose offer awaits an answer; 0 when none
-	OfferPly    map[core.Color]int
-	Concession  *Concession
-	LastResult  *MoveResult
-	EndTimeUTC  *time.Time
+	// FENs holds the position before the first move and after every move;
+	// MoveTimes runs parallel to Moves.
+	FENs         []string
+	MoveTimes    []time.Time
+	WhitePlayer  *core.Player
+	BlackPlayer  *core.Player
+	State        core.State
+	Termination  core.Termination
+	DrawOffer    core.Color // color whose offer awaits an answer; 0 when none
+	OfferPly     map[core.Color]int
+	Concession   *Concession
+	LastResult   *MoveResult
+	StartTimeUTC time.Time
+	EndTimeUTC   *time.Time
 }
 
-func New(initialFEN string, whitePlayer, blackPlayer *core.Player, startingTurnColor core.Color) *Game {
+func New(initialFEN string, whitePlayer, blackPlayer *core.Player, startingTurnColor core.Color, started time.Time) *Game {
 	var initialPlayerID string
 	var initialPlayerType core.PlayerType
 	if startingTurnColor == core.ColorWhite {
@@ -88,15 +94,45 @@ func New(initialFEN string, whitePlayer, blackPlayer *core.Player, startingTurnC
 				NextTurnColor: startingTurnColor,
 				PlayerType:    initialPlayerType,
 				PlayerID:      initialPlayerID,
+				At:            started,
 			},
 		},
 		players: map[core.Color]*core.Player{
 			core.ColorWhite: &whiteCopy,
 			core.ColorBlack: &blackCopy,
 		},
-		state:    core.StateOngoing,
-		offerPly: map[core.Color]int{core.ColorWhite: -1, core.ColorBlack: -1},
+		state:        core.StateOngoing,
+		startTime:    started,
+		lastActivity: started,
+		offerPly:     map[core.Color]int{core.ColorWhite: -1, core.ColorBlack: -1},
 	}
+}
+
+// Restore rebuilds a game from a view of it, as its stored rows give one. A
+// draw offer, the offer allowance and the last engine result are not kept:
+// they start fresh. Last activity is the latest of start, last move and end.
+func Restore(v View) *Game {
+	turn := v.NextTurnColor
+	if len(v.Moves)%2 == 1 {
+		turn = core.OppositeColor(turn)
+	}
+	g := New(v.InitialFEN, v.WhitePlayer, v.BlackPlayer, turn, v.StartTimeUTC)
+	for i, move := range v.Moves {
+		turn = core.OppositeColor(turn)
+		g.AddSnapshot(v.FENs[i+1], move, turn, v.MoveTimes[i])
+		g.Touch(v.MoveTimes[i])
+	}
+	g.state, g.termination = v.State, v.Termination
+	if v.EndTimeUTC != nil {
+		ended := *v.EndTimeUTC
+		g.endTimeUTC = &ended
+		g.Touch(ended)
+	}
+	if v.Concession != nil {
+		concession := *v.Concession
+		g.concession = &concession
+	}
+	return g
 }
 
 func (g *Game) View() View {
@@ -106,8 +142,10 @@ func (g *Game) View() View {
 		NextTurnColor: g.NextTurnColor(),
 		Moves:         g.Moves(),
 		FENs:          make([]string, len(g.snapshots)),
+		MoveTimes:     make([]time.Time, 0, len(g.snapshots)-1),
 		State:         g.state,
 		Termination:   g.termination,
+		StartTimeUTC:  g.startTime,
 		DrawOffer:     g.drawOffer,
 		OfferPly: map[core.Color]int{
 			core.ColorWhite: g.offerPly[core.ColorWhite],
@@ -116,6 +154,9 @@ func (g *Game) View() View {
 	}
 	for i, snapshot := range g.snapshots {
 		view.FENs[i] = snapshot.FEN
+		if i > 0 {
+			view.MoveTimes = append(view.MoveTimes, snapshot.At)
+		}
 	}
 	if player := g.players[core.ColorWhite]; player != nil {
 		copy := *player
@@ -199,10 +240,10 @@ func (g *Game) GetPlayer(color core.Color) *core.Player {
 	return g.players[color]
 }
 
-// AddSnapshot appends a move. It answers a draw offer made by the other
-// side: moving instead of accepting declines it. An offer from the mover
-// stands.
-func (g *Game) AddSnapshot(fen string, move string, nextTurnColor core.Color) {
+// AddSnapshot appends a move made at the given time. It answers a draw offer
+// made by the other side: moving instead of accepting declines it. An offer
+// from the mover stands.
+func (g *Game) AddSnapshot(fen string, move string, nextTurnColor core.Color, at time.Time) {
 	if g.drawOffer == nextTurnColor {
 		g.drawOffer = 0
 	}
@@ -213,6 +254,7 @@ func (g *Game) AddSnapshot(fen string, move string, nextTurnColor core.Color) {
 		NextTurnColor: nextTurnColor,
 		PlayerType:    nextPlayer.Type,
 		PlayerID:      nextPlayer.ID,
+		At:            at,
 	})
 }
 
@@ -318,7 +360,7 @@ func (g *Game) SetOutcome(s core.State, termination core.Termination, at time.Ti
 		g.termination = termination
 		g.drawOffer = 0
 		if termination.IsConcession() && g.concession == nil {
-			g.concession = &Concession{State: s, Termination: termination, Ply: g.Plies()}
+			g.concession = &Concession{State: s, Termination: termination, Ply: g.Plies(), At: at.UTC()}
 		}
 	} else {
 		g.termination = core.TermNone
@@ -375,23 +417,41 @@ func (g *Game) InitialFEN() string {
 	return chess.StartFEN
 }
 
-// ClaimSlot requires the caller to hold the service lock.
-func (g *Game) ClaimSlot(color core.Color, userID string) error {
-	player := g.players[color]
-	if player == nil {
-		return fmt.Errorf("invalid color")
+// ClaimSlot gives an open human side to a signed-in user, with the name the
+// user has now; repeating one's own claim changes nothing. The caller holds
+// the service lock.
+func (g *Game) ClaimSlot(color core.Color, userID, name string) error {
+	player, err := g.openSide(color, core.Actor{UserID: userID})
+	if err != nil || player.ClaimedBy == userID {
+		return err
 	}
-
-	if player.Type != core.PlayerHuman {
-		return fmt.Errorf("cannot claim computer slot")
-	}
-
-	if player.ClaimedBy != "" && player.ClaimedBy != userID {
-		return fmt.Errorf("slot already claimed by another user")
-	}
-
-	player.ClaimedBy = userID
+	player.ClaimedBy, player.Name = userID, name
 	return nil
+}
+
+// SeatGuest gives an open human side to the guest whose secret hashes to
+// seat. The caller holds the service lock.
+func (g *Game) SeatGuest(color core.Color, seat []byte) error {
+	player, err := g.openSide(color, core.Actor{Seat: seat})
+	if err != nil || player.Seated {
+		return err
+	}
+	player.Seat, player.Seated = seat, true
+	return nil
+}
+
+// openSide returns color's human side when a may take it or holds it already.
+func (g *Game) openSide(color core.Color, a core.Actor) (*core.Player, error) {
+	player := g.players[color]
+	switch {
+	case player == nil:
+		return nil, fmt.Errorf("invalid color")
+	case player.Type != core.PlayerHuman:
+		return nil, fmt.Errorf("cannot take a computer's side")
+	case !player.Admits(a):
+		return nil, fmt.Errorf("side already held by another player")
+	}
+	return player, nil
 }
 
 // ReleaseUser clears userID's claims and name snapshots, leaving those slots
@@ -406,14 +466,4 @@ func (g *Game) ReleaseUser(userID string) bool {
 		}
 	}
 	return changed
-}
-
-// GetSlotOwner returns the slot's claimant, empty if unclaimed; the caller
-// holds the service lock.
-func (g *Game) GetSlotOwner(color core.Color) string {
-	player := g.players[color]
-	if player == nil {
-		return ""
-	}
-	return player.ClaimedBy
 }

@@ -10,7 +10,8 @@ call. At shutdown long-polls end first, then running requests get five seconds
 to finish.
 
 ### Processing Layer (`internal/server/processor`)
-Central command handler containing business logic. Single `Execute(Command)` entry point decouples transport from logic. Uses synchronous UCI engine for validation, asynchronous EngineQueue for computer moves. Commands include optional user context for authenticated operations.
+Central command handler containing business logic. Single `Execute(ctx, Command)` entry point decouples transport from logic; a command that names a stored game loads it first. The rules core validates moves; the asynchronous EngineQueue computes the computer's, and one more engine answers draw offers and re-checks the core's rulings off the request path. Commands include optional user context for authenticated operations.
+Analysis (`POST /api/analysis`) has an engine of its own, started on its first request: one position at a time within a node budget, four requests waiting at most, answers kept in memory by position.
 
 ### Service Layer (`internal/server/service`)
 In-memory live-game storage with authentication support. A mutex protects each
@@ -20,7 +21,8 @@ configuration, user accounts, JWT tokens, persistence, and cleanup. Finished
 games leave memory after an hour and unfinished ones a registered player
 claimed after a week idle, while their durable rows remain; games with no
 registered player leave memory and the database 24 hours after their last
-activity (see Retention below).
+activity (see Retention below). An unfinished game that is not in memory is
+loaded from its rows by its next request (see Resume below).
 
 #### Long-Polling Registry (`internal/server/service/waiter.go`)
 Manages clients waiting for game state changes via HTTP long-polling. Tracks move counts per client, sends notifications on state changes, enforces 30-second timeout. Non-blocking notification pattern handles slow clients gracefully. Coordinates with service layer for game updates and deletion events.
@@ -53,6 +55,16 @@ restart does not degrade storage. A COMMIT error (unknown outcome), a permanent
 error, or a full queue marks storage degraded; live play remains available in
 memory and `/health` reports that durable history may be incomplete.
 
+While degraded, every write is refused and its game remembered. Every five
+seconds the service asks the store to recover: once the queue has settled and
+the database answers a ping, the writer hands the service the games whose
+writes were lost. Under its lock the service readmits writes and queues each
+of those games whole (row upserted, moves past the line removed, the line
+written over), so a later write for a game follows its whole row, and
+whether the failed COMMIT landed no longer matters. A whole row the database
+refuses for good drops that game alone. Nothing leaves memory by cleanup
+while storage is degraded; a restart then loses what only memory held.
+
 Synchronous operations run under the caller's context (a request's, the
 cleanup job's): five seconds a query, ten for the sweep's flush and account
 purge. Queued writes keep the writer's own deadline. A caller that has ended
@@ -69,19 +81,40 @@ start the server.
 - **Game** (`internal/server/game`): Game state with snapshot history and player associations
 - **Rules core** (`internal/server/chess`): dependency-free position model,
   legal move generation, SAN, PGN, ASCII board, dead-material and repetition
-  detection. It validates custom starting FENs, applies the automatic draw
-  rules, and shadows the engine on every live move; Stockfish stays the
-  authority for move legality, mate, and stalemate
+  detection. It is the move authority: it validates custom starting FENs and
+  every live move, gives the resulting position, classifies mate and
+  stalemate, and applies the automatic draw rules. Stockfish replays each
+  ruling in the background, and a disagreement is logged
 - **Replay** (`internal/server/replay`): works on stored game records: SAN
   for every ply, PGN assembly with the termination comment, and verification
   against the rules (used by `db verify`, `db pgn`, and the integrity sweep)
+- **Archive** (`service/archive.go`, `storage/archive.go`): collections of
+  games read from PGN databases by `db archive import`, a hundred games a
+  transaction and one copy a game; the published ones are listed publicly.
+  They are replayed, never played: no request loads one into memory
 - **Mail** (`internal/server/mail`): password-reset email through an SMTP
   relay, or `.eml` files in development
+- **Metrics** (`internal/server/metrics`): one `msg=metrics` log line every
+  `-metrics-interval` ([Metrics](#metrics))
 - **Web server** (`internal/server/webserver`): serves the embedded web client
   (`-serve`)
 - **Core** (`internal/server/core`): Shared types, API models, error constants
 - **CLI** (`cmd/chess-server/cli`): Database and user management commands
 - **Client** (`cmd/chess-client-cli`, `internal/client`): Interactive debugging client with command registry, session management, and colored terminal output
+
+### Metrics
+There is no scrape endpoint: every `-metrics-interval` (default one minute,
+`0` off) the server logs its measures as one INFO line, `msg=metrics`, which a
+log shipper filters out of the log. Counters run from the start; a timer
+gives `count`, `avg` and `max` since the last line.
+
+- `games`: `loaded`, `with_computer`, `longpoll_waiters`
+- `auth.kdf_wait`: a password's wait for an Argon2id slot
+- `replay.read`: a stored game's read, its barrier included
+- `storage`: `write_queue`, `write_retries`, `degraded` and `recovered`
+  (transitions), `flush` (a barrier's wait behind queued writes)
+- `engine`: `queue` (computer moves waiting), `restarts`
+- `rules.disagreements`: rulings the engine shadow contradicted
 
 ## Request Flow
 
@@ -93,25 +126,31 @@ start the server.
 5. Generates a scoped JWT bound to that session
 6. Returns token and user information
 
-### Authenticated Game Creation
+### Game Creation and Sides
 1. HTTP handler receives `POST /games` with optional Bearer token
-2. Middleware validates JWT if present
-3. Creates CreateGameCommand with user ID context
-4. Processor creates game with user ID for human players
-5. Service associates game with authenticated user
-6. Returns game with player IDs matching user
+2. Middleware validates JWT if present; the session lookup names the user
+3. The handler builds the actor: user ID and name, and the hash of the seat
+   secret the request presents (`X-Chess-Seat`), either of which may be absent
+4. The creator takes one human side: the `side` asked for, else White (or
+   Black) when signed in. A signed-in creator claims it by name; a guest
+   gets a seat, whose secret only this answer carries
+5. `POST /games/{id}/join` gives an open side the same way, without a move,
+   and wakes long-polls
+6. A held side acts only for its holder; an open one for anyone with the ID
 
 ### Human Move (Authenticated)
 1. HTTP handler receives `POST /games/{id}/moves` with move
 2. Optional JWT validation for user verification
 3. Creates MakeMoveCommand, calls `processor.Execute()`
-4. The rules core checks the move first only to name a missing promotion
-   piece; the processor then validates it via the locked validation engine
-5. If legal, gets new FEN from engine, and logs a warning if the rules core
-   disagrees on legality or the resulting position
-6. If neither mate nor stalemate, the processor applies the automatic draw
-   rules to the new position and the game's position history: dead material,
-   threefold repetition, fifty-move rule
+4. The rules core checks the move against the game's position: an illegal
+   one is refused, a missing promotion piece named. No engine and no lock
+   are involved
+5. The core gives the new FEN and classifies it: mate or stalemate, else the
+   automatic draws over the game's position history (dead material,
+   threefold repetition, fifty-move rule)
+6. The ruling is handed to the engine shadow, which replays the move on
+   Stockfish later and logs `rules core and engine disagree` on legality or
+   on the resulting position; a full backlog skips the check
 7. Calls `service.ApplyMoveWithState()` with the FEN, turn, state, and
    termination that were decided
 8. Service rejects a stale concurrent commit or atomically updates the move,
@@ -126,7 +165,7 @@ start the server.
    claimed side, else the only human side) and checks slot ownership
 3. A draw offer to a human is recorded on the game and wakes long-polls; an
    offer to a computer is answered at once from a short full-strength search
-   on the validation engine (after twenty plies; accept when level or worse
+   on the processor's engine (after twenty plies; accept when level or worse
    for the computer); one offer per own move
 4. `service.EndGame()` re-checks under its lock that the game is unfinished,
    unchanged, and the accepted offer still stands, then sets result and
@@ -140,8 +179,9 @@ start the server.
    `RESOURCE_LIMIT` and leaves the game `ongoing`
 3. Returns immediately
 4. Worker goroutine calculates move with dedicated Stockfish instance
-5. Callback re-validates the move on the validation engine, applies the
-   automatic draw rules, and commits via the service
+5. Callback checks the move with the rules core, classifies the position as
+   for a human move, and commits via the service; a worker that reports no
+   move is believed only when the rules find none
 6. Client polls for completion
 7. Returns GameResponse
 
@@ -155,6 +195,18 @@ start the server.
    wait
 7. A client that disconnects is not noticed (fasthttp reports no disconnect
    to a running handler): its wait ends by one of the above
+
+### Resume
+1. A game command, or a long-poll, names a game that is not in memory
+2. The service registers the load, so concurrent misses share it and the
+   purge and the integrity sweep treat the game as loaded
+3. It reads the row and moves behind the write barrier, outside its lock
+4. Only an unfinished game that was played here and passes verification is
+   rebuilt; a finished or imported one stays replay-only
+5. The game is inserted under the lock; a removal or a released claim that
+   crossed the read makes the load read again
+6. The command runs on the loaded game; a miss while storage is degraded or
+   slow answers 503
 
 ### Durable Replay Read
 1. Client requests `GET /api/games/{id}/history`
@@ -185,7 +237,8 @@ start the server.
 3. Writer goroutine processes queue sequentially
 4. Each logical mutation commits in one transaction
 5. A full queue or write failure is logged and triggers degraded memory-only mode
-6. Shutdown rejects new writes and drains every write already accepted
+6. Recovery readmits writes and stores each game that changed meanwhile whole
+7. Shutdown rejects new writes and drains every write already accepted
 
 ### Query Operations
 1. Replay-sensitive game reads wait on the async-write barrier
@@ -203,9 +256,10 @@ start the server.
 
 - **HTTP Server**: Fiber handles concurrent connections
 - **Game State**: Single RWMutex protects game map (concurrent reads, serial writes)
-- **Move Validation**: Optimistic FEN/state/turn checks reject a result if the game changed while Stockfish was validating
+- **Move Validation**: The rules core, on the request's goroutine; optimistic FEN/state/turn checks reject a result if the game changed meanwhile
 - **Engine Workers**: Fixed pool (2 workers) with dedicated Stockfish processes
-- **Validation Engine**: Single mutex-protected instance for synchronous validation
+- **Processor Engine**: Single mutex-protected instance for draw-offer evaluation and the shadow check (64 rulings may wait)
+- **Analysis Engine**: A fourth Stockfish process, started by the first analysis; one search at a time, four requests waiting
 - **Storage Writer**: Single goroutine processes game write queue sequentially
 - **User Operations**: Direct database access; account creation serialized by a PostgreSQL advisory lock
 - **Password Hashing**: Four Argon2id slots; waiters give up after five seconds (HTTP 503)
@@ -253,9 +307,9 @@ Profile data is not placed in the token; clients read it from `/auth/me`.
 Commands encapsulate operations with type, arguments, and optional user ID for authenticated requests.
 
 ### Player Configuration
-Players identified by UUID (authenticated users) or generated IDs (anonymous), configured with type (human/computer), skill level, and search time.
+Players identified by UUID (authenticated users) or generated IDs (anonymous), configured with type (human/computer), skill level, and search time. A human side is held by an account's claim or a guest's seat, or is open.
 
-### Storage Schema (version 5)
+### Storage Schema (version 7)
 ```sql
 users (
     user_id uuid PRIMARY KEY,
@@ -282,6 +336,8 @@ games (
     white_search_time integer NOT NULL,
     white_claimed_by uuid,                  -- user that owns the slot
     white_name text,                        -- claimant's username at claim time
+    white_seat bytea,                       -- SHA-256 of a guest's seat secret;
+                                            --   never beside a claim
     black_... (same columns),
     start_time_utc timestamptz NOT NULL,
     result text,                            -- white_wins, black_wins, draw, stalemate
@@ -294,7 +350,30 @@ games (
     concession_ply integer,                 --   against the computer; all four set
     concession_time_utc timestamptz,        --   together or all NULL
     imported_by uuid,                       -- account that imported it from PGN
-    event text, site text, round text       -- the imported PGN's tags
+    event text, site text, round text,      -- the PGN's tags
+    origin text NOT NULL                    -- played, imported or archive
+)
+
+collections (
+    name text PRIMARY KEY,                  -- lowercase slug
+    title text NOT NULL,
+    source_url text, licence text,          -- the rights: all three are required
+    attribution text,                       --   before published can be true
+    published boolean NOT NULL,
+    featured_order integer,                 -- place among the collections
+    created_at timestamptz NOT NULL
+)
+
+archive_games (
+    game_id uuid PRIMARY KEY REFERENCES games ON DELETE CASCADE,
+    collection text NOT NULL REFERENCES collections,
+    content_hash bytea NOT NULL UNIQUE,     -- SHA-256 of start, line, result and
+                                            --   the roster tags: one copy a game
+    start_time_utc timestamptz NOT NULL,    -- the game's, for the list's order
+    white_key text, black_key text,         -- names lowercased by the server
+    white_elo integer, black_elo integer,
+    eco text,                               -- A00 to E99
+    featured_order integer                  -- place among the featured games
 )
 
 password_resets (
@@ -321,10 +400,13 @@ moves (
 Version 3 added the `concession_*` columns: a rewind clears `result` and
 `termination` but keeps them, and the first concession is never overwritten.
 Version 4 added `password_resets`, one pending reset per account; version 5
-the import columns. Indexes cover session and reset expiry, each claim column
-and `imported_by` ordered by `(start_time_utc DESC, game_id DESC)` for the
-game listing, and the start time of games with neither claim nor importer for
-the anonymous-game purge.
+the import columns; version 6 the guest seats; version 7 `origin` and the
+archive's two tables. Every version migrates the rows it finds in place.
+Indexes cover session and reset expiry, each claim column and `imported_by`
+ordered by `(start_time_utc DESC, game_id DESC)` for the game listing, the
+start time of games with neither claim nor importer, the archive's aside, for
+the anonymous-game purge, and the archive list: a collection's games in list
+order, and the opening code and both name keys for its prefix filters.
 Claims and player IDs deliberately have no foreign key to `users`: history
 outlives deleted accounts, and the name snapshot keeps it readable.
 
@@ -332,15 +414,18 @@ outlives deleted accounts, and the name snapshot keeps it readable.
 - Sessions are deleted after expiry (7 days after the last login).
 - Finished games leave memory after `-finished-game-ttl` (1 hour); their rows stay.
 - Unfinished games a registered player claimed leave memory after a week
-  without activity (`-idle-game-ttl`); their rows stay, for replay.
+  without activity (`-idle-game-ttl`); their rows stay, and the next request
+  for one loads it again.
 - Games with no claimed slot are unloaded from memory and deleted from the
   database 24 hours after their last activity (`-anonymous-game-ttl`). The
   hourly cleanup evicts idle games first, then queues the delete through the
-  ordered writer while excluding every game still loaded, so no live game can
-  lose its row.
+  ordered writer while excluding every game still loaded or being loaded, so
+  no live game can lose its row.
+- Archive games belong to a collection, not an account: the purge passes
+  them by, and they go only with `db archive collection delete`.
 - A write whose game row was deleted by hand fails only that game: the
   writer drops it and the service unloads the game, instead of degrading
-  storage for everyone.
+  storage for everyone. A whole row refused during recovery does the same.
 - With `-db-cleanup report|delete`, the hourly cleanup also runs an integrity
   sweep: loaded games without a row, games with missing plies, stored games
   failing verification (200 per run, resuming in ID order), games whose
@@ -367,10 +452,12 @@ See [`deploy/postgresql`](../deploy/postgresql) for provisioning,
 - General API: 10 req/s per IP (20 in dev mode)
 - Registration: 5 req/min per IP (prevent spam accounts)
 - Login: 10 req/min per IP (prevent brute force)
+- Analysis: 30 req/min per IP, signed-in only (a search costs a second of CPU)
 - Game operations unaffected for authenticated users
 
 ### Data Protection
 - Passwords never stored in plaintext
+- A guest's seat secret is shown once and stored as its SHA-256, compared in constant time
 - JWT key from a 0600 key file, or rotated on restart (fixed in dev mode)
 - Database access by Unix-socket peer authentication; no stored DB password
 - User IDs use UUIDs with collision detection

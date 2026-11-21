@@ -52,6 +52,7 @@ type User struct {
 
 // acquireKDF reserves one Argon2id slot, waiting at most kdfWaitTimeout.
 func (s *Service) acquireKDF() (release func(), err error) {
+	defer s.kdfWaits.Since(time.Now())
 	timer := time.NewTimer(kdfWaitTimeout)
 	defer timer.Stop()
 	select {
@@ -231,12 +232,15 @@ func (s *Service) DeleteAccount(ctx context.Context, userID, sessionID, password
 	if err := s.store.DeleteAccount(ctx, userID); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("%w: delete account: %v", ErrStorageUnavailable, err)
 	}
+	// Again for a game a load brought back between the two.
+	released += s.releaseClaims(userID)
 	slog.Info("account deleted by its owner", "user_id", userID, "live_games_released", released)
 	return nil
 }
 
 // releaseClaims makes userID's slots anonymous in every game in memory and
-// returns how many games changed.
+// returns how many games changed. A load in flight may hold the claim still:
+// it reads its rows again.
 func (s *Service) releaseClaims(userID string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -245,6 +249,9 @@ func (s *Service) releaseClaims(userID string) int {
 		if g.ReleaseUser(userID) {
 			released++
 		}
+	}
+	for _, load := range s.loading {
+		load.stale = true
 	}
 	return released
 }
@@ -277,7 +284,8 @@ func (s *Service) GenerateUserToken(userID, sessionID string) (string, error) {
 	return s.jwt.GenerateToken(userID, map[string]any{"session_id": sessionID})
 }
 
-// ValidateToken also requires a live session that belongs to the token's subject.
+// ValidateToken also requires a live session that belongs to the token's
+// subject, and adds the user's current name to the claims as "username".
 func (s *Service) ValidateToken(ctx context.Context, token string) (string, map[string]any, error) {
 	userID, claims, err := s.jwt.ValidateToken(token)
 	if err != nil {
@@ -291,13 +299,14 @@ func (s *Service) ValidateToken(ctx context.Context, token string) (string, map[
 	if !ok || sessionID == "" {
 		return "", nil, fmt.Errorf("token has no persisted session")
 	}
-	valid, err := s.store.IsSessionValidForUser(ctx, sessionID, userID)
+	username, err := s.store.SessionUser(ctx, sessionID, userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil, fmt.Errorf("session invalidated")
+	}
 	if err != nil {
 		return "", nil, fmt.Errorf("%w: validate token session: %v", ErrStorageUnavailable, err)
 	}
-	if !valid {
-		return "", nil, fmt.Errorf("session invalidated")
-	}
+	claims["username"] = username
 
 	return userID, claims, nil
 }

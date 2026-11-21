@@ -42,7 +42,7 @@ func playLine(t *testing.T, svc *Service, userID string, black core.PlayerConfig
 		}
 		if err := svc.ApplyMoveWithState(gameID, MoveCommit{
 			ExpectedFEN: pos.FEN(), ExpectedState: core.StateOngoing, ExpectedTurn: turn,
-			ActorUserID: actor, MoveUCI: text, NewFEN: next.FEN(), State: state, Termination: termination,
+			Actor: core.Actor{UserID: actor}, MoveUCI: text, NewFEN: next.FEN(), State: state, Termination: termination,
 		}); err != nil {
 			t.Fatal(err)
 		}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/lixenwraith/chess/internal/server/replay"
+	"github.com/lixenwraith/chess/internal/server/storage"
 
 	"github.com/lixenwraith/auth"
 )
@@ -72,8 +73,11 @@ type integrityFindings struct {
 func (s *Service) checkIntegrity(ctx context.Context, now time.Time) {
 	s.mu.RLock()
 	mode, anonymousTTL := s.integrityMode, s.anonymousTTL
-	loaded := make(map[string]bool, len(s.games))
+	loaded := make(map[string]bool, len(s.games)+len(s.loading))
 	for gameID := range s.games {
+		loaded[gameID] = true
+	}
+	for gameID := range s.loading {
 		loaded[gameID] = true
 	}
 	s.mu.RUnlock()
@@ -105,17 +109,25 @@ func (s *Service) checkIntegrity(ctx context.Context, now time.Time) {
 	}
 
 	for gameID := range findings.vanished {
-		s.evictMissingGame(gameID)
+		s.evictDroppedGame(gameID, storage.ErrGameMissing)
 	}
-	var games []string
+	// Unloaded and queued under one lock: no write follows the deletion, and
+	// a load that crossed it reads again, behind it.
+	var games, unloaded []string
+	s.mu.Lock()
 	for gameID := range findings.games {
-		if findings.loaded[gameID] {
-			s.evictMissingGame(gameID) // unload first: no further writes for it
+		if s.forgetLocked(gameID) {
+			unloaded = append(unloaded, gameID)
 		}
 		games = append(games, gameID)
 	}
-	if err := s.store.DeleteGames(games); err != nil {
+	err = s.store.DeleteGames(games)
+	s.mu.Unlock()
+	if err != nil {
 		slog.Error("integrity sweep failed to queue game deletion", "error", err)
+	}
+	for _, gameID := range unloaded {
+		s.waiter.RemoveGame(gameID)
 	}
 	var users []string
 	for userID := range findings.users {
@@ -212,17 +224,27 @@ func (s *Service) findIntegrityProblems(ctx context.Context, now time.Time, load
 	return found, nil
 }
 
-// evictMissingGame unloads a game whose database row disappeared, typically
-// deleted by hand. It runs when a write for the game finds the row gone.
-func (s *Service) evictMissingGame(gameID string) {
-	s.mu.Lock()
-	_, ok := s.games[gameID]
-	if ok {
-		delete(s.games, gameID)
+// forgetLocked drops gameID from memory and makes a load of it in flight
+// read its rows again; it reports whether the game was loaded. Caller holds
+// s.mu and, for a loaded game, ends its waits.
+func (s *Service) forgetLocked(gameID string) bool {
+	if load := s.loading[gameID]; load != nil {
+		load.stale = true
 	}
+	_, ok := s.games[gameID]
+	delete(s.games, gameID)
+	return ok
+}
+
+// evictDroppedGame unloads a game whose writes can never be stored: its row
+// disappeared, typically deleted by hand, or the database refuses its whole
+// row. The store calls it when it drops such a write.
+func (s *Service) evictDroppedGame(gameID string, cause error) {
+	s.mu.Lock()
+	ok := s.forgetLocked(gameID)
 	s.mu.Unlock()
 	if ok {
 		s.waiter.RemoveGame(gameID)
-		slog.Warn("game unloaded: its database row no longer exists", "game_id", gameID)
+		slog.Warn("game unloaded: it cannot be stored", "game_id", gameID, "cause", cause)
 	}
 }

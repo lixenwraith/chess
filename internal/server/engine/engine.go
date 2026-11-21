@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -16,11 +18,17 @@ const (
 	handshakeTimeout = 5 * time.Second
 	barrierTimeout   = 5 * time.Second
 	diagnoseTimeout  = 3 * time.Second
-	probeTimeout     = 3 * time.Second
 	lineBuffer       = 512
 )
 
 var ErrEngineTimeout = errors.New("engine timeout")
+
+// restarts counts the respawns of every engine since the process started.
+var restarts atomic.Int64
+
+// Restarts is how often an engine was killed and started again, after a
+// timeout, a closed pipe or a failed write.
+func Restarts() int64 { return restarts.Load() }
 
 // UCI wraps a stockfish process. All engine dialogue is a serialized
 // request/response transaction under mu; a single reader goroutine owns stdout
@@ -43,8 +51,17 @@ type SearchResult struct {
 }
 
 type Diagnosis struct {
-	FEN     string
-	InCheck bool
+	FEN string
+}
+
+// Line is one variation of an analysis. Score is the side to move's, in
+// centipawns; Mate, when not zero, is the moves to mate instead, negative
+// when that side is mated.
+type Line struct {
+	Depth int
+	Score int
+	Mate  int
+	Moves []string
 }
 
 func New() (*UCI, error) {
@@ -115,6 +132,7 @@ func (u *UCI) killLocked() {
 }
 
 func (u *UCI) restartLocked() {
+	restarts.Add(1)
 	u.killLocked()
 	_ = u.spawnLocked() // on failure alive stays false; next tx errors immediately
 }
@@ -200,12 +218,12 @@ func (u *UCI) SetPosition(fen string, moves []string) error {
 	return err
 }
 
-// Diagnose runs `d` and consumes its full output. Terminal line is "Checkers:"
-// (last line of `d` in current Stockfish; verify against the jailed build —
-// see context requests).
+// Diagnose runs `d`, a Stockfish debug command outside UCI, and reads to its
+// last line, "Checkers:". Only the shadow check of the rules core depends on
+// it.
 func (u *UCI) Diagnose() (Diagnosis, error) {
 	var d Diagnosis
-	last, err := u.tx(diagnoseTimeout, []string{"d"}, "Checkers:", func(ln string) {
+	_, err := u.tx(diagnoseTimeout, []string{"d"}, "Checkers:", func(ln string) {
 		if s, ok := strings.CutPrefix(ln, "Fen: "); ok {
 			d.FEN = strings.TrimSpace(s)
 		}
@@ -216,18 +234,7 @@ func (u *UCI) Diagnose() (Diagnosis, error) {
 	if d.FEN == "" {
 		return Diagnosis{}, errors.New("d output missing Fen line")
 	}
-	d.InCheck = strings.TrimSpace(strings.TrimPrefix(last, "Checkers:")) != ""
 	return d, nil
-}
-
-// HasLegalMoves probes with a depth-1 search: deterministic, milliseconds.
-func (u *UCI) HasLegalMoves() (bool, error) {
-	last, err := u.tx(probeTimeout, []string{"go depth 1"}, "bestmove ", nil)
-	if err != nil {
-		return false, err
-	}
-	f := strings.Fields(last)
-	return len(f) >= 2 && f[1] != "(none)", nil
 }
 
 func (u *UCI) Search(timeMs int) (*SearchResult, error) {
@@ -264,6 +271,79 @@ func (u *UCI) Search(timeMs int) (*SearchResult, error) {
 		r.BestMove = f[1]
 	}
 	return r, nil
+}
+
+// Analyse searches fen within a node budget and returns its best variations,
+// best first, from the deepest iteration that finished them all. lines must
+// not exceed the position's legal moves.
+func (u *UCI) Analyse(fen string, lines, nodes int, timeout time.Duration) ([]Line, error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	setup := []string{fmt.Sprintf("setoption name MultiPV value %d", lines), "position fen " + fen, "isready"}
+	if _, err := u.txLocked(barrierTimeout, setup, "readyok", nil); err != nil {
+		return nil, err
+	}
+	search := iteration{lines: lines}
+	if _, err := u.txLocked(timeout, []string{fmt.Sprintf("go nodes %d", nodes)}, "bestmove ", search.read); err != nil {
+		return nil, err
+	}
+	if len(search.done) == 0 {
+		return nil, errors.New("engine reported no variation")
+	}
+	return search.done, nil
+}
+
+// iteration gathers a search's reports into the lines of the deepest iteration
+// that finished all of them. A finished one reports its lines in order at one
+// depth; the budget running out mid-iteration leaves a mixed set, dropped.
+type iteration struct {
+	lines         int
+	current, done []Line
+}
+
+func (it *iteration) read(ln string) {
+	index, line, ok := parseInfo(ln)
+	if !ok {
+		return
+	}
+	if index != len(it.current)+1 || (index > 1 && line.Depth != it.current[0].Depth) {
+		it.current = it.current[:0]
+		if index != 1 {
+			return
+		}
+	}
+	if it.current = append(it.current, line); len(it.current) == it.lines {
+		it.done = append(it.done[:0], it.current...)
+		it.current = it.current[:0]
+	}
+}
+
+// parseInfo reads a search report that carries a variation. A score that is
+// only a bound, as a search cut short reports, is not one.
+func parseInfo(ln string) (index int, line Line, ok bool) {
+	f := strings.Fields(ln)
+	if len(f) == 0 || f[0] != "info" {
+		return 0, Line{}, false
+	}
+	index = 1
+	for i := 1; i < len(f)-1; i++ {
+		switch f[i] {
+		case "depth":
+			line.Depth, _ = strconv.Atoi(f[i+1])
+		case "multipv":
+			index, _ = strconv.Atoi(f[i+1])
+		case "cp":
+			line.Score, _ = strconv.Atoi(f[i+1])
+		case "mate":
+			line.Mate, _ = strconv.Atoi(f[i+1])
+		case "lowerbound", "upperbound":
+			return 0, Line{}, false
+		case "pv":
+			line.Moves = f[i+1:]
+			return index, line, true
+		}
+	}
+	return 0, Line{}, false
 }
 
 func (u *UCI) Close() error {

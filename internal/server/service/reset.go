@@ -129,6 +129,12 @@ func hashResetToken(token string) []byte {
 	return sum[:]
 }
 
+// NewSeat returns a guest's seat secret and the hash a game keeps for it,
+// made as a reset token is; SeatHash is the hash of a secret presented later.
+func NewSeat() (secret string, hash []byte, err error) { return NewResetToken() }
+
+func SeatHash(secret string) []byte { return hashResetToken(secret) }
+
 // ResetLink is the web client URL that opens the password form for token.
 func ResetLink(publicURL *url.URL, token string) string {
 	u := *publicURL

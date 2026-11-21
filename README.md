@@ -6,17 +6,19 @@
 
 # Chess
 
-Go backend server providing a RESTful API for chess gameplay with user authentication. Integrates Stockfish engine for move validation and computer opponents.
+Go backend server providing a RESTful API for chess gameplay with user authentication. Its own rules core validates every move; Stockfish plays the computer opponents.
 
 ## Features
 
 - RESTful API for chess operations
 - User registration and JWT authentication
-- Stockfish engine integration for validation
+- Stockfish engine integration for computer opponents
 - Human vs human, human vs computer, computer vs computer modes
+- Games between two people by invite link, in the web client too: a side is
+  held by an account's claim or, for a guest, by a seat secret
 - Resignation, draw offers (the computer answers from its evaluation), and
   automatic draws: dead material, threefold repetition, fifty-move rule
-- Claimed sides protect players: no takebacks between two players, and a
+- Held sides protect players: no takebacks between two players, and a
   resignation or agreed draw between humans is final; against the computer it
   can be undone and stays on record
 - Custom FEN position support
@@ -24,11 +26,22 @@ Go backend server providing a RESTful API for chess gameplay with user authentic
 - Configurable engine strength and thinking time
 - PostgreSQL 18 persistence with ordered async writes for games
 - Durable game results, player claims and names, ordered move history, and replay API
-- Dependency-free rules core: SAN history, PGN export, FEN validation, and a
-  shadow check of every engine-validated move
+- Unfinished games resume from storage after a restart or a week idle
+- A database outage degrades to memory-only play and heals itself: the games
+  that changed are written once PostgreSQL answers again
+- Dependency-free rules core: move validation, mate, stalemate and draw
+  rules, SAN history, PGN export, FEN validation; Stockfish re-checks its
+  rulings in the background
 - Games without a registered player are purged 24 hours after their last activity
 - Authenticated stored-game listing with cursor pagination and filters
+- A curated archive: collections read from PGN databases by a bulk,
+  repeatable import, published with their source, licence and attribution,
+  and listed publicly with collection, opening and player filters
+- Position analysis for signed-in users: Stockfish's best lines within a
+  node budget, on an engine of its own, cached by position
 - Configurable structured debug logs for persistence, cleanup, and engine work
+- Metrics without an endpoint: one `msg=metrics` log line a minute (queues,
+  retries, latencies, loaded games) for a log shipper to stream
 - User management with secure Argon2id password storage and scoped JWTs
 - Password recovery by email (SMTP relay, or a directory of `.eml` files in
   development) and administrative reset links
@@ -172,13 +185,20 @@ The chess server includes an embedded web UI for playing games through a browser
 
 - Visual chess board with click-to-move and a promotion picker
 - Human vs Computer gameplay, with undo, draw offers and resignation
+- **Play a friend**: an invite link (`?game=<gameId>`), a join prompt for the
+  open side, live moves, draw offers and resignation, with or without accounts
 - Configurable engine strength (0-20) and custom starting positions
 - Move list in standard algebraic notation; copy the FEN or the PGN
 - **My games**: a signed-in user's stored games with thumbnails, filters and
-  paging; games played anonymously on the device are listed for 24 hours
+  paging; games played anonymously on the device are listed for 24 hours;
+  **Continue** puts an unfinished one back on the board
 - **Replay** of any stored game: step, autoplay, flip, keyboard navigation,
   export FEN and PGN at any ply, and shareable links
   (`?replay=<gameId>&ply=<n>`)
+- **Engine** on a replay, for signed-in users: the evaluation and the best
+  three lines of the position shown
+- **Library**: the published archive beside My games, filtered by collection,
+  player and opening code, each game replayed like any other
 - Server and storage health in the top bar
 - Accounts: register, sign in, forgotten-password recovery by email, delete
 - Responsive layout, board beside or above the panel

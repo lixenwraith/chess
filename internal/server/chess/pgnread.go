@@ -1,8 +1,12 @@
 package chess
 
 import (
+	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
+	"iter"
 	"regexp"
 	"strings"
 	"unicode"
@@ -203,7 +207,7 @@ func parsePGNMovetext(text string, game *ParsedPGN) error {
 			// Escape mechanism: the rest of the line is for other software.
 			end := strings.IndexByte(text[i:], '\n')
 			if end < 0 {
-				return nil
+				end = len(text) - i
 			}
 			i += end
 			continue
@@ -224,7 +228,7 @@ func parsePGNMovetext(text string, game *ParsedPGN) error {
 		case ';':
 			end := strings.IndexByte(text[i:], '\n')
 			if end < 0 {
-				return nil
+				end = len(text) - i
 			}
 			i += end
 		case '(':
@@ -309,4 +313,130 @@ func pgnToken(token string, depth int, game *ParsedPGN) error {
 	}
 	game.SAN = append(game.SAN, strings.TrimRight(token, "!?"))
 	return nil
+}
+
+// SplitPGN cuts a PGN database into its games without parsing them: each
+// arrives as text for ParsePGN, in order, whatever the size of the database.
+// A game larger than MaxPGNSize arrives as an ErrInvalidPGN in its place; any
+// other error is the reader's and ends the sequence.
+func SplitPGN(r io.Reader) iter.Seq2[string, error] {
+	return func(yield func(string, error) bool) {
+		reader := bufio.NewReaderSize(r, MaxPGNSize)
+		var split pgnSplit
+		lineStart, first := true, true
+		for {
+			fragment, more, err := reader.ReadLine()
+			if first {
+				fragment, first = bytes.TrimPrefix(fragment, []byte("\uFEFF")), false
+			}
+			if err == nil && lineStart && split.startsGame(fragment) {
+				if text, err, ok := split.take(); ok && !yield(text, err) {
+					return
+				}
+			}
+			if err == nil {
+				split.add(fragment, lineStart, !more)
+				lineStart = !more
+				continue
+			}
+			if text, gameErr, ok := split.take(); ok && !yield(text, gameErr) {
+				return
+			}
+			if err != io.EOF {
+				yield("", err)
+			}
+			return
+		}
+	}
+}
+
+// pgnSplit gathers the lines of one game. A game ends where a tag line
+// follows its movetext, outside a brace comment, or repeats a tag it has: so
+// a game without moves does not swallow the next one.
+type pgnSplit struct {
+	text     strings.Builder
+	tags     map[string]bool
+	moves    bool // the movetext has begun
+	content  bool // more than blank lines, comments and escape lines
+	comment  bool // inside a brace comment
+	skipLine bool // the rest of the line is a tag, an escape or a ; comment
+	oversize bool
+}
+
+func (s *pgnSplit) startsGame(line []byte) bool {
+	name, isTag := pgnTagStart(line)
+	return isTag && !s.comment && (s.moves || s.tags[name])
+}
+
+// pgnTagStart reports whether a line opens a tag pair, and the tag's name.
+func pgnTagStart(line []byte) (name string, ok bool) {
+	line = bytes.TrimLeft(line, " \t")
+	if len(line) == 0 || line[0] != '[' {
+		return "", false
+	}
+	line = bytes.TrimLeft(line[1:], " \t")
+	if end := bytes.IndexAny(line, " \t]"); end >= 0 {
+		line = line[:end]
+	}
+	return string(line), true
+}
+
+// add takes a line, or a piece of one longer than the reader's buffer.
+func (s *pgnSplit) add(fragment []byte, lineStart, lineEnd bool) {
+	if lineStart {
+		s.skipLine = false
+		name, isTag := pgnTagStart(fragment)
+		switch {
+		case s.comment:
+		case isTag:
+			if s.tags == nil {
+				s.tags = make(map[string]bool)
+			}
+			if len(s.tags) <= maxPGNTags {
+				s.tags[name] = true
+			}
+			s.content, s.skipLine = true, true
+		case len(bytes.TrimLeft(fragment, " \t")) > 0:
+			s.moves = true
+			s.skipLine = bytes.TrimLeft(fragment, " \t")[0] == '%'
+		}
+	}
+	if !s.skipLine {
+		for _, c := range fragment {
+			switch {
+			case s.comment:
+				s.comment = c != '}'
+			case c == '{':
+				s.comment = true
+			case c == ';':
+				s.skipLine = true
+			case c != ' ' && c != '\t' && c != '\r':
+				s.content = true
+			}
+			if s.skipLine {
+				break
+			}
+		}
+	}
+	switch {
+	case s.text.Len() == 0 && len(bytes.TrimSpace(fragment)) == 0:
+	case s.text.Len()+len(fragment)+1 > MaxPGNSize:
+		s.oversize = true
+	default:
+		s.text.Write(fragment)
+		if lineEnd {
+			s.text.WriteByte('\n')
+		}
+	}
+}
+
+// take hands over the game gathered so far and starts the next; ok is false
+// when there was none, only blank lines and comments between games.
+func (s *pgnSplit) take() (text string, err error, ok bool) {
+	text, ok = s.text.String(), s.content
+	if s.oversize {
+		text, err = "", pgnError("larger than %d bytes", MaxPGNSize)
+	}
+	*s = pgnSplit{}
+	return text, err, ok
 }

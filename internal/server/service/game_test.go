@@ -2,6 +2,8 @@ package service
 
 import (
 	"errors"
+	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -27,7 +29,7 @@ func TestMoveCommitClaimsSlotPersistsResultAndRejectsStalePosition(t *testing.T)
 	ended := time.Date(2026, 9, 7, 2, 3, 4, 0, time.UTC)
 	commit := MoveCommit{
 		ExpectedFEN: "initial", ExpectedState: core.StateOngoing, ExpectedTurn: core.ColorWhite,
-		ActorUserID: userID, MoveUCI: "e2e4", NewFEN: "after", State: core.StateWhiteWins, Termination: core.TermCheckmate, At: ended,
+		Actor: core.Actor{UserID: userID}, MoveUCI: "e2e4", NewFEN: "after", State: core.StateWhiteWins, Termination: core.TermCheckmate, At: ended,
 		Result: &game.MoveResult{Move: "e2e4", PlayerColor: core.ColorWhite, GameState: core.StateWhiteWins},
 	}
 	if err := svc.ApplyMoveWithState(gameID, commit); err != nil {
@@ -70,7 +72,7 @@ func TestUndoClearsDurableTerminalResult(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.UndoMoves(gameID, 1, ""); err != nil {
+	if err := svc.UndoMoves(gameID, 1, core.Actor{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -100,7 +102,7 @@ func TestPlayerReconfigurationPreservesClaimAndPersistsConfiguration(t *testing.
 	replacementBlack := core.NewPlayer(
 		core.PlayerConfig{Type: core.PlayerComputer, Level: 12, SearchTime: 500}, core.ColorBlack,
 	)
-	if err := svc.UpdatePlayers(gameID, replacementWhite, replacementBlack, userID); err != nil {
+	if err := svc.UpdatePlayers(gameID, replacementWhite, replacementBlack, core.Actor{UserID: userID}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -118,7 +120,7 @@ func TestPlayerReconfigurationPreservesClaimAndPersistsConfiguration(t *testing.
 	computerWhite := core.NewPlayer(
 		core.PlayerConfig{Type: core.PlayerComputer, Level: 8, SearchTime: 300}, core.ColorWhite,
 	)
-	if err := svc.UpdatePlayers(gameID, computerWhite, replacementBlack, userID); err != nil {
+	if err := svc.UpdatePlayers(gameID, computerWhite, replacementBlack, core.Actor{UserID: userID}); err != nil {
 		t.Fatal(err)
 	}
 	history, err = svc.GetGameHistory(t.Context(), gameID)
@@ -238,4 +240,81 @@ func newPersistentTestServiceDSN(t *testing.T) (*Service, string) {
 		}
 	})
 	return svc, dsn
+}
+
+// unload drops a game from memory as a restart does: its rows stay.
+func unload(svc *Service, gameID string) {
+	svc.mu.Lock()
+	delete(svc.games, gameID)
+	svc.mu.Unlock()
+}
+
+func TestOnlyAnUnfinishedPlayedGameResumesFromItsRows(t *testing.T) {
+	svc := newPersistentTestService(t)
+	ctx := t.Context()
+	user, _, err := svc.RegisterUser(ctx, "alice", "", "Password1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	computer := core.PlayerConfig{Type: core.PlayerComputer, Level: 3, SearchTime: 100}
+	gameID := playLine(t, svc, user.UserID, computer, []string{"e2e4", "e7e5", "g1f3"}, core.StateOngoing)
+	// A resignation the undo takes back stays on record.
+	view, _ := svc.GetGameView(gameID)
+	if err := svc.EndGame(gameID, EndCommit{
+		ExpectedFEN: view.FEN, Color: core.ColorWhite, Actor: core.Actor{UserID: user.UserID},
+		State: core.StateBlackWins, Termination: core.TermResignation,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.UndoMoves(gameID, 1, core.Actor{UserID: user.UserID}); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := svc.GetGameView(gameID)
+
+	unload(svc, gameID)
+	if _, err := svc.GetGameView(gameID); !errors.Is(err, ErrGameNotFound) {
+		t.Fatalf("a lookup loaded the game: %v", err)
+	}
+	// Concurrent misses share the load.
+	loads := make(chan error, 8)
+	for range cap(loads) {
+		go func() { loads <- svc.LoadGame(ctx, gameID) }()
+	}
+	for range cap(loads) {
+		if err := <-loads; err != nil {
+			t.Fatal(err)
+		}
+	}
+	after, err := svc.GetGameView(gameID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	near := func(a, b time.Time) bool { return a.Sub(b).Abs() < time.Millisecond }
+	if after.FEN != before.FEN || !slices.Equal(after.Moves, before.Moves) || !slices.Equal(after.FENs, before.FENs) ||
+		after.NextTurnColor != before.NextTurnColor || after.State != core.StateOngoing ||
+		after.WhitePlayer.ClaimedBy != user.UserID || after.WhitePlayer.ID != before.WhitePlayer.ID ||
+		!reflect.DeepEqual(after.BlackPlayer, before.BlackPlayer) || !near(after.StartTimeUTC, before.StartTimeUTC) ||
+		!near(after.MoveTimes[1], before.MoveTimes[1]) {
+		t.Fatalf("resumed game differs:\n got %+v\nwant %+v", after, before)
+	}
+	if c := after.Concession; c == nil || c.State != core.StateBlackWins || c.Termination != core.TermResignation ||
+		c.Ply != 3 || !near(c.At, before.Concession.At) {
+		t.Fatalf("resumed concession = %+v, want %+v", after.Concession, before.Concession)
+	}
+	move(t, svc, gameID, user.UserID, "g1f3")
+	if history, err := svc.GetGameHistory(ctx, gameID); err != nil || len(history.Moves) != 3 {
+		t.Fatalf("play after the resume: %+v, %v", history, err)
+	}
+
+	finished := playLine(t, svc, user.UserID, computer, []string{"f2f3", "e7e5", "g2g4", "d8h4"}, core.StateBlackWins)
+	unload(svc, finished)
+	imported, err := svc.ImportGame(ctx, user.UserID, importPGN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, id := range map[string]string{"finished": finished, "imported": imported.GameID, "unknown": uuid.NewString()} {
+		if err := svc.LoadGame(ctx, id); !errors.Is(err, ErrGameNotFound) {
+			t.Errorf("%s game: load = %v, want ErrGameNotFound", name, err)
+		}
+	}
 }

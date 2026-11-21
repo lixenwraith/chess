@@ -1,7 +1,7 @@
-// Package chess is a dependency-free rules core for replay and notation: FEN,
-// legal move generation, SAN, PGN, and draw-rule detection. Stockfish remains
-// the move validator for live play; this package derives notation from stored
-// games and cross-checks the engine.
+// Package chess is a dependency-free rules core: FEN, legal move generation,
+// SAN, PGN, and draw-rule detection. It is the move authority of live play
+// and derives notation from stored games; Stockfish plays the computer's
+// moves and re-checks its rulings.
 package chess
 
 import (
@@ -136,12 +136,11 @@ func fenError(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrInvalidFEN, fmt.Sprintf(format, args...))
 }
 
-// ParseFEN parses and validates a six-field FEN. It rejects positions the
-// rules cannot arise from in ways that matter to move generation: a king
-// count other than one per side, pawns on the first or last rank, or the side
-// not to move being in check. Castling rights whose king or rook is not on
-// its original square are dropped, and an en-passant square is kept only
-// when a double step could have produced it.
+// ParseFEN parses and validates a six-field FEN. It rejects what move
+// generation cannot work from: a king count other than one per side, pawns on
+// the first or last rank, the side not to move in check. Castling rights
+// whose king or rook has left its original square are dropped, and an
+// en-passant square is kept only when a double step could have produced it.
 func ParseFEN(fen string) (*Position, error) {
 	if len(fen) > maxFENLength {
 		return nil, fenError("longer than %d bytes", maxFENLength)

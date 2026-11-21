@@ -47,6 +47,16 @@ async function register(page, request) {
     return { ...auth, password: 'Passw0rd123' };
 }
 
+// Signs in as one of the accounts run-test-server.sh creates, which spares
+// the registration limit.
+async function signIn(page, request, username, password) {
+    const response = await request.post(`${API}/api/auth/login`, { data: { identifier: username, password } });
+    expect(response.status(), await response.text()).toBe(200);
+    const auth = await response.json();
+    await page.addInitScript(token => localStorage.setItem('authToken', token), auth.token);
+    return auth;
+}
+
 test.describe('web replay', () => {
     test('play, list, replay, export', async ({ page, request }) => {
         const user = await register(page, request);
@@ -177,6 +187,59 @@ test.describe('web replay', () => {
         await expect(page.locator('body')).toHaveAttribute('data-mode', 'live');
         await expect(page.locator('#turn-text')).toHaveText('No game');
         await expect(page).toHaveURL(/\/$/);
+    });
+
+    test('the engine analyses a replayed position for a signed-in viewer', async ({ page, request }) => {
+        const created = await request.post(`${API}/api/games`, { data: { white: { type: 1 }, black: { type: 1 } } });
+        const { gameId } = await created.json();
+        for (const m of ['f2f3', 'e7e5', 'g2g4', 'd8h4']) {
+            const r = await request.post(`${API}/api/games/${gameId}/moves`, { data: { move: m } });
+            expect(r.status(), await r.text()).toBe(200);
+        }
+        // A guest is offered no engine.
+        await page.goto(`/?replay=${gameId}&ply=3`);
+        await expect(page.locator('#replay-ply')).toHaveText('3 / 4');
+        await expect(page.locator('#replay-analyse')).toBeHidden();
+
+        await signIn(page, request, 'alice', 'AlicePass123');
+        await page.reload();
+        await expect(page.locator('#auth-label')).toHaveText('alice');
+        await page.click('#replay-analyse');
+        // Black mates in one from here, and the score is White's.
+        await expect(page.locator('#analysis-eval')).toHaveText('#-1', { timeout: 30_000 });
+        await expect(page.locator('#analysis-lines li')).toHaveCount(3);
+        await expect(page.locator('#analysis-lines li').first()).toContainText('2… Qh4#');
+        // The final position is the rules' to describe.
+        await page.keyboard.press('End');
+        await expect(page.locator('#analysis-eval')).toHaveText('Checkmate — Black wins');
+        await expect(page.locator('#analysis-lines li')).toHaveCount(0);
+    });
+
+    // The collection and its games come from run-test-server.sh.
+    test('the Library lists a published collection to a visitor, who replays a game of it', async ({ page }) => {
+        await page.goto('/');
+        await page.click('#games-btn');
+        await page.click('.seg[data-view="library"]');
+        await expect(page).toHaveURL(/\?games=library$/);
+        await expect(page.locator('#library-list .game-row')).toHaveCount(3);
+        await page.selectOption('#library-collection', 'classics');
+        await expect(page.locator('#library-rights')).toHaveText('Compiled for the tests · Public domain · https://example.org/classics');
+        await page.fill('#library-eco', 'c');
+        await expect(page.locator('#library-list .game-row')).toHaveCount(2);
+        await page.fill('#library-player', 'morphy');
+        const row = page.locator('#library-list .game-row');
+        await expect(row).toHaveCount(1);
+        await expect(row).toContainText('Morphy, Paul vs Duke Karl / Count Isouard');
+        await expect(row).toContainText('C41 · Paris Opera');
+        // A game nobody owns offers nothing to delete or continue.
+        await expect(page.locator('#library-list .game-delete, #library-list .game-continue')).toHaveCount(0);
+
+        await row.click();
+        await expect(page.locator('body')).toHaveAttribute('data-mode', 'replay');
+        await expect(page.locator('#replay-ply')).toHaveText('33 / 33');
+        await expect(page.locator('#replay-moves .move').last()).toHaveText('Rd8#');
+        await expect(page.locator('#replay-meta')).toContainText('C41');
+        await expect(page.locator('#replay-meta')).toHaveAttribute('title', /Classic games · Compiled for the tests/);
     });
 
     test('import a PGN, replay it, delete it', async ({ page, request }) => {
@@ -341,6 +404,106 @@ test.describe('web replay', () => {
         await page.fill('#reset-password-2', 'NewPass125');
         await page.click('#reset-submit-btn');
         await expect(page.locator('#reset-modal-message')).toContainText('invalid or has expired');
+    });
+
+    test('an unfinished game continues from the list after the server unloaded it', async ({ page, request }) => {
+        const user = await signIn(page, request, 'alice', 'AlicePass123');
+        await page.goto('/');
+        await expect(page.locator('#auth-label')).toHaveText('alice');
+        await startGame(page);
+        await move(page, 'e2', 'e4');
+        await expectPlies(page, 2);
+        const gameId = await page.evaluate(() => live.gameId);
+        // Unloading does to one game what a restart does to all: the rows stay.
+        const unloaded = await request.delete(`${API}/api/games/${gameId}`, {
+            headers: { Authorization: `Bearer ${user.token}` },
+        });
+        expect(unloaded.status()).toBe(204);
+        await page.reload();
+        await expect(page.locator('#turn-text')).toHaveText('No game');
+
+        await page.click('#games-btn');
+        const item = page.locator(`#games-list .game-item:has([data-game-id="${gameId}"])`);
+        await expect(item.locator('.game-row')).toContainText('Ongoing');
+        await item.locator('.game-continue').click();
+        await expect(page.locator('#games-overlay')).not.toHaveClass(/show/);
+        await expect(page.locator('#live-moves .move')).toHaveCount(2);
+        await expect(page.locator('#live-moves .move').first()).toHaveText('e4');
+        await expect(page.locator('#turn-text')).toHaveText('Your move');
+        await move(page, 'g1', 'f3');
+        await expectPlies(page, 4);
+        const history = await (await request.get(`${API}/api/games/${gameId}/history`)).json();
+        expect(history.moves).toHaveLength(4);
+        // The game on the board offers no Continue of itself.
+        await page.click('#games-btn');
+        await expect(item.locator('.game-row')).toHaveClass(/current/);
+        await expect(item.locator('.game-continue')).toHaveCount(0);
+    });
+
+    test('two visitors play through an invite link: a join, a draw offer, a resignation', async ({ browser, request }) => {
+        const options = { permissions: ['clipboard-read', 'clipboard-write'] };
+        const hostContext = await browser.newContext(options), guestContext = await browser.newContext(options);
+        const host = await hostContext.newPage(), guest = await guestContext.newPage();
+        await signIn(host, request, 'bob', 'BobSecure456');
+        await host.goto('/');
+        await expect(host.locator('#auth-label')).toHaveText('bob');
+
+        // The host starts a game against a friend and copies its link.
+        await host.click('#new-game-btn');
+        await host.check('input[name="opponent"][value="friend"]');
+        await expect(host.locator('#level-group')).toBeHidden();
+        await host.click('#start-game-btn');
+        await expect(host.locator('#modal-overlay')).not.toHaveClass(/show/);
+        await expect(host.locator('#invite-row')).toBeVisible();
+        await expect(host.locator('#undo-btn')).toBeDisabled();
+        await host.click('#invite-copy-btn');
+        const link = await host.evaluate(() => navigator.clipboard.readText());
+        expect(link).toMatch(/\?game=[0-9a-f-]{36}$/);
+        expect(host.url()).toBe(link);
+        const gameId = new URL(link).searchParams.get('game');
+
+        // The guest opens it, is offered the open side, and takes it.
+        await guest.goto(link);
+        await expect(guest.locator('#join-overlay')).toHaveClass(/show/);
+        await expect(guest.locator('#join-modal-message')).toContainText('bob invites you');
+        await guest.click('.join-side[data-side="b"]');
+        await expect(guest.locator('#join-overlay')).not.toHaveClass(/show/);
+        await expect(guest.locator('.coordinates.ranks span').first()).toHaveText('1');
+        await expect(guest.locator('#turn-text')).toHaveText('bob');
+        await expect(host.locator('#invite-row')).toBeHidden();
+        await expect(host.locator('#turn-text')).toHaveText('Your move');
+
+        // Each sees the other's move; a side moves only for its holder.
+        await move(host, 'e2', 'e4');
+        await expect(guest.locator('#live-moves .move')).toHaveCount(1);
+        await expect(guest.locator('#turn-text')).toHaveText('Your move');
+        const stranger = await request.post(`${API}/api/games/${gameId}/moves`, { data: { move: 'e7e5' } });
+        expect(stranger.status()).toBe(403);
+        await move(guest, 'e7', 'e5');
+        await expect(host.locator('#live-moves .move')).toHaveCount(2);
+        await expect(host.locator('#live-moves .move').nth(1)).toHaveText('e5');
+
+        // The guest offers a draw; the host sees it on Draw and declines by moving.
+        await guest.click('#draw-btn');
+        await expect(guest.locator('#draw-btn')).toBeDisabled();
+        await expect(host.locator('#draw-btn')).toHaveText('Accept');
+        await expect(host.locator('#draw-btn')).toHaveClass(/offered/);
+        await move(host, 'g1', 'f3');
+        await expect(host.locator('#draw-btn')).toHaveText('Draw');
+        await expect(guest.locator('#live-moves .move')).toHaveCount(3);
+        await expect(guest.locator('#draw-btn')).toBeEnabled();
+
+        // The guest resigns: both boards show the result.
+        await guest.click('#resign-btn');
+        await guest.click('#resign-confirm-btn');
+        await expect(guest.locator('#turn-text')).toHaveText('White wins · resigned');
+        await expect(host.locator('#turn-text')).toHaveText('White wins · resigned');
+        const history = await (await request.get(`${API}/api/games/${gameId}/history`)).json();
+        expect(history.termination).toBe('resignation');
+        expect(history.players.white.name).toBe('bob');
+        expect(history.players.black.seated).toBe(true);
+        await hostContext.close();
+        await guestContext.close();
     });
 
     test('an anonymous visitor replays from the device list', async ({ page }) => {

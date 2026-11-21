@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 )
 
 // ImportGame stores a game read from PGN with its whole move list in one
@@ -13,11 +14,27 @@ import (
 // it has committed. The record's ImportedBy names the owner; names, event,
 // site and round come from the PGN's tags.
 func (s *Store) ImportGame(ctx context.Context, record GameRecord, moves []MoveRecord) error {
-	if record.GameID == "" || record.InitialFEN == "" || record.WhitePlayerID == "" || record.BlackPlayerID == "" {
-		return errors.New("game ID, initial FEN, and player IDs are required")
-	}
 	if !validUUID(record.ImportedBy) {
 		return errors.New("an imported game needs its importer")
+	}
+	record.Origin = OriginImported
+	if err := checkWholeGame(record, moves); err != nil {
+		return err
+	}
+	return s.enqueueWait(ctx, "import_game", func(ctx context.Context, tx *sql.Tx) error {
+		if err := insertWholeGame(ctx, tx, record, moves); err != nil {
+			return err
+		}
+		slog.Debug("storage game imported", "game_id", record.GameID, "plies", len(moves), "user_id", record.ImportedBy)
+		return nil
+	})
+}
+
+// checkWholeGame refuses, before a transaction is spent on it, a game the
+// schema would refuse.
+func checkWholeGame(record GameRecord, moves []MoveRecord) error {
+	if record.GameID == "" || record.InitialFEN == "" || record.WhitePlayerID == "" || record.BlackPlayerID == "" {
+		return errors.New("game ID, initial FEN, and player IDs are required")
 	}
 	if err := validateOutcome(record.Result, record.Termination, record.EndTimeUTC); err != nil {
 		return err
@@ -28,35 +45,40 @@ func (s *Store) ImportGame(ctx context.Context, record GameRecord, moves []MoveR
 			return fmt.Errorf("move %d is malformed", i+1)
 		}
 	}
+	return nil
+}
 
-	return s.enqueueWait(ctx, "import_game", func(ctx context.Context, tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO games (
-			game_id, initial_fen,
-			white_player_id, white_type, white_level, white_search_time, white_claimed_by, white_name,
-			black_player_id, black_type, black_level, black_search_time, black_claimed_by, black_name,
-			start_time_utc, result, termination, end_time_utc,
-			imported_by, event, site, round
-		) VALUES ($1, $2, $3, $4, 0, 0, NULL, $5, $6, $7, 0, 0, NULL, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
-			record.GameID, record.InitialFEN,
-			record.WhitePlayerID, record.WhiteType, nullableString(record.WhiteName),
-			record.BlackPlayerID, record.BlackType, nullableString(record.BlackName),
-			record.StartTimeUTC, nullableString(record.Result), nullableString(record.Termination), record.EndTimeUTC,
-			record.ImportedBy, nullableString(record.Event), nullableString(record.Site), nullableString(record.Round),
-		); err != nil {
-			return err
-		}
-		for _, move := range moves {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO moves (
-				game_id, move_number, move_uci, fen_after_move, player_color, move_time_utc
-			) VALUES ($1, $2, $3, $4, $5, $6)`,
-				move.GameID, move.MoveNumber, move.MoveUCI, move.FENAfterMove, move.PlayerColor, move.MoveTimeUTC,
-			); err != nil {
-				return err
-			}
-		}
-		slog.Debug("storage game imported", "game_id", record.GameID, "plies", len(moves), "user_id", record.ImportedBy)
-		return nil
-	})
+// insertWholeGame writes the row and the line of a game read from PGN: no
+// claims, the names as its tags gave them.
+func insertWholeGame(ctx context.Context, tx *sql.Tx, record GameRecord, moves []MoveRecord) error {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO games (
+		game_id, initial_fen,
+		white_player_id, white_type, white_level, white_search_time, white_claimed_by, white_name,
+		black_player_id, black_type, black_level, black_search_time, black_claimed_by, black_name,
+		start_time_utc, result, termination, end_time_utc,
+		imported_by, event, site, round, origin
+	) VALUES ($1, $2, $3, $4, 0, 0, NULL, $5, $6, $7, 0, 0, NULL, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+		record.GameID, record.InitialFEN,
+		record.WhitePlayerID, record.WhiteType, nullableString(record.WhiteName),
+		record.BlackPlayerID, record.BlackType, nullableString(record.BlackName),
+		record.StartTimeUTC, nullableString(record.Result), nullableString(record.Termination), record.EndTimeUTC,
+		nullableString(record.ImportedBy), nullableString(record.Event), nullableString(record.Site),
+		nullableString(record.Round), record.Origin,
+	); err != nil {
+		return err
+	}
+	numbers := make([]int32, len(moves))
+	uci, fens, colors := make([]string, len(moves)), make([]string, len(moves)), make([]string, len(moves))
+	times := make([]time.Time, len(moves))
+	for i, move := range moves {
+		numbers[i], uci[i], fens[i], colors[i], times[i] =
+			int32(move.MoveNumber), move.MoveUCI, move.FENAfterMove, move.PlayerColor, move.MoveTimeUTC
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO moves (
+		game_id, move_number, move_uci, fen_after_move, player_color, move_time_utc
+	) SELECT $1, line.* FROM unnest($2::int[], $3::text[], $4::text[], $5::text[], $6::timestamptz[]) AS line`,
+		record.GameID, numbers, uci, fens, colors, times)
+	return err
 }
 
 // RemovalOutcome says what RemoveGameForUser did.

@@ -231,7 +231,7 @@ button { cursor: pointer; }
 .btn-play[aria-pressed="true"] .icon-play { display: none; }
 .btn-play[aria-pressed="true"] .icon-pause { display: block; }
 
-#replay-flip[aria-pressed="true"] { border-color: var(--periwinkle); color: var(--periwinkle); }
+#replay-flip[aria-pressed="true"], #replay-analyse[aria-pressed="true"], #library-featured[aria-pressed="true"] { border-color: var(--periwinkle); color: var(--periwinkle); }
 
 #auth-btn[data-status="authenticated"] { color: var(--fg); }
 
@@ -598,6 +598,36 @@ body[data-mode="replay"] .pane-live { display: none; }
     font-size: 0.78rem;
 }
 
+/* The engine's view of the replayed position; the list keeps the height of
+   its three lines so a new position does not move the move list. */
+.analysis {
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    padding: 0.4rem 0.6rem;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    font-size: 0.82rem;
+}
+
+.analysis-head { display: flex; align-items: baseline; gap: 0.5rem; min-height: 1.35rem; }
+.analysis-eval { color: var(--fg); font-family: var(--mono); font-weight: 600; font-size: 0.95rem; }
+.analysis-note { color: var(--muted); font-size: 0.78rem; }
+
+.analysis-lines {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    min-height: 3.9em;
+    line-height: 1.3;
+}
+
+.analysis-lines li { display: flex; gap: 0.5rem; white-space: nowrap; }
+.analysis-score { flex: none; width: 3.1rem; color: var(--fg); font-family: var(--mono); text-align: right; }
+.analysis-moves { color: var(--fg-soft); overflow: hidden; text-overflow: ellipsis; }
+
 .replay-nav {
     flex: none;
     display: flex;
@@ -933,6 +963,34 @@ input[type="range"]:focus-visible { outline: 2px solid var(--periwinkle); outlin
 .seg.active { background: var(--royal-soft); color: var(--white); }
 .seg:focus-visible { outline: 2px solid var(--periwinkle); outline-offset: -2px; }
 
+.games-views { flex: none; align-self: flex-start; margin-bottom: 0.6rem; }
+
+.library-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 0.6rem;
+}
+
+.library-filters select, .library-filters input {
+    height: 2.1rem;
+    min-width: 0;
+    padding: 0 0.5rem;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    color: var(--fg);
+    font-size: 0.85rem;
+}
+
+.library-filters select { flex: 2 1 9rem; }
+#library-player { flex: 2 1 7rem; }
+#library-eco { flex: 0 1 4.2rem; text-transform: uppercase; }
+#library-eco::placeholder { text-transform: none; }
+.library-filters select:focus-visible, .library-filters input:focus-visible { outline: 2px solid var(--periwinkle); }
+#library-featured { flex: none; }
+#library-rights { overflow-wrap: anywhere; }
+
 .games-body {
     flex: 1;
     min-height: 0;
@@ -1060,6 +1118,27 @@ input[type="range"]:focus-visible { outline: 2px solid var(--periwinkle); outlin
 }
 
 .game-delete:hover:not(:disabled) { color: var(--red); border-color: var(--red); transform: none; }
+
+.game-continue { flex: none; align-self: center; padding: 0.35rem 0.55rem; font-size: 0.8rem; }
+
+/* A game against a friend: the invite while the other side is open, and the
+   Draw button while the friend's offer stands. */
+.invite {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.35rem 0.5rem;
+    border: 1px dashed var(--periwinkle);
+    border-radius: var(--radius-sm);
+    font-size: 0.82rem;
+    color: var(--fg-soft);
+}
+
+.invite .btn { flex: none; }
+.invite-text { min-width: 0; }
+
+#draw-btn.offered { border-color: var(--yellow); color: var(--yellow); }
 
 .game-confirm {
     flex: none;
@@ -1209,6 +1288,11 @@ input[type="range"]:focus-visible { outline: 2px solid var(--periwinkle); outlin
     .pane-replay .btn-exit { flex: 1.3 1 0; min-width: 0; padding: 0.45rem 0.3rem; font-size: 0.82rem; }
     .pane-replay .btn-exit #replay-exit-label { display: none; }
     .pane-replay .btn-exit .label-short { display: inline; }
+    /* The best line alone, beside its score. */
+    .analysis { flex-direction: row; align-items: baseline; gap: 0.5rem; padding: 0.3rem 0.6rem; }
+    .analysis-head { flex: none; min-height: 0; }
+    .analysis-lines { flex: 1 1 auto; min-width: 0; min-height: 1.3em; }
+    .analysis-lines li:not(:first-child), .analysis-score { display: none; }
     .pane-replay .replay-nav {
         display: grid;
         grid-template-columns: repeat(5, 1fr) 1.4fr 1fr;

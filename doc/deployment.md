@@ -179,6 +179,7 @@ Server flags:
 | `-idle-game-ttl` | | Memory retention of an unfinished game with a registered player after its last activity; it stays stored (default `168h`) |
 | `-finished-game-ttl` | | Memory retention of finished games (default `1h`) |
 | `-db-cleanup` | | Hourly integrity sweep: `off` (default), `report` (log findings), or `delete` ([database.md](database.md#integrity-sweep)) |
+| `-metrics-interval` | | How often the measures are logged as one `msg=metrics` line (default `1m`, `0` = off); see [Metrics](#metrics) |
 | `-smtp-host`, `-smtp-port` | | SMTP relay for password-reset email (default port 25); recovery is off without a transport |
 | `-smtp-user`, `-smtp-password-file` | | Relay credentials, optional; the file is mode 0600 and only sent over TLS |
 | `-mail-from` | | Sender address of server email |
@@ -196,7 +197,9 @@ jail# su -m chess -c '/home/chess/bin/chess-server db user list -dsn "postgres:/
 (games, with 8-digit ID prefixes), `pgn -gameId <id|prefix> [-ply N]`,
 `verify [-gameId <id|prefix>]` (replays stored games against the rules and
 exits non-zero on a mismatch; run it after an upgrade), `game delete -gameId
-<id|prefix> -confirm`, `game import -file <pgn> -username <owner>`, and `user
+<id|prefix> -confirm`, `game import -file <pgn> -username <owner>`, `archive
+collection set|list|delete`, `archive import`, `archive feature`
+([database.md](database.md#the-archive)), and `user
 add|delete|set-password|set-hash|set-email|set-username|reset-link|list`.
 
 A forgotten password is reset from the jail without mail:
@@ -211,6 +214,23 @@ link to hand to the person, the same link the recovery email carries:
 ```sh
 jail# su -m chess -c '/home/chess/bin/chess-server db user reset-link -username <name> -url https://<site>/chess/web-client/ -dsn "postgres:///chess?host=/tmp"'
 ```
+
+## Metrics
+
+The server has no metrics endpoint: it logs its measures
+([architecture.md](architecture.md#metrics)) as one `msg=metrics` line an
+interval, in the service's log (`chessd_logs`). Any log shipper that filters
+on a line's text can carry them; where LogWisp is used, it streams those
+lines alone from the log's directory and file name:
+
+```sh
+lw --source 'file:directory=<log directory>,pattern=<log file>' \
+   --filter 'include:patterns=msg=metrics' --sink 'http:port=<port>'
+```
+
+The sink listens on loopback unless given a `host`. A counter that moves
+(`storage.degraded`, `rules.disagreements`, `engine.restarts`) has a WARN or
+ERROR line of its own in the same log.
 
 ## Password Recovery by Email
 
@@ -354,7 +374,11 @@ Restore the previous web client files on the host as well.
   (`--role=chess_owner` in split mode).
 - PostgreSQL restarts: the server retries in-flight writes across a brief
   outage. A write that still fails marks storage `degraded` in `/health`; live
-  games continue in memory, but durable history stops until `chessd` restarts.
+  games continue in memory. Every 5 seconds the server tries the database
+  again, and once it answers writes each game that changed in the meantime
+  and reports `ok`: the log says `storage recovered`. Restarting `chessd`
+  while degraded loses the moves only memory held, so restore PostgreSQL
+  first.
 
 ### Verification checklist
 

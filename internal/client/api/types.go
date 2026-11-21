@@ -160,7 +160,14 @@ type GameSummary struct {
 	MoveCount    int             `json:"moveCount"`
 	Origin       string          `json:"origin,omitempty"`
 	Event        string          `json:"event,omitempty"`
+	Archive      *ArchiveInfo    `json:"archive,omitempty"`
 	Players      PlayersResponse `json:"players"`
+}
+
+// ArchiveInfo is the archive's part of a listed game.
+type ArchiveInfo struct {
+	Collection string `json:"collection"`
+	ECO        string `json:"eco,omitempty"`
 }
 
 type ImportGameRequest struct {

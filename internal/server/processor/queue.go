@@ -140,6 +140,9 @@ func (q *EngineQueue) processTask(eng *engine.UCI, task EngineTask) EngineResult
 	return result
 }
 
+// Depth is how many tasks wait for a worker.
+func (q *EngineQueue) Depth() int { return len(q.tasks) }
+
 func (q *EngineQueue) Submit(task EngineTask) error {
 	q.submitMu.RLock()
 	defer q.submitMu.RUnlock()

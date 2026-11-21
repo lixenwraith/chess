@@ -21,3 +21,25 @@ What earlier agents learned that neither AGENTS.md nor the other docs state.
   8080 and 9090 and the next suite runs against it. Stop it by PID.
 - The Playwright suite registers accounts, so `--repeat-each` soon meets the
   5-a-minute registration limit: those 429s are not regressions.
+- The Playwright suite, `test-replay.sh` and `test-draw.sh` each register
+  accounts: run back to back they pass the 5-a-minute limit and the later one
+  fails on 429. New e2e tests sign in as `alice` or `bob`, which
+  `run-test-server.sh` creates.
+- `core.Player` holds a slice (`Seat`): compare players with
+  `reflect.DeepEqual`, not `==`.
+- A storage test that renames a user after queueing a claim flushes first:
+  the queued write takes the name when it runs.
+- The operator keeps the database across releases: a schema change is a
+  migration over the rows it finds, never a fresh start. Rehearse it: seed a
+  schema through the previous release's server, then open it with the new
+  build and run `db verify`.
+- Docs and reports name no command the operator may not have: `chess-db`
+  exists only where the Linux installer wrote it, and a `db` subcommand takes
+  the DSN the service runs with, which this repository cannot know.
+- A fuzz run that sits at 0 execs a second is minimizing an input, by
+  default for a minute each: `-fuzzminimizetime=2s` shows the real rate.
+- Account deletion clears `imported_by`, so an import outlives its owner
+  until the purge: `games.origin` says how a game was stored, not who holds
+  it.
+- `applyURL` awaits a game's load: two history steps in a row overlap, and
+  the later one must win (`ui.navigation`).

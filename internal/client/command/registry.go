@@ -2,6 +2,7 @@ package command
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"strings"
 
@@ -10,7 +11,6 @@ import (
 	"github.com/lixenwraith/chess/internal/client/session"
 )
 
-// Command defines a client command with its handler
 type Command struct {
 	Name        string
 	ShortName   string
@@ -27,20 +27,17 @@ type Registry struct {
 	commands map[string]*Command
 }
 
-// Registry manages command registration and execution
 func NewRegistry(s *session.Session) *Registry {
 	r := &Registry{
 		session:  s,
 		commands: make(map[string]*Command),
 	}
 
-	// Register all commands
 	r.registerGameCommands()
 	r.registerReplayCommands()
 	r.registerAuthCommands()
 	r.registerDebugCommands()
 
-	// Help command
 	r.Register(&Command{
 		Name:        "help",
 		ShortName:   "?",
@@ -50,7 +47,7 @@ func NewRegistry(s *session.Session) *Registry {
 		Paged:       true,
 	})
 
-	// Exit command (handled in main loop, but registered for help display)
+	// The main loop handles exit; it is registered so help lists it
 	r.Register(&Command{
 		Name:        "exit",
 		ShortName:   "x",
@@ -60,6 +57,17 @@ func NewRegistry(s *session.Session) *Registry {
 	})
 
 	return r
+}
+
+// interruptible runs a command that waits under a context Ctrl-C cancels, so
+// the wait ends and the session stays. Commands without it keep Ctrl-C's
+// default, as the prompt does.
+func interruptible(run func(context.Context, *session.Session, []string) error) func(*session.Session, []string) error {
+	return func(s *session.Session, args []string) error {
+		ctx, stop := interruptContext()
+		defer stop()
+		return run(ctx, s, args)
+	}
 }
 
 func (r *Registry) Register(cmd *Command) {
@@ -89,7 +97,6 @@ func (r *Registry) Execute(input string) {
 		return
 	}
 
-	// Set verbose mode in client if session supports it
 	if cl, ok := r.session.GetClient().(*api.Client); ok {
 		cl.SetVerbose(r.session.IsVerbose())
 	}
@@ -113,7 +120,6 @@ func (r *Registry) Execute(input string) {
 
 func (r *Registry) helpHandler(s *session.Session, args []string) error {
 	if len(args) > 0 {
-		// Show help for specific command
 		cmd, exists := r.commands[args[0]]
 		if !exists {
 			return fmt.Errorf("unknown command: %s", args[0])
@@ -128,10 +134,8 @@ func (r *Registry) helpHandler(s *session.Session, args []string) error {
 		return nil
 	}
 
-	// Show all commands
 	display.Println(display.Cyan, "\nAvailable Commands:\n")
 
-	// Group commands
 	type cmdInfo struct {
 		name      string
 		shortName string
@@ -151,6 +155,7 @@ func (r *Registry) helpHandler(s *session.Session, args []string) error {
 		{"resign", "", ""},
 		{"draw", "", ""},
 		{"games", "g", ""},
+		{"archive", "", ""},
 		{"pgn", "", ""},
 		{"import", "", ""},
 	}
@@ -209,7 +214,6 @@ func (r *Registry) helpHandler(s *session.Session, args []string) error {
 }
 
 func exitHandler(s *session.Session, args []string) error {
-	// Exit is handled in main loop, this is just for consistency
 	display.Println(display.Cyan, "Goodbye!\n")
 	return nil
 }

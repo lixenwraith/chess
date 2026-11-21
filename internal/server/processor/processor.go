@@ -1,12 +1,14 @@
 package processor
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -27,15 +29,35 @@ const (
 	drawOfferMinPlies  = 20
 	drawEvalTimeMs     = 100
 	drawAcceptMaxScore = 0 // centipawns
+
+	// shadowBacklog bounds the rulings waiting for the engine's second
+	// opinion; past it they go unchecked, never delaying a move.
+	shadowBacklog = 64
 )
 
 var fenPattern = regexp.MustCompile(`^[rnbqkpRNBQKP1-8/]+ [wb] [KQkq-]+ [a-h1-8-]+ \d+ \d+$`)
 
+// Processor rules on moves with the rules core. Its own engine, behind mu,
+// answers draw offers and re-checks those rulings off the request path.
 type Processor struct {
 	svc           *service.Service
 	queue         *EngineQueue
-	validationEng *engine.UCI // For synchronous move validation
-	mu            sync.RWMutex
+	validationEng *engine.UCI
+	mu            sync.Mutex
+	shadows       chan shadowCheck
+	quit          chan struct{}
+	shadowDone    chan struct{}
+	disagreements atomic.Int64
+	analyst       *analyst
+}
+
+// Metrics reports the engine queue's depth, the engines' restarts, and how
+// often the shadow found the engine at odds with the rules.
+func (p *Processor) Metrics() []slog.Attr {
+	return []slog.Attr{
+		slog.Group("engine", "queue", p.queue.Depth(), "restarts", engine.Restarts()),
+		slog.Group("rules", "disagreements", p.disagreements.Load()),
+	}
 }
 
 func New(svc *service.Service) (*Processor, error) {
@@ -44,14 +66,27 @@ func New(svc *service.Service) (*Processor, error) {
 		return nil, fmt.Errorf("failed to create validation engine: %v", err)
 	}
 
-	return &Processor{
+	p := &Processor{
 		svc:           svc,
 		queue:         NewEngineQueue(2),
 		validationEng: validationEng,
-	}, nil
+		shadows:       make(chan shadowCheck, shadowBacklog),
+		quit:          make(chan struct{}),
+		shadowDone:    make(chan struct{}),
+		analyst:       newAnalyst(),
+	}
+	go p.shadowLoop()
+	return p, nil
 }
 
-func (p *Processor) Execute(cmd Command) ProcessorResponse {
+func (p *Processor) Execute(ctx context.Context, cmd Command) ProcessorResponse {
+	// A stored game resumes on the first command that names it; unloading
+	// one needs no load.
+	if cmd.GameID != "" && cmd.Type != CmdDeleteGame {
+		if err := p.svc.LoadGame(ctx, cmd.GameID); errors.Is(err, service.ErrStorageUnavailable) {
+			return p.errorResponse("stored game unavailable", core.ErrStorageUnavailable)
+		}
+	}
 	switch cmd.Type {
 	case CmdCreateGame:
 		return p.handleCreateGame(cmd)
@@ -71,6 +106,8 @@ func (p *Processor) Execute(cmd Command) ProcessorResponse {
 		return p.handleResign(cmd)
 	case CmdDraw:
 		return p.handleDraw(cmd)
+	case CmdJoinGame:
+		return p.handleJoin(cmd)
 	default:
 		return p.errorResponse("unknown command", core.ErrInvalidRequest)
 	}
@@ -115,9 +152,8 @@ func (p *Processor) isMoveSafe(move string) bool {
 	return true
 }
 
-// handleCreateGame creates a new game. The initial FEN is classified BEFORE
-// persisting: a terminal initial position is terminal in the creation response,
-// and engine failure fails the request instead of creating a half-valid game.
+// handleCreateGame creates a new game. The rules classify the starting
+// position first, so one that is already over is created over.
 func (p *Processor) handleCreateGame(cmd Command) ProcessorResponse {
 	args, ok := cmd.Args.(core.CreateGameRequest)
 	if !ok {
@@ -133,57 +169,49 @@ func (p *Processor) handleCreateGame(cmd Command) ProcessorResponse {
 
 	gameID := p.svc.GenerateGameID()
 
-	initialFEN := chess.StartFEN
+	fen := chess.StartFEN
 	if args.FEN != "" {
 		if !p.isFENSafe(args.FEN) {
 			return p.errorResponse("invalid FEN format or characters", core.ErrInvalidFEN)
 		}
-		// The rules core rejects positions the engine must never see (missing
-		// kings, the side not to move in check) and drops castling rights
-		// without their rook, so both agree on the legal moves.
-		pos, err := chess.ParseFEN(args.FEN)
-		if err != nil {
-			return p.errorResponse(err.Error(), core.ErrInvalidFEN)
-		}
-		initialFEN = pos.FEN()
+		fen = args.FEN
 	}
-
-	p.mu.Lock()
-	err := p.validationEng.NewGame()
-	var validatedFEN string
-	initialState, termination := core.StateOngoing, core.TermNone
-	if err == nil {
-		validatedFEN, initialState, termination, err = p.classifyLocked(initialFEN)
-	}
-	p.mu.Unlock()
+	// The rules refuse positions no game reaches (missing kings, the side not
+	// to move in check) and drop castling rights without their rook.
+	start, err := chess.ParseFEN(fen)
 	if err != nil {
-		return p.errorResponse(fmt.Sprintf("engine validation failed: %v", err), core.ErrInternalError)
+		return p.errorResponse(err.Error(), core.ErrInvalidFEN)
 	}
-	if initialState == core.StateOngoing {
-		initialState, termination = adjudicateDraw(nil, validatedFEN)
-	}
-
-	start, err := chess.ParseFEN(validatedFEN)
-	if err != nil {
-		return p.errorResponse(fmt.Sprintf("FEN parse error: %v", err), core.ErrInvalidRequest)
-	}
+	initialState, termination := outcome(nil, start)
 
 	whitePlayer := core.NewPlayer(args.White, core.ColorWhite)
 	blackPlayer := core.NewPlayer(args.Black, core.ColorBlack)
 
-	// Only assign authenticated user to ONE human slot.
-	// If both are human, authenticated user gets white; black remains unclaimed.
-	if cmd.UserID != "" {
-		if args.White.Type == core.PlayerHuman {
-			whitePlayer.ID = cmd.UserID
-			whitePlayer.ClaimedBy = cmd.UserID
-		} else if args.Black.Type == core.PlayerHuman {
-			blackPlayer.ID = cmd.UserID
-			blackPlayer.ClaimedBy = cmd.UserID
+	// The creator takes one side: the one asked for, else, signed in, White
+	// if human and otherwise Black. The other human side stays open.
+	sides := map[core.Color]*core.Player{core.ColorWhite: whitePlayer, core.ColorBlack: blackPlayer}
+	side := core.ParseColor(args.Side)
+	switch {
+	case side != 0 && sides[side].Type != core.PlayerHuman:
+		return p.errorResponse("side must name a human side", core.ErrInvalidRequest)
+	case side == 0 && cmd.Actor.UserID != "" && args.White.Type == core.PlayerHuman:
+		side = core.ColorWhite
+	case side == 0 && cmd.Actor.UserID != "" && args.Black.Type == core.PlayerHuman:
+		side = core.ColorBlack
+	}
+	token := ""
+	switch taken := sides[side]; {
+	case taken == nil:
+	case cmd.Actor.UserID != "":
+		taken.ID, taken.ClaimedBy, taken.Name = cmd.Actor.UserID, cmd.Actor.UserID, cmd.Actor.Name
+	default:
+		if token, taken.Seat, err = service.NewSeat(); err != nil {
+			return p.errorResponse("failed to create game", core.ErrInternalError)
 		}
+		taken.Seated = true
 	}
 
-	if err = p.svc.CreateGame(gameID, whitePlayer, blackPlayer, validatedFEN,
+	if err = p.svc.CreateGame(gameID, whitePlayer, blackPlayer, start.FEN(),
 		coreColor(start.Turn()), initialState, termination); err != nil {
 		return p.errorResponse(fmt.Sprintf("failed to create game: %v", err), core.ErrInternalError)
 	}
@@ -192,11 +220,41 @@ func (p *Processor) handleCreateGame(cmd Command) ProcessorResponse {
 	if err != nil {
 		return p.errorResponse("game creation failed", core.ErrInternalError)
 	}
-
-	return ProcessorResponse{
-		Success: true,
-		Data:    p.buildGameResponse(gameID, g),
+	response := p.buildGameResponse(gameID, g)
+	if side != 0 {
+		response.Side, response.Seat = side.String(), token
 	}
+	return ProcessorResponse{Success: true, Data: response}
+}
+
+// handleJoin gives the caller an open human side without a move: a claim
+// when signed in, else a guest's seat, whose secret only this answer carries.
+func (p *Processor) handleJoin(cmd Command) ProcessorResponse {
+	args, ok := cmd.Args.(core.JoinRequest)
+	if !ok {
+		return p.errorResponse("invalid arguments", core.ErrInvalidRequest)
+	}
+	token, seat := "", []byte(nil)
+	if cmd.Actor.UserID == "" {
+		var err error
+		if token, seat, err = service.NewSeat(); err != nil {
+			return p.errorResponse("failed to join game", core.ErrInternalError)
+		}
+	}
+	side, taken, err := p.svc.JoinGame(cmd.GameID, core.ParseColor(args.Color), cmd.Actor, seat)
+	if err != nil {
+		return p.endGameError(err)
+	}
+	g, err := p.svc.GetGameView(cmd.GameID)
+	if err != nil {
+		return p.errorResponse("game not found", core.ErrGameNotFound)
+	}
+	response := p.buildGameResponse(cmd.GameID, g)
+	response.Side = side.String()
+	if taken {
+		response.Seat = token
+	}
+	return ProcessorResponse{Success: true, Data: response}
 }
 
 // handleConfigurePlayers updates player configuration mid-game; another
@@ -226,12 +284,12 @@ func (p *Processor) handleConfigurePlayers(cmd Command) ProcessorResponse {
 	whitePlayer := core.NewPlayer(args.White, core.ColorWhite)
 	blackPlayer := core.NewPlayer(args.Black, core.ColorBlack)
 
-	if err = p.svc.UpdatePlayers(cmd.GameID, whitePlayer, blackPlayer, cmd.UserID); err != nil {
+	if err = p.svc.UpdatePlayers(cmd.GameID, whitePlayer, blackPlayer, cmd.Actor); err != nil {
 		switch {
 		case errors.Is(err, service.ErrGameNotFound):
 			return p.endGameError(err)
 		case errors.Is(err, service.ErrSlotOwner):
-			return p.errorResponse("another player has claimed a side of this game; players cannot be changed", core.ErrUnauthorized)
+			return p.errorResponse("another player holds a side of this game; players cannot be changed", core.ErrUnauthorized)
 		}
 		return p.errorResponse(fmt.Sprintf("failed to update players: %v", err), core.ErrInternalError)
 	}
@@ -259,11 +317,10 @@ func (p *Processor) handleGetGame(cmd Command) ProcessorResponse {
 	}
 }
 
-// handleMakeMove processes human moves with authorization, and the "cccc"
-// computer-move trigger. Post-move classification runs BEFORE the move is
-// applied; move + final state + metadata commit atomically with one
-// notification, so a waking long-poller can never observe "ongoing" on a
-// terminal position.
+// handleMakeMove rules on a human move, or starts the computer's on "cccc".
+// The position is classified before the move is applied, and move, state and
+// claim commit together with one notification: a waking long-poll never sees
+// "ongoing" on a finished position.
 func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 	args, ok := cmd.Args.(core.MoveRequest)
 	if !ok {
@@ -328,17 +385,10 @@ func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 		return p.errorResponse("not human player's turn", core.ErrNotHumanTurn)
 	}
 
-	// Authorization: first-move-claims-slot model
-	slotOwner := currentPlayer.ClaimedBy
-
-	if slotOwner == "" {
-		// An authenticated user claims only when the validated move commits.
-		// Anonymous moves deliberately leave the slot unclaimed.
-	} else if cmd.UserID != "" && slotOwner != cmd.UserID {
-		return p.errorResponse("not your turn - slot claimed by another player", core.ErrUnauthorized)
-	}
-	if slotOwner != "" && cmd.UserID == "" {
-		return p.errorResponse("slot claimed - authentication required", core.ErrUnauthorized)
+	// A held side moves only for its holder. An open one takes the move, and
+	// is claimed by it when the mover is signed in.
+	if refusal := heldBy(currentPlayer, cmd.Actor); refusal != "" {
+		return p.errorResponse(refusal, core.ErrUnauthorized)
 	}
 
 	move := strings.ToLower(strings.TrimSpace(args.Move))
@@ -347,42 +397,28 @@ func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 	}
 
 	currentFEN := g.FEN
-
-	// A pawn move to the last rank needs its promotion piece; say so instead
-	// of the engine's generic rejection.
-	rules := rulesCheck(currentFEN, move)
-	if errors.Is(rules.err, chess.ErrPromotionRequired) {
+	next, err := play(currentFEN, move)
+	switch {
+	case errors.Is(err, chess.ErrPromotionRequired):
 		return p.errorResponse("promotion piece required: append q, r, b, or n (e.g. "+move+"q)", core.ErrInvalidMove)
-	}
-
-	// Validate move and classify the resulting position in one engine session
-	p.mu.Lock()
-	err = p.validationEng.SetPosition(currentFEN, []string{move})
-	var newFEN string
-	finalState, termination := core.StateOngoing, core.TermNone
-	if err == nil {
-		newFEN, finalState, termination, err = p.classifyCurrentLocked()
-	}
-	p.mu.Unlock()
-	if err != nil {
-		// Game untouched at pre-move position; retry runs on a respawned engine
-		return p.errorResponse("engine unavailable", core.ErrInternalError)
-	}
-	rules.compare(cmd.GameID, move, newFEN != currentFEN, newFEN)
-	if newFEN == currentFEN {
+	case errors.Is(err, chess.ErrInvalidFEN):
+		slog.Warn("rules core cannot parse game position", "game_id", cmd.GameID, "error", err)
+		return p.errorResponse("game position is unreadable", core.ErrInternalError)
+	case err != nil:
+		p.shadow(shadowCheck{gameID: cmd.GameID, fen: currentFEN, uci: move})
 		return p.errorResponse("illegal move", core.ErrInvalidMove)
 	}
-	if finalState == core.StateOngoing {
-		finalState, termination = adjudicateDraw(g.FENs, newFEN)
-	}
+	newFEN := next.FEN()
+	finalState, termination := outcome(g.FENs, next)
+	p.shadow(shadowCheck{gameID: cmd.GameID, fen: currentFEN, uci: move, ruled: newFEN})
 
 	if err = p.svc.ApplyMoveWithState(cmd.GameID, service.MoveCommit{
 		ExpectedFEN: currentFEN, ExpectedState: core.StateOngoing, ExpectedTurn: currentColor,
-		ActorUserID: cmd.UserID, MoveUCI: move, NewFEN: newFEN, State: finalState, Termination: termination,
+		Actor: cmd.Actor, MoveUCI: move, NewFEN: newFEN, State: finalState, Termination: termination,
 		Result: &game.MoveResult{Move: move, PlayerColor: currentColor, GameState: finalState},
 	}); err != nil {
 		if errors.Is(err, service.ErrSlotOwner) {
-			return p.errorResponse("not your turn - slot claimed by another player", core.ErrUnauthorized)
+			return p.errorResponse("that side is held by another player", core.ErrUnauthorized)
 		}
 		if errors.Is(err, service.ErrGameChanged) {
 			return p.errorResponse("game changed while move was being validated; refresh and retry", core.ErrConflict)
@@ -420,12 +456,12 @@ func (p *Processor) handleUndoMove(cmd Command) ProcessorResponse {
 		}
 	}
 
-	if err = p.svc.UndoMoves(cmd.GameID, args.Count, cmd.UserID); err != nil {
+	if err = p.svc.UndoMoves(cmd.GameID, args.Count, cmd.Actor); err != nil {
 		switch {
 		case errors.Is(err, service.ErrGameNotFound), errors.Is(err, service.ErrConcessionFinal):
 			return p.endGameError(err)
 		case errors.Is(err, service.ErrSlotOwner):
-			return p.errorResponse("another player has claimed a side of this game; moves cannot be taken back", core.ErrUnauthorized)
+			return p.errorResponse("another player holds a side of this game; moves cannot be taken back", core.ErrUnauthorized)
 		}
 		return p.errorResponse(err.Error(), core.ErrInvalidRequest)
 	}
@@ -449,12 +485,12 @@ func (p *Processor) handleDeleteGame(cmd Command) ProcessorResponse {
 		return p.errorResponse("cannot delete game while computer move is in progress", core.ErrInvalidRequest)
 	}
 
-	if err = p.svc.UnloadGame(cmd.GameID, cmd.UserID); err != nil {
+	if err = p.svc.UnloadGame(cmd.GameID, cmd.Actor); err != nil {
 		switch {
 		case errors.Is(err, service.ErrGameNotFound):
 			return p.endGameError(err)
 		case errors.Is(err, service.ErrSlotOwner):
-			return p.errorResponse("only a player who claimed a side can unload this game", core.ErrUnauthorized)
+			return p.errorResponse("only a player who holds a side can unload this game", core.ErrUnauthorized)
 		}
 		return p.errorResponse(err.Error(), core.ErrInvalidRequest)
 	}
@@ -485,10 +521,9 @@ func (p *Processor) handleGetBoard(cmd Command) ProcessorResponse {
 	}
 }
 
-// triggerComputerMove initiates async engine calculation. The callback
-// re-classifies via the validation engine: worker output is never trusted for
-// end-state determination, and no-move results are verified against the
-// position rather than the IsMate info-line byproduct.
+// triggerComputerMove queues the engine's search. Its callback trusts the
+// worker for the move alone: the rules check it and classify the position,
+// and a worker that finds no move is believed only when the rules agree.
 func (p *Processor) triggerComputerMove(gameID string, g game.View) error {
 	fen := g.FEN
 	color := g.NextTurnColor
@@ -504,35 +539,30 @@ func (p *Processor) triggerComputerMove(gameID string, g game.View) error {
 			p.svc.UpdateGameState(gameID, core.StateStuck, core.TermNone)
 			return
 		}
+		history := currentGame.FENs[:len(currentGame.FENs)-1]
 		if result.Move == "" || result.Move == "(none)" {
-			// Worker says no legal moves; verify against the validation engine.
-			p.mu.Lock()
-			_, state, termination, cerr := p.classifyLocked(fen)
-			p.mu.Unlock()
-			if cerr != nil || state == core.StateOngoing {
-				p.svc.UpdateGameState(gameID, core.StateStuck, core.TermNone) // engines disagree
-				return
+			state, termination := core.StateOngoing, core.TermNone
+			if pos, err := chess.ParseFEN(fen); err == nil {
+				state, termination = outcome(history, pos)
+			}
+			if state == core.StateOngoing {
+				state, termination = core.StateStuck, core.TermNone // the rules find a move
 			}
 			p.svc.UpdateGameState(gameID, state, termination)
 			return
 		}
 
-		p.mu.Lock()
-		aerr := p.validationEng.SetPosition(fen, []string{result.Move})
-		var newFEN string
-		finalState, termination := core.StateOngoing, core.TermNone
-		if aerr == nil {
-			newFEN, finalState, termination, aerr = p.classifyCurrentLocked()
-		}
-		p.mu.Unlock()
-		if aerr != nil || newFEN == fen {
+		next, err := play(fen, result.Move)
+		if err != nil {
+			p.disagreements.Add(1)
+			slog.Warn("rules core and engine disagree on legality",
+				"game_id", gameID, "move", result.Move, "engine_legal", true, "rules_error", err)
 			p.svc.UpdateGameState(gameID, core.StateStuck, core.TermNone)
 			return
 		}
-		rulesCheck(fen, result.Move).compare(gameID, result.Move, true, newFEN)
-		if finalState == core.StateOngoing {
-			finalState, termination = adjudicateDraw(currentGame.FENs, newFEN)
-		}
+		newFEN := next.FEN()
+		finalState, termination := outcome(currentGame.FENs, next)
+		p.shadow(shadowCheck{gameID: gameID, fen: fen, uci: result.Move, ruled: newFEN})
 
 		if err := p.svc.ApplyMoveWithState(gameID, service.MoveCommit{
 			ExpectedFEN: fen, ExpectedState: core.StatePending, ExpectedTurn: color,
@@ -550,51 +580,33 @@ func (p *Processor) triggerComputerMove(gameID string, g game.View) error {
 	})
 }
 
-// classifyCurrentLocked classifies whatever position is loaded in the
-// validation engine: mate and stalemate come from the engine. Caller holds
-// p.mu, immediately after a SetPosition.
-func (p *Processor) classifyCurrentLocked() (fen string, state core.State, termination core.Termination, err error) {
-	diag, err := p.validationEng.Diagnose()
-	if err != nil {
-		return "", core.StateOngoing, core.TermNone, err
-	}
-	legal, err := p.validationEng.HasLegalMoves()
-	if err != nil {
-		return "", core.StateOngoing, core.TermNone, err
-	}
-	if legal {
-		return diag.FEN, core.StateOngoing, core.TermNone, nil
-	}
-	if !diag.InCheck {
-		return diag.FEN, core.StateStalemate, core.TermStalemate, nil
-	}
-	pos, err := chess.ParseFEN(diag.FEN)
-	if err != nil {
-		return "", core.StateOngoing, core.TermNone, err
-	}
-	if pos.Turn() == chess.White {
-		return diag.FEN, core.StateBlackWins, core.TermCheckmate, nil
-	}
-	return diag.FEN, core.StateWhiteWins, core.TermCheckmate, nil
-}
-
-// classifyLocked sets a position from fen and classifies it. Caller holds p.mu.
-func (p *Processor) classifyLocked(fen string) (string, core.State, core.Termination, error) {
-	if err := p.validationEng.SetPosition(fen, nil); err != nil {
-		return "", core.StateOngoing, core.TermNone, err
-	}
-	return p.classifyCurrentLocked()
-}
-
-// adjudicateDraw applies the draw rules that end a game without a claim:
-// dead material, threefold repetition and the fifty-move rule (claimable
-// under FIDE). history holds the positions before fen, oldest first. It
-// returns StateOngoing when no rule applies; the engine has already ruled out
-// mate and stalemate, which take precedence.
-func adjudicateDraw(history []string, fen string) (core.State, core.Termination) {
+// play applies uci to fen by the rules. The error wraps chess.ErrInvalidFEN,
+// chess.ErrPromotionRequired or chess.ErrIllegalMove.
+func play(fen, uci string) (*chess.Position, error) {
 	pos, err := chess.ParseFEN(fen)
 	if err != nil {
-		return core.StateOngoing, core.TermNone
+		return nil, err
+	}
+	m, err := pos.ParseUCI(uci)
+	if err != nil {
+		return nil, err
+	}
+	return pos.Play(m), nil
+}
+
+// outcome classifies a position by the rules: mate or stalemate when the side
+// to move has no move, else the draws that need no claim (dead material,
+// threefold repetition, the fifty-move rule, claimable under FIDE), else
+// ongoing. history holds the positions before it, oldest first.
+func outcome(history []string, pos *chess.Position) (core.State, core.Termination) {
+	switch {
+	case pos.HasLegalMoves():
+	case !pos.InCheck():
+		return core.StateStalemate, core.TermStalemate
+	case pos.Turn() == chess.White:
+		return core.StateBlackWins, core.TermCheckmate
+	default:
+		return core.StateWhiteWins, core.TermCheckmate
 	}
 	if pos.InsufficientMaterial() {
 		return core.StateDraw, core.TermInsufficientMaterial
@@ -629,6 +641,7 @@ func coreColor(c chess.Color) core.Color {
 func (p *Processor) buildGameResponse(gameID string, g game.View) core.GameResponse {
 	resp := core.GameResponse{
 		GameID:      gameID,
+		InitialFEN:  g.InitialFEN,
 		FEN:         g.FEN,
 		Turn:        g.NextTurnColor.String(),
 		State:       g.State.String(),
@@ -673,9 +686,12 @@ func (p *Processor) errorResponse(message, code string) ProcessorResponse {
 
 func (p *Processor) Close() error {
 	queueErr := p.queue.Shutdown(5 * time.Second)
+	close(p.quit)
+	<-p.shadowDone
 	p.mu.Lock()
 	engineErr := p.validationEng.Close()
 	p.mu.Unlock()
+	p.analyst.close()
 	return errors.Join(queueErr, engineErr)
 }
 
@@ -700,43 +716,71 @@ func notateLine(fens, moves []string) []string {
 	return san
 }
 
-// rulesResult is the rules core's verdict on a move, computed alongside the
-// engine's. Stockfish stays authoritative; a disagreement is logged so the
-// core can be trusted, or fixed, before it validates anything.
-type rulesResult struct {
-	fen string // normalized FEN after the move; empty when illegal
-	err error
+// shadowCheck is a move the rules ruled on, for the engine to rule on too.
+// ruled is the position the rules gave, empty when they refused the move.
+type shadowCheck struct {
+	gameID, fen, uci, ruled string
 }
 
-func rulesCheck(fen, uci string) rulesResult {
-	pos, err := chess.ParseFEN(fen)
-	if err != nil {
-		return rulesResult{err: err}
+// shadow hands a ruling to the engine without waiting; a full backlog drops it.
+func (p *Processor) shadow(check shadowCheck) {
+	select {
+	case p.shadows <- check:
+	default:
 	}
-	m, err := pos.ParseUCI(uci)
-	if err != nil {
-		return rulesResult{err: err}
-	}
-	return rulesResult{fen: pos.Play(m).FEN()}
 }
 
-func (r rulesResult) compare(gameID, uci string, engineLegal bool, engineFEN string) {
-	if errors.Is(r.err, chess.ErrInvalidFEN) {
-		slog.Warn("rules core cannot parse game position", "game_id", gameID, "error", r.err)
-		return
+// shadowLoop has the engine replay each ruling and logs where it differs, on
+// legality or on the resulting position; mate and stalemate are not compared.
+// The rules stay the authority: the log is how they are held to account.
+func (p *Processor) shadowLoop() {
+	defer close(p.shadowDone)
+	for {
+		select {
+		case <-p.quit:
+			return
+		case check := <-p.shadows:
+			p.mu.Lock()
+			err := p.validationEng.SetPosition(check.fen, []string{check.uci})
+			var diagnosis engine.Diagnosis
+			if err == nil {
+				diagnosis, err = p.validationEng.Diagnose()
+			}
+			p.mu.Unlock()
+			if err != nil {
+				slog.Debug("engine shadow check skipped", "game_id", check.gameID, "error", err)
+				continue
+			}
+			if !check.compare(diagnosis.FEN) {
+				p.disagreements.Add(1)
+			}
+		}
 	}
-	if engineLegal != (r.err == nil) {
+}
+
+// compare holds the ruling against the position the engine has after the
+// move, which it leaves unchanged for an illegal one. It logs a disagreement
+// and reports whether the two agree.
+func (c shadowCheck) compare(engineFEN string) bool {
+	before, errBefore := chess.NormalizeFEN(c.fen)
+	after, errAfter := chess.NormalizeFEN(engineFEN)
+	if errBefore != nil || errAfter != nil {
+		slog.Warn("rules core cannot parse game position",
+			"game_id", c.gameID, "fen", c.fen, "engine_fen", engineFEN)
+		return false
+	}
+	engineLegal := after != before
+	switch {
+	case engineLegal != (c.ruled != ""):
 		slog.Warn("rules core and engine disagree on legality",
-			"game_id", gameID, "move", uci, "engine_legal", engineLegal, "rules_error", r.err)
-		return
-	}
-	if !engineLegal {
-		return
-	}
-	if normalized, err := chess.NormalizeFEN(engineFEN); err != nil || normalized != r.fen {
+			"game_id", c.gameID, "move", c.uci, "engine_legal", engineLegal)
+	case engineLegal && after != c.ruled:
 		slog.Warn("rules core and engine disagree on resulting position",
-			"game_id", gameID, "move", uci, "engine_fen", engineFEN, "rules_fen", r.fen)
+			"game_id", c.gameID, "move", c.uci, "engine_fen", engineFEN, "rules_fen", c.ruled)
+	default:
+		return true
 	}
+	return false
 }
 
 // handleResign ends the game in the opponent's favor. It is allowed while the
@@ -753,7 +797,7 @@ func (p *Processor) handleResign(cmd Command) ProcessorResponse {
 	if g.State.IsTerminal() {
 		return p.errorResponse(fmt.Sprintf("game is over: %s", g.State), core.ErrGameOver)
 	}
-	color, failure := actingColor(g, args.Color, cmd.UserID)
+	color, failure := actingColor(g, args.Color, cmd.Actor)
 	if failure != nil {
 		return *failure
 	}
@@ -762,7 +806,7 @@ func (p *Processor) handleResign(cmd Command) ProcessorResponse {
 		winner = core.StateBlackWins
 	}
 	err = p.svc.EndGame(cmd.GameID, service.EndCommit{
-		ExpectedFEN: g.FEN, Color: color, ActorUserID: cmd.UserID,
+		ExpectedFEN: g.FEN, Color: color, Actor: cmd.Actor,
 		State: winner, Termination: core.TermResignation,
 	})
 	if err != nil {
@@ -791,7 +835,7 @@ func (p *Processor) handleDraw(cmd Command) ProcessorResponse {
 	case g.State != core.StateOngoing:
 		return p.errorResponse("draws can be agreed only while no computer move is running", core.ErrInvalidRequest)
 	}
-	color, failure := actingColor(g, args.Color, cmd.UserID)
+	color, failure := actingColor(g, args.Color, cmd.Actor)
 	if failure != nil {
 		return *failure
 	}
@@ -799,7 +843,7 @@ func (p *Processor) handleDraw(cmd Command) ProcessorResponse {
 
 	accept := func() ProcessorResponse {
 		err := p.svc.EndGame(cmd.GameID, service.EndCommit{
-			ExpectedFEN: g.FEN, Color: color, ActorUserID: cmd.UserID,
+			ExpectedFEN: g.FEN, Color: color, Actor: cmd.Actor,
 			State: core.StateDraw, Termination: core.TermAgreement, OfferFrom: opponent,
 		})
 		if err != nil {
@@ -815,7 +859,7 @@ func (p *Processor) handleDraw(cmd Command) ProcessorResponse {
 		}
 		return accept()
 	case "decline":
-		if err := p.svc.DeclineDraw(cmd.GameID, color, cmd.UserID); err != nil {
+		if err := p.svc.DeclineDraw(cmd.GameID, color, cmd.Actor); err != nil {
 			return p.endGameError(err)
 		}
 		return p.drawResponse(cmd.GameID, "declined")
@@ -839,7 +883,7 @@ func (p *Processor) handleDraw(cmd Command) ProcessorResponse {
 		}
 		if agrees {
 			err = p.svc.EndGame(cmd.GameID, service.EndCommit{
-				ExpectedFEN: g.FEN, Color: color, ActorUserID: cmd.UserID,
+				ExpectedFEN: g.FEN, Color: color, Actor: cmd.Actor,
 				State: core.StateDraw, Termination: core.TermAgreement,
 			})
 			if err != nil {
@@ -847,12 +891,12 @@ func (p *Processor) handleDraw(cmd Command) ProcessorResponse {
 			}
 			return p.drawResponse(cmd.GameID, "accepted")
 		}
-		if err := p.svc.RecordDeclinedOffer(cmd.GameID, color, cmd.UserID, g.FEN); err != nil {
+		if err := p.svc.RecordDeclinedOffer(cmd.GameID, color, cmd.Actor, g.FEN); err != nil {
 			return p.endGameError(err)
 		}
 		return p.drawResponse(cmd.GameID, "declined")
 	}
-	if err := p.svc.OfferDraw(cmd.GameID, color, cmd.UserID, g.FEN); err != nil {
+	if err := p.svc.OfferDraw(cmd.GameID, color, cmd.Actor, g.FEN); err != nil {
 		return p.endGameError(err)
 	}
 	return p.drawResponse(cmd.GameID, "offered")
@@ -892,9 +936,9 @@ func (p *Processor) computerAcceptsDraw(fen string, computer core.Color) (bool, 
 }
 
 // actingColor resolves which side a resignation or draw request acts for: the
-// requested color, else the one side the caller claimed, else the only human
-// side. It enforces slot ownership: a claimed side acts only for its claimant.
-func actingColor(g game.View, requested, userID string) (core.Color, *ProcessorResponse) {
+// requested color, else the one side the caller holds, else the only human
+// side. A held side acts only for its holder.
+func actingColor(g game.View, requested string, actor core.Actor) (core.Color, *ProcessorResponse) {
 	fail := func(message, code string) (core.Color, *ProcessorResponse) {
 		return 0, &ProcessorResponse{Error: &core.ErrorResponse{Error: message, Code: code}}
 	}
@@ -903,21 +947,21 @@ func actingColor(g game.View, requested, userID string) (core.Color, *ProcessorR
 	case requested != "":
 		color = core.ParseColor(requested)
 	default:
-		var claimed, humans []core.Color
+		var held, humans []core.Color
 		for _, c := range []core.Color{core.ColorWhite, core.ColorBlack} {
 			player := g.Player(c)
 			if player == nil || player.Type != core.PlayerHuman {
 				continue
 			}
 			humans = append(humans, c)
-			if userID != "" && player.ClaimedBy == userID {
-				claimed = append(claimed, c)
+			if player.HeldBy(actor) {
+				held = append(held, c)
 			}
 		}
 		switch {
-		case len(claimed) == 1:
-			color = claimed[0]
-		case len(claimed) == 0 && len(humans) == 1:
+		case len(held) == 1:
+			color = held[0]
+		case len(held) == 0 && len(humans) == 1:
 			color = humans[0]
 		case len(humans) == 0:
 			return fail("both sides are played by the computer", core.ErrInvalidRequest)
@@ -932,13 +976,23 @@ func actingColor(g game.View, requested, userID string) (core.Color, *ProcessorR
 	if player.Type != core.PlayerHuman {
 		return fail(service.ErrNotHuman.Error(), core.ErrInvalidRequest)
 	}
-	if player.ClaimedBy != "" && player.ClaimedBy != userID {
-		if userID == "" {
-			return fail("slot claimed - authentication required", core.ErrUnauthorized)
-		}
-		return fail("slot claimed by another player", core.ErrUnauthorized)
+	if refusal := heldBy(player, actor); refusal != "" {
+		return fail(refusal, core.ErrUnauthorized)
 	}
 	return color, nil
+}
+
+// heldBy says why actor may not act for player's side, or nothing when it may.
+func heldBy(player *core.Player, actor core.Actor) string {
+	switch {
+	case player.Admits(actor):
+		return ""
+	case player.Seated:
+		return "side held by a guest - its seat is required"
+	case actor.UserID == "":
+		return "slot claimed - authentication required"
+	}
+	return "slot claimed by another player"
 }
 
 // endGameError maps a service refusal to a response; the service re-checks
@@ -961,6 +1015,10 @@ func (p *Processor) endGameError(err error) ProcessorResponse {
 		return p.errorResponse("game changed; refresh and retry", core.ErrConflict)
 	case errors.Is(err, service.ErrConcessionFinal):
 		return p.errorResponse(err.Error(), core.ErrGameOver)
+	case errors.Is(err, service.ErrSideTaken):
+		return p.errorResponse(err.Error(), core.ErrConflict)
+	case errors.Is(err, service.ErrSideRequired):
+		return p.errorResponse(err.Error(), core.ErrInvalidRequest)
 	}
 	return p.errorResponse(fmt.Sprintf("failed to update game: %v", err), core.ErrInternalError)
 }
