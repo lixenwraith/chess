@@ -219,11 +219,13 @@ jail# su -m chess -c '/home/chess/bin/chess-server db user reset-link -username 
 
 The server has no metrics endpoint: it logs its measures
 ([architecture.md](architecture.md#metrics)) as one `msg=metrics` line an
-interval, and LogWisp streams those lines from the log file:
+interval, in the service's log (`chessd_logs`). Any log shipper that filters
+on a line's text can carry them; where LogWisp is used, it streams those
+lines alone from the log's directory and file name:
 
 ```sh
-jail# lw --source 'file:directory=/var/log,pattern=chessd.log' \
-        --filter 'include:patterns=msg=metrics' --sink 'http:port=<port>'
+lw --source 'file:directory=<log directory>,pattern=<log file>' \
+   --filter 'include:patterns=msg=metrics' --sink 'http:port=<port>'
 ```
 
 The sink listens on loopback unless given a `host`. A counter that moves

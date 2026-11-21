@@ -138,7 +138,7 @@ the script never overwrites.
 systemctl status chessd
 journalctl -u chessd -f                       # server log
 journalctl -u chessd -f -o cat | lw --filter 'include:patterns=msg=metrics' \
-    --sink 'http:port=<port>'                 # metrics alone, as a LogWisp stream
+    --sink 'http:port=<port>'                 # where LogWisp is installed: metrics alone, as a stream
 sudo chess-db user add -username <name>       # accounts; see database.md
 sudo chess-db verify                          # check stored games; run after upgrades
 curl -s http://127.0.0.1:8080/health          # "storage":"ok", "version" = the build
