@@ -236,6 +236,47 @@ sudo chess-db verify                                                 # Linux
 su -m chess -c '/home/chess/bin/chess-server db verify -dsn "postgres:///chess?host=/tmp"'  # FreeBSD
 ```
 
+### The archive
+
+Collections of games nobody owns, read from PGN databases and listed
+publicly once published ([api.md](api.md#browse-the-archive)). The commands
+are subcommands of `db archive`, run like the other `db` commands above.
+
+```sh
+db archive collection set -name <name> -title <title>     # create; unpublished
+db archive import -collection <name> -file <pgn> -dry-run # read, replay, count
+db archive import -collection <name> -file <pgn>          # or -dir <dir>: every *.pgn
+db archive collection set -name <name> -source <url> -licence <text> \
+    -attribution <text> -published                         # list it publicly
+db archive collection list
+db archive feature -gameId <id|prefix> -order <n>         # 0 takes it away
+db archive collection delete -name <name> -confirm        # with its games
+```
+
+- An import reports, for each file, the games stored, duplicate and rejected,
+  each rejected one with its place in the file and the reason. A game the
+  rules refuse is skipped; the rest of the file is stored.
+- A game is stored once: its start position, moves, result and the `Event`,
+  `Site`, `Date`, `Round`, `White` and `Black` tags identify it, so a
+  repeated import, or the same game in a second file, stores nothing.
+- Moves and tags are kept; comments, variations and annotations are dropped,
+  as for every import. `WhiteElo`, `BlackElo` and `ECO` are kept where they
+  are numbers and codes.
+- `collection set` changes only the fields its flags name; `-featured <n>`
+  orders the collections, `-published=false` withdraws one from the list.
+
+**Before a collection is published**, check what its source allows; the
+database refuses to publish one that names no source, licence and
+attribution, and the web client shows all three with the collection.
+
+- The moves of a game are widely held to be facts, but a compilation can
+  carry a database right, and a source's terms can forbid redistributing
+  what it serves, bulk downloads included.
+- Annotations are authored text: they are dropped, so a collection whose
+  value is its annotations has nothing to offer here.
+- An unpublished collection is absent from the public list only: a game's
+  history and PGN still answer to whoever has its ID.
+
 ### Deleting games
 
 Delete finished or unfinished games at any time:
@@ -308,7 +349,7 @@ su -m chess -c '/home/chess/bin/chess-server db delete -confirm -dsn "postgres:/
 su -m chess -c '/home/chess/bin/chess-server db init -dsn "postgres:///chess?host=/tmp"'
 ```
 
-`db init` prints `Database schema ready (version 6)`. In split mode the
+`db init` prints `Database schema ready (version 7)`. In split mode the
 `chess` role owns no tables and cannot drop or create them; run both commands
 as `postgres` acting as the owner role instead, e.g. on Linux:
 

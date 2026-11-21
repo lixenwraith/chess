@@ -197,7 +197,9 @@ jail# su -m chess -c '/home/chess/bin/chess-server db user list -dsn "postgres:/
 (games, with 8-digit ID prefixes), `pgn -gameId <id|prefix> [-ply N]`,
 `verify [-gameId <id|prefix>]` (replays stored games against the rules and
 exits non-zero on a mismatch; run it after an upgrade), `game delete -gameId
-<id|prefix> -confirm`, `game import -file <pgn> -username <owner>`, and `user
+<id|prefix> -confirm`, `game import -file <pgn> -username <owner>`, `archive
+collection set|list|delete`, `archive import`, `archive feature`
+([database.md](database.md#the-archive)), and `user
 add|delete|set-password|set-hash|set-email|set-username|reset-link|list`.
 
 A forgotten password is reset from the jail without mail:

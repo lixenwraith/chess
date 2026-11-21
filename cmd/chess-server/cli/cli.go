@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -26,7 +27,7 @@ const dsnEnv = "CHESS_DSN"
 
 func Run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("subcommand required: init, delete, query, pgn, verify, game, user")
+		return fmt.Errorf("subcommand required: init, delete, query, pgn, verify, game, archive, user")
 	}
 
 	switch args[0] {
@@ -45,6 +46,11 @@ func Run(args []string) error {
 			return fmt.Errorf("game subcommand required: delete, import")
 		}
 		return runGame(args[1], args[2:])
+	case "archive":
+		if len(args) < 2 {
+			return fmt.Errorf("archive subcommand required: collection, import, feature")
+		}
+		return runArchive(args[1], args[2:])
 	case "user":
 		if len(args) < 2 {
 			return fmt.Errorf("user subcommand required: add, delete, set-password, set-hash, set-email, set-username, reset-link, list")
@@ -361,6 +367,242 @@ func runGameImport(args []string) error {
 		return err
 	}
 	fmt.Printf("Imported game %s (%d plies) for %s\n", imported.GameID, imported.Plies, *username)
+	return nil
+}
+
+func runArchive(subcommand string, args []string) error {
+	switch subcommand {
+	case "collection":
+		if len(args) == 0 {
+			return errors.New("collection subcommand required: set, list, delete")
+		}
+		switch args[0] {
+		case "set":
+			return runCollectionSet(args[1:])
+		case "list":
+			return runCollectionList(args[1:])
+		case "delete":
+			return runCollectionDelete(args[1:])
+		}
+		return fmt.Errorf("unknown collection subcommand: %s", args[0])
+	case "import":
+		return runArchiveImport(args)
+	case "feature":
+		return runArchiveFeature(args)
+	default:
+		return fmt.Errorf("unknown archive subcommand: %s", subcommand)
+	}
+}
+
+// runCollectionSet creates a collection or changes the fields its flags
+// name; a flag left out leaves its field as it is.
+func runCollectionSet(args []string) error {
+	fs, dsn := newFlagSet("archive collection set")
+	name := fs.String("name", "", "Collection name: lowercase letters, digits and hyphens (required)")
+	title := fs.String("title", "", "Title shown to visitors (required for a new collection)")
+	source := fs.String("source", "", "URL the games came from")
+	licence := fs.String("licence", "", "Licence the source grants")
+	attribution := fs.String("attribution", "", "Attribution the source asks for")
+	featured := fs.Int("featured", 0, "Place among the collections, from 1 (0 = none)")
+	published := fs.Bool("published", false, "List the collection publicly; needs -source, -licence and -attribution")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *name == "" {
+		return errors.New("-name is required")
+	}
+	var change storage.CollectionChange
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "title":
+			change.Title = title
+		case "source":
+			change.SourceURL = source
+		case "licence":
+			change.Licence = licence
+		case "attribution":
+			change.Attribution = attribution
+		case "featured":
+			change.FeaturedOrder = featured
+		case "published":
+			change.Published = published
+		}
+	})
+
+	store, err := openStore(*dsn, true)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	created, err := store.SetCollection(context.Background(), *name, change)
+	if err != nil {
+		return err
+	}
+	if created {
+		fmt.Printf("Collection %s created\n", *name)
+	} else {
+		fmt.Printf("Collection %s updated\n", *name)
+	}
+	return nil
+}
+
+func runCollectionList(args []string) error {
+	fs, dsn := newFlagSet("archive collection list")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	store, err := openStore(*dsn, true)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	collections, err := store.Collections(context.Background(), false)
+	if err != nil {
+		return err
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "Name\tTitle\tGames\tPublished\tFeatured\tLicence\tSource")
+	for _, c := range collections {
+		featured := "-"
+		if c.FeaturedOrder > 0 {
+			featured = fmt.Sprint(c.FeaturedOrder)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%d\t%t\t%s\t%s\t%s\n", c.Name, c.Title, c.Games, c.Published, featured,
+			orDash(c.Licence), orDash(c.SourceURL))
+	}
+	w.Flush()
+	fmt.Printf("\nFound %d collection(s)\n", len(collections))
+	return nil
+}
+
+func orDash(value string) string {
+	if value == "" {
+		return "-"
+	}
+	return value
+}
+
+func runCollectionDelete(args []string) error {
+	fs, dsn := newFlagSet("archive collection delete")
+	name := fs.String("name", "", "Collection to delete with its games (required)")
+	confirm := fs.Bool("confirm", false, "Confirm the deletion")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *name == "" || !*confirm {
+		return errors.New("-name and -confirm are required")
+	}
+	store, err := openStore(*dsn, true)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	games, err := store.DeleteCollection(context.Background(), *name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("collection not found: %s", *name)
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Deleted collection %s and %d game(s)\n", *name, games)
+	return nil
+}
+
+// runArchiveImport reads PGN databases into a collection. A game the rules
+// refuse is reported and skipped, so the command fails only when a file or
+// the database cannot be read or written.
+func runArchiveImport(args []string) error {
+	fs, dsn := newFlagSet("archive import")
+	collection := fs.String("collection", "", "Collection the games join (required)")
+	file := fs.String("file", "", "PGN database to import")
+	dir := fs.String("dir", "", "Directory whose *.pgn files are imported, in name order")
+	dryRun := fs.Bool("dry-run", false, "Read, replay and count without writing")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *collection == "" || (*file == "") == (*dir == "") {
+		return errors.New("-collection and one of -file and -dir are required")
+	}
+	files := []string{*file}
+	if *dir != "" {
+		var err error
+		if files, err = filepath.Glob(filepath.Join(*dir, "*.pgn")); err != nil {
+			return err
+		}
+		if len(files) == 0 {
+			return fmt.Errorf("no *.pgn file in %s", *dir)
+		}
+	}
+
+	store, err := openStore(*dsn, true)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	svc, err := service.New(store, []byte(strings.Repeat("x", 32))) // no tokens are minted here
+	if err != nil {
+		return err
+	}
+	stored := "stored"
+	if *dryRun {
+		stored = "to store"
+	}
+	for _, path := range files {
+		database, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		done, err := svc.ImportArchive(context.Background(), *collection, database, *dryRun)
+		database.Close()
+		fmt.Printf("%s: %d game(s): %d %s, %d duplicate, %d rejected\n",
+			path, done.Games, done.Stored, stored, done.Duplicate, len(done.Rejected))
+		for i, reject := range done.Rejected {
+			if i == maxRejectsShown {
+				fmt.Printf("  and %d more\n", len(done.Rejected)-i)
+				break
+			}
+			fmt.Printf("  game %d: %s\n", reject.Index, reject.Reason)
+		}
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+	}
+	return nil
+}
+
+// maxRejectsShown bounds the reasons printed for one file.
+const maxRejectsShown = 50
+
+func runArchiveFeature(args []string) error {
+	fs, dsn := newFlagSet("archive feature")
+	gameID := fs.String("gameId", "", "Archive game ID or unique prefix (required)")
+	order := fs.Int("order", 0, "Place among the featured games, from 1; 0 takes it away")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *gameID == "" || *order < 0 {
+		return errors.New("-gameId and a non-negative -order are required")
+	}
+	store, err := openStore(*dsn, true)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	ctx := context.Background()
+	id, err := resolveGameID(ctx, store, *gameID)
+	if err != nil {
+		return err
+	}
+	if err := store.FeatureArchiveGame(ctx, id, *order); errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("not an archive game: %s", id)
+	} else if err != nil {
+		return err
+	}
+	if *order == 0 {
+		fmt.Printf("Game %s is no longer featured\n", id)
+	} else {
+		fmt.Printf("Game %s featured at %d\n", id, *order)
+	}
 	return nil
 }
 

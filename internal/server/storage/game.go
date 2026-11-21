@@ -18,7 +18,7 @@ const gameSelectColumns = `
 	g.black_player_id, g.black_type, g.black_level, g.black_search_time, g.black_claimed_by, g.black_name,
 	g.result, g.termination, g.start_time_utc, g.end_time_utc,
 	g.concession_result, g.concession_termination, g.concession_ply, g.concession_time_utc,
-	g.imported_by, g.event, g.site, g.round, g.white_seat, g.black_seat`
+	g.imported_by, g.event, g.site, g.round, g.white_seat, g.black_seat, g.origin`
 
 // claimantName snapshots a claimant's username inside the writing
 // transaction; NULL when the slot is unclaimed or the account is gone.
@@ -346,10 +346,10 @@ func (s *Store) SyncGame(record GameRecord, moves []MoveRecord) error {
 		}})
 }
 
-// DeleteAnonymousGames queues removal of games that no registered user
-// claimed and whose last activity (start, last move, or end) precedes cutoff.
-// Games still loaded in memory are listed in live and always kept, so a queued
-// or future write can never target a deleted row. Moves cascade.
+// DeleteAnonymousGames queues removal of games that no registered user holds,
+// the archive's aside, whose last activity (start, last move, or end) precedes
+// cutoff. Games still loaded in memory are listed in live and always kept, so
+// a queued or future write can never target a deleted row. Moves cascade.
 func (s *Store) DeleteAnonymousGames(cutoff time.Time, live []string) error {
 	if cutoff.IsZero() {
 		return errors.New("anonymous game cutoff is required")
@@ -360,6 +360,7 @@ func (s *Store) DeleteAnonymousGames(cutoff time.Time, live []string) error {
 	return s.enqueue("delete_anonymous_games", "", func(ctx context.Context, tx *sql.Tx) error {
 		result, err := tx.ExecContext(ctx, `DELETE FROM games g
 			WHERE g.white_claimed_by IS NULL AND g.black_claimed_by IS NULL AND g.imported_by IS NULL
+				AND g.origin <> 'archive'
 				AND g.start_time_utc < $1
 				AND (g.end_time_utc IS NULL OR g.end_time_utc < $1)
 				AND NOT EXISTS (
@@ -448,6 +449,11 @@ func (s *Store) GetGameHistory(ctx context.Context, gameID string) (*GameRecord,
 	row := tx.QueryRowContext(ctx, `SELECT `+gameSelectColumns+` FROM games g WHERE g.game_id = $1`, gameID)
 	if err := scanGame(row, &record); err != nil {
 		return nil, nil, err
+	}
+	if record.Origin == OriginArchive {
+		if record.Archive, err = archiveOf(ctx, tx, gameID); err != nil {
+			return nil, nil, fmt.Errorf("query archive row: %w", err)
+		}
 	}
 
 	rows, err := tx.QueryContext(ctx, `SELECT game_id, move_number, move_uci,
@@ -646,7 +652,7 @@ func scanGame(scanner rowScanner, record *GameRecord, extra ...any) error {
 		&blackClaimed, &blackName,
 		&result, &termination, &record.StartTimeUTC, &endTime,
 		&concessionResult, &concessionTermination, &concessionPly, &concessionTime,
-		&importedBy, &event, &site, &round, &record.WhiteSeat, &record.BlackSeat,
+		&importedBy, &event, &site, &round, &record.WhiteSeat, &record.BlackSeat, &record.Origin,
 	}
 	if err := scanner.Scan(append(dest, extra...)...); err != nil {
 		return err

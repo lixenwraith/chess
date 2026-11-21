@@ -193,6 +193,15 @@ chess > games more         # Next page
 chess > games delete 3     # Remove the third game of the last listing (or an ID)
 ```
 
+#### `archive`
+List the public archive, newest first, 20 per page, numbered for `replay
+<#>` as `games` is; no login. With a name, one collection of it.
+```
+chess > archive            # Every published collection
+chess > archive classics   # One collection
+chess > archive more       # Next page
+```
+
 #### `import`
 Store a PGN file (one game) under your account, for replay with `replay`.
 The server checks every move; tags such as `White`, `Black`, `Event` and
@@ -217,8 +226,8 @@ In the browser build there is no file system: `save` prints the PGN to copy.
 ### Replay Commands
 
 A replay steps through a stored game's history: any game by ID (histories
-are public to holders of the ID), or one of your own by its number in the
-last `games` listing. The replay is separate from the live session: the
+are public to holders of the ID), or one by its number in the last `games`
+or `archive` listing. The replay is separate from the live session: the
 current game, login and poll position are kept, and `new`, `join`, `move`,
 `computer`, `undo`, `delete`, `poll`, `resign` and `draw` are refused until
 `live` ends the replay.

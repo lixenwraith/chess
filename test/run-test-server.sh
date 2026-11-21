@@ -117,6 +117,17 @@ echo -e "${CYAN}Test users created:${NC}"
 echo "  • alice / AlicePass123"
 echo "  • bob / BobSecure456"
 
+# A published collection for the public archive
+echo -e "${CYAN}Adding the test archive...${NC}"
+"$CHESS_SERVER_EXEC" db archive collection set -name classics -title "Classic games" \
+    -source "https://example.org/classics" -licence "Public domain" \
+    -attribution "Compiled for the tests" -published &&
+    "$CHESS_SERVER_EXEC" db archive import -collection classics -file "$(dirname "$0")/archive.pgn"
+if [ $? -ne 0 ]; then
+    echo -e "${RED}Failed to create the test archive${NC}"
+    exit 1
+fi
+
 # Start server
 echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
 echo -e "${GREEN}║     Chess API Test Server with User Management           ║${NC}"

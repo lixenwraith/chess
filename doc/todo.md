@@ -1,9 +1,9 @@
 # Roadmap
 
-What is left to build, in batches of numbered items: R5 on, R1–R4 and R6
-being done. Each item names its priority, the files it touches and the docs that
-explain the area. A finished item leaves this file, and the line of its
-batch under Done says what it delivered.
+What is left to build, in batches of numbered items: R5, R7 and R8 hold what
+is open, the other batches being done. Each item names its priority, the
+files it touches and the docs that explain the area. A finished item leaves
+this file, and the line of its batch under Done says what it delivered.
 
 - P0: a defect in production now; the next PR.
 - P1: small, and it unblocks other items or turns on shipped work.
@@ -19,7 +19,7 @@ batch under Done says what it delivered.
 - Phase 3, later, each after its decision:
   - R8.4 P3: recovery timing through the sender
   - R7.3 P3: retire the engine shadow, after a release without a finding
-  - R5.1–R5.4 P3: the curated archive, rights first
+  - R5.5 P3: partial dates of games read from PGN, with the first old collection
 
 ## Done
 
@@ -34,6 +34,15 @@ batch under Done says what it delivered.
   commands, and a pager.
 - R5, per user: PGN import (API, web, CLI, `db game import`) and deletion of
   stored games by their owner; schema v5.
+- R5 Curated archive: collections of games no account owns (schema v7:
+  `games.origin`, `collections`, `archive_games`); `db archive import` reads
+  PGN databases through a streaming splitter, a batch a transaction, a game
+  stored once by its content hash, a refused game skipped with its place;
+  a collection is published only with its source, licence and attribution;
+  `GET /api/archive` lists published games by keyset cursor with collection,
+  opening and player filters; the web client's Library and the terminal
+  client's `archive` browse it; exported PGN carries the archive tags and
+  the collection's rights. Nothing is bundled.
 - Accounts: password recovery by email (schema v4), administrative reset
   links, self-service account deletion. R8.3: a recovery request is answered
   before the lookup and mailed from a queue, at most one email per account
@@ -75,8 +84,8 @@ batch under Done says what it delivered.
   expire; registration closes at `-max-users`; a game without a registered
   player is deleted 24 hours after its last activity.
 - D2 History visibility: a game's history and PGN are public to holders of
-  its random ID; IDs are never listed publicly (R5.4 lists published archive
-  games only).
+  its random ID; IDs are never listed publicly, the games of published
+  archive collections aside.
 - D3 SAN and PGN are derived on read, server-side in Go, from the initial
   FEN and the UCI line.
 - D4 Player names, done: a claim snapshots the username, which survives
@@ -106,10 +115,14 @@ batch under Done says what it delivered.
   node budget, on an engine of its own, signed-in, rate-limited and cached by
   position. No whole-game review (a search per ply: a background job with
   stored results) and no engine in the browser.
+- D14 Archive, done: an unpublished collection is absent from the public
+  list only, its games' history and PGN answering by ID as every game's do
+  (D2); the list filters by collection, opening-code prefix and
+  player-name prefix on plain indexes, the names lowercased by the server.
 
 ## Web Client Constraints
 
-The host's security headers bind every web client item (R5.4):
+The host's security headers bind every change to the web client:
 
 - `script-src 'self' 'wasm-unsafe-eval'`: code lives in `app.js`; no inline
   scripts, `on*` attributes, `eval` or `new Function`.
@@ -125,117 +138,28 @@ The host's security headers bind every web client item (R5.4):
 
 ## R5 Imported and Curated Games
 
-A signed-in user imports one PGN game at a time into their own list
-(`POST /api/games/import`): the strict parser `chess.ParsePGN` takes one
-well-formed game, the rules core replays every move, and the result must
-agree with the final position. What remains is a curated archive: games no
-account owns, loaded in bulk and listed publicly.
+A signed-in user imports one PGN game into their own list, and an
+administrator loads PGN databases into the archive's collections; both read
+a game with the strict parser and replay it by the rules.
 
-### R5.1 Archive rights: what may be bundled
+### R5.5 Partial dates of games read from PGN
 
-- Priority: P3, a gate rather than code: no collection is published before
-  its rights are checked
-- Affected files: none; each collection's rights are recorded on its row
-  (R5.2)
-- Guide: [Import a Game from PGN](api.md#import-a-game-from-pgn)
-
-The moves of a game are widely held to be facts, but a compilation can carry
-a database right (in the EU), annotations are authored text, and a source's
-terms of use can forbid redistributing what it serves. For each collection,
-before it is published:
-
-- The source, its licence and the attribution it asks for, recorded with the
-  collection.
-- Whether its terms allow redistribution, bulk download included.
-- Annotations: the importer drops comments and variations, keeping moves and
-  tags only, so a collection whose value is its annotations is out of scope.
-
-### R5.2 Archive model: games no account owns
-
-- Priority: P3, not now: after R5.1 clears a first collection; schema v6
+- Priority: P3, with the first collection of old games
 - Affected files: `internal/server/storage/schema.go`,
-  `internal/server/storage/game.go`, `internal/server/storage/import.go`,
-  `internal/server/service/import.go`, `internal/server/service/history.go`,
-  `internal/server/replay/replay.go`, `doc/database.md`,
-  `doc/architecture.md`
-- Guide: [Database: Games](database.md#games),
-  [Retention](architecture.md#retention)
-
-A stored game belongs to the users who claimed its sides or to the account
-that imported it (`imported_by`). `DeleteAnonymousGames` deletes a game with
-neither a day after its last activity, so as the query stands an archive
-game is gone the day after its import; `OrphanedGames` would follow if
-archive games recorded an importer whose account is later deleted.
-
-- A collection row (title, source URL, licence, attribution, published,
-  featured order) and an archive row per game (collection, `WhiteElo`,
-  `BlackElo`, `ECO`, content hash, featured order); per-game metadata stays
-  off `games`.
-- The purge and its partial index `games_anonymous_start_idx` exclude
-  archive games.
-- `GameRecord.Origin` infers played or imported from `imported_by`; a third
-  origin is better stored as a kind than inferred from which owner column is
-  set.
-- Decide what unpublished means: absent from the public list only, its
-  history and PGN still answering by ID as every game's do (D2), or 404.
-- Exported PGN carries the archive tags (`WhiteElo`, `BlackElo`, `ECO`) and
-  the collection's attribution; `db verify` and the integrity sweep cover
-  archive games unchanged.
-
-### R5.3 Bulk import: many games, idempotent
-
-- Priority: P3, not now: after R5.2
-- Affected files: `internal/server/chess/pgnread.go`,
-  `internal/server/chess/pgnread_test.go`,
-  `internal/server/chess/fuzz_test.go`, `internal/server/service/import.go`,
-  `internal/server/storage/import.go`, `cmd/chess-server/cli/cli.go`,
-  `doc/database.md`
+  `internal/server/service/import.go`, `internal/server/service/archive.go`,
+  `internal/server/replay/replay.go`,
+  `internal/server/webserver/chess-client-web/app.js`, `doc/api.md`
 - Guide: [Import a Game from PGN](api.md#import-a-game-from-pgn),
-  [Database: Users](database.md#users)
+  [Browse the Archive](api.md#browse-the-archive)
 
-`chess.ParsePGN` reads exactly one game, of at most 64 KiB and 1000 plies,
-and `db game import` stores one file for one account. A collection is a PGN
-database of thousands of games, or a directory of them:
+A PGN `Date` may leave parts unknown (`1858.??.??`). The import stores a
+timestamp: an unknown month or day becomes 01 and an unknown year the time
+of the import, so lists, replays and exported PGN show a day the source did
+not give, and an undated game sorts as the newest.
 
-- A streaming splitter that cuts a file into games and hands each to
-  `ParsePGN`, so the per-game limits and strictness stay; fuzzed like
-  `ParsePGN`. A bad game is reported with its index and skipped, not fatal.
-- The per-game work of `Service.ImportGame` (replay, outcome, tag mapping)
-  shared by both paths; games committed in batches, not a transaction each.
-- Idempotency by content hash over the start FEN, the UCI line, the result
-  and the identifying tags, unique in the archive table: a rerun stores only
-  what is new.
-- `db archive import -collection <name> -file <pgn> | -dir <dir> [-dry-run]`:
-  a dry run parses and replays without writing; the summary per file counts
-  stored, duplicate and rejected games, with the reasons.
-- The API keeps one game per request; bulk loading is administrative.
-
-### R5.4 Public archive: list endpoint and browsing
-
-- Priority: P3, not now: after R5.2; R5.1 gates what is published
-- Affected files: `internal/server/http/handler.go`,
-  `internal/server/core/api.go`, `internal/server/service/history.go`,
-  `internal/server/storage/game.go`,
-  `internal/server/webserver/chess-client-web/` (`app.js`, `index.html`,
-  `style.css`), `internal/client/api/client.go`,
-  `internal/client/command/game.go`, `test/e2e/replay.spec.js`,
-  `test/test-replay.sh`, `doc/api.md`
-- Guide: [List My Stored Games](api.md#list-my-stored-games),
-  [Get Durable Game History](api.md#get-durable-game-history),
-  [Web Client Constraints](#web-client-constraints)
-
-The one listing today is the signed-in user's own (`/api/users/me/games`);
-history and PGN are public by ID (D2). The archive adds a public listing:
-
-- `GET /api/archive?collection=&cursor=&limit=`: published games only, the
-  keyset cursor of D7, at most 100 a page, no authentication. Archive games
-  never change by undo, so a page can be `Cache-Control: public` with a
-  `max-age`, and nginx can cache it if load asks for that.
-- Filters, decided before the indexes: collection, ECO prefix, player name.
-- Web: a Library view beside My games with the same rows (mini-board,
-  players, result, ECO); replay and deep links (`?replay=<id>`) work as they
-  are.
-- CLI: `archive [collection]`, numbered for `replay <#>` as `games` is.
+- Keep the tag's text beside the timestamp: show and export the text, sort
+  by the timestamp.
+- Decide where an undated game sorts.
 
 ## R7 Rules Core as the Move Authority
 

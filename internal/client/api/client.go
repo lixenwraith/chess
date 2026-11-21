@@ -250,6 +250,21 @@ func (c *Client) GetMyGames(limit int, cursor string) (*GameListResponse, error)
 	return &resp, err
 }
 
+// GetArchive lists the published archive, newest first, of one collection or
+// of all with "": cursor as in GetMyGames.
+func (c *Client) GetArchive(limit int, collection, cursor string) (*GameListResponse, error) {
+	var resp GameListResponse
+	path := fmt.Sprintf("/api/archive?limit=%d", limit)
+	if collection != "" {
+		path += "&collection=" + url.QueryEscape(collection)
+	}
+	if cursor != "" {
+		path += "&cursor=" + url.QueryEscape(cursor)
+	}
+	err := c.doRequest("GET", path, nil, &resp)
+	return &resp, err
+}
+
 // RemoveMyGame takes a stored game off the caller's list: deleted when the
 // caller alone holds it, released when another player keeps it.
 func (c *Client) RemoveMyGame(gameID string) (*RemoveGameResponse, error) {

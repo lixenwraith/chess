@@ -343,9 +343,30 @@ func TestQueryPlansUsePurposeBuiltIndexes(t *testing.T) {
 			name: "anonymous purge candidates",
 			query: `SELECT game_id FROM games g
 				WHERE g.white_claimed_by IS NULL AND g.black_claimed_by IS NULL AND g.imported_by IS NULL
-				AND g.start_time_utc < $1`,
+				AND g.origin <> 'archive' AND g.start_time_utc < $1`,
 			args: []any{time.Now()},
 			want: []string{"games_anonymous_start_idx"},
+		},
+		{
+			name: "keyset page of an archive collection",
+			query: `SELECT a.game_id FROM archive_games a
+				WHERE a.collection = $1 AND (a.start_time_utc, a.game_id) < ($2, $3)
+				ORDER BY a.start_time_utc DESC, a.game_id DESC LIMIT 50`,
+			args: []any{"classics", time.Now(), userID},
+			want: []string{"archive_games_collection_idx"},
+		},
+		{
+			name: "archive player prefix on either side",
+			query: `SELECT a.game_id FROM archive_games a
+				WHERE a.white_key >= $1 AND a.white_key < $2 OR a.black_key >= $1 AND a.black_key < $2`,
+			args: []any{"fis", prefixEnd("fis")},
+			want: []string{"archive_games_white_key_idx", "archive_games_black_key_idx"},
+		},
+		{
+			name:  "archive opening prefix",
+			query: `SELECT a.game_id FROM archive_games a WHERE a.eco >= $1 AND a.eco < $2`,
+			args:  []any{"B9", prefixEnd("B9")},
+			want:  []string{"archive_games_eco_idx"},
 		},
 		{
 			name:  "session expiry cleanup",

@@ -140,11 +140,25 @@ type RemoveGameResponse struct {
 	Removed string `json:"removed"`
 }
 
+// ArchiveInfo is what the archive says of a game: its collection, and the
+// ratings and opening code its PGN gave. A history adds the collection's
+// title and the rights it is published under.
+type ArchiveInfo struct {
+	Collection  string `json:"collection"`
+	Title       string `json:"title,omitempty"`
+	SourceURL   string `json:"sourceUrl,omitempty"`
+	Licence     string `json:"licence,omitempty"`
+	Attribution string `json:"attribution,omitempty"`
+	WhiteElo    int    `json:"whiteElo,omitempty"`
+	BlackElo    int    `json:"blackElo,omitempty"`
+	ECO         string `json:"eco,omitempty"`
+}
+
 // GameHistoryResponse is a stored game for replay: ordered moves, each with
-// the FEN after it, so a client needs no engine. Origin is "played" or
-// "imported", with the Event, Site and Round an import carried. PGNResult is
-// the PGN token ("1-0", "0-1", "1/2-1/2", "*"); Concession is the first
-// resignation or agreed draw, kept when an undo played on past it.
+// the FEN after it, so a client needs no engine. Origin is "played",
+// "imported" or "archive", with the Event, Site and Round a PGN carried.
+// PGNResult is the PGN token ("1-0", "0-1", "1/2-1/2", "*"); Concession is the
+// first resignation or agreed draw, kept when an undo played on past it.
 type GameHistoryResponse struct {
 	GameID       string          `json:"gameId"`
 	InitialFEN   string          `json:"initialFen"`
@@ -158,6 +172,7 @@ type GameHistoryResponse struct {
 	Event        string          `json:"event,omitempty"`
 	Site         string          `json:"site,omitempty"`
 	Round        string          `json:"round,omitempty"`
+	Archive      *ArchiveInfo    `json:"archive,omitempty"`
 	Players      PlayersResponse `json:"players"`
 	Moves        []HistoryMove   `json:"moves"`
 }
@@ -176,8 +191,8 @@ type HistoryMove struct {
 // GameSummary is intentionally sufficient for a client-side game picker; the
 // full move list remains on the per-game history endpoint. FinalFEN is the
 // position after the last stored move (the initial FEN when there is none);
-// Termination says how a finished game ended, as in the history; Origin is
-// "played" or "imported", and Event is the imported game's event tag.
+// Termination says how a finished game ended, and Origin how it was stored,
+// as in the history; Event is the event tag of a game read from PGN.
 type GameSummary struct {
 	GameID       string          `json:"gameId"`
 	InitialFEN   string          `json:"initialFen"`
@@ -190,7 +205,30 @@ type GameSummary struct {
 	MoveCount    int             `json:"moveCount"`
 	Origin       string          `json:"origin"`
 	Event        string          `json:"event,omitempty"`
+	Archive      *ArchiveInfo    `json:"archive,omitempty"`
 	Players      PlayersResponse `json:"players"`
+}
+
+// ArchiveListResponse pages the published archive newest first; NextCursor
+// continues it. A featured list has no cursor.
+type ArchiveListResponse struct {
+	Games      []GameSummary `json:"games"`
+	Limit      int           `json:"limit"`
+	NextCursor string        `json:"nextCursor,omitempty"`
+}
+
+// Collection is a published collection of archive games.
+type Collection struct {
+	Name        string `json:"name"`
+	Title       string `json:"title"`
+	SourceURL   string `json:"sourceUrl"`
+	Licence     string `json:"licence"`
+	Attribution string `json:"attribution"`
+	Games       int    `json:"games"`
+}
+
+type CollectionListResponse struct {
+	Collections []Collection `json:"collections"`
 }
 
 // GameListResponse pages newest first. NextCursor continues the listing and

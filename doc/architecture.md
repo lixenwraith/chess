@@ -88,6 +88,10 @@ start the server.
 - **Replay** (`internal/server/replay`): works on stored game records: SAN
   for every ply, PGN assembly with the termination comment, and verification
   against the rules (used by `db verify`, `db pgn`, and the integrity sweep)
+- **Archive** (`service/archive.go`, `storage/archive.go`): collections of
+  games read from PGN databases by `db archive import`, a hundred games a
+  transaction and one copy a game; the published ones are listed publicly.
+  They are replayed, never played: no request loads one into memory
 - **Mail** (`internal/server/mail`): password-reset email through an SMTP
   relay, or `.eml` files in development
 - **Metrics** (`internal/server/metrics`): one `msg=metrics` log line every
@@ -305,7 +309,7 @@ Commands encapsulate operations with type, arguments, and optional user ID for a
 ### Player Configuration
 Players identified by UUID (authenticated users) or generated IDs (anonymous), configured with type (human/computer), skill level, and search time. A human side is held by an account's claim or a guest's seat, or is open.
 
-### Storage Schema (version 6)
+### Storage Schema (version 7)
 ```sql
 users (
     user_id uuid PRIMARY KEY,
@@ -346,7 +350,30 @@ games (
     concession_ply integer,                 --   against the computer; all four set
     concession_time_utc timestamptz,        --   together or all NULL
     imported_by uuid,                       -- account that imported it from PGN
-    event text, site text, round text       -- the imported PGN's tags
+    event text, site text, round text,      -- the PGN's tags
+    origin text NOT NULL                    -- played, imported or archive
+)
+
+collections (
+    name text PRIMARY KEY,                  -- lowercase slug
+    title text NOT NULL,
+    source_url text, licence text,          -- the rights: all three are required
+    attribution text,                       --   before published can be true
+    published boolean NOT NULL,
+    featured_order integer,                 -- place among the collections
+    created_at timestamptz NOT NULL
+)
+
+archive_games (
+    game_id uuid PRIMARY KEY REFERENCES games ON DELETE CASCADE,
+    collection text NOT NULL REFERENCES collections,
+    content_hash bytea NOT NULL UNIQUE,     -- SHA-256 of start, line, result and
+                                            --   the roster tags: one copy a game
+    start_time_utc timestamptz NOT NULL,    -- the game's, for the list's order
+    white_key text, black_key text,         -- names lowercased by the server
+    white_elo integer, black_elo integer,
+    eco text,                               -- A00 to E99
+    featured_order integer                  -- place among the featured games
 )
 
 password_resets (
@@ -373,10 +400,13 @@ moves (
 Version 3 added the `concession_*` columns: a rewind clears `result` and
 `termination` but keeps them, and the first concession is never overwritten.
 Version 4 added `password_resets`, one pending reset per account; version 5
-the import columns; version 6 the guest seats. Indexes cover session and reset expiry, each claim column
-and `imported_by` ordered by `(start_time_utc DESC, game_id DESC)` for the
-game listing, and the start time of games with neither claim nor importer for
-the anonymous-game purge.
+the import columns; version 6 the guest seats; version 7 `origin` and the
+archive's two tables. Every version migrates the rows it finds in place.
+Indexes cover session and reset expiry, each claim column and `imported_by`
+ordered by `(start_time_utc DESC, game_id DESC)` for the game listing, the
+start time of games with neither claim nor importer, the archive's aside, for
+the anonymous-game purge, and the archive list: a collection's games in list
+order, and the opening code and both name keys for its prefix filters.
 Claims and player IDs deliberately have no foreign key to `users`: history
 outlives deleted accounts, and the name snapshot keeps it readable.
 
@@ -391,6 +421,8 @@ outlives deleted accounts, and the name snapshot keeps it readable.
   hourly cleanup evicts idle games first, then queues the delete through the
   ordered writer while excluding every game still loaded or being loaded, so
   no live game can lose its row.
+- Archive games belong to a collection, not an account: the purge passes
+  them by, and they go only with `db archive collection delete`.
 - A write whose game row was deleted by hand fails only that game: the
   writer drops it and the service unloads the game, instead of degrading
   storage for everyone. A whole row refused during recovery does the same.

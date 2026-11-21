@@ -201,6 +201,10 @@
                 <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
             </button>
         </div>
+        <div class="segmented games-views hidden" id="games-views" role="group" aria-label="Games shown">
+            <button type="button" class="seg active" data-view="mine">My games</button>
+            <button type="button" class="seg" data-view="library">Library</button>
+        </div>
         <div class="games-filters" id="games-filters">
             <div class="segmented" role="group" aria-label="Status">
                 <button type="button" class="seg active" data-filter="status" data-value="">All</button>
@@ -220,6 +224,18 @@
                 <ul class="games-list" id="games-list"></ul>
                 <p class="games-status" id="games-status" role="status"></p>
                 <button id="games-more" class="btn btn-secondary btn-block" type="button">Load more</button>
+            </section>
+            <section class="games-section hidden" id="library-section">
+                <div class="library-filters">
+                    <select id="library-collection" aria-label="Collection"></select>
+                    <input type="search" id="library-player" placeholder="Player" maxlength="64" aria-label="Player's name starts with">
+                    <input type="search" id="library-eco" placeholder="ECO" maxlength="3" aria-label="Opening code starts with">
+                    <button type="button" class="btn btn-tool" id="library-featured" aria-pressed="false">Featured</button>
+                </div>
+                <p class="games-note" id="library-rights"></p>
+                <ul class="games-list" id="library-list"></ul>
+                <p class="games-status" id="library-status" role="status"></p>
+                <button id="library-more" class="btn btn-secondary btn-block hidden" type="button">Load more</button>
             </section>
             <section class="games-section" id="local-games-section">
                 <h3 class="games-heading">On this device</h3>

@@ -94,10 +94,10 @@ curl -X POST http://localhost:8080/api/games \
 | Database & Auth | `test-db.sh` | User registration, login, JWT tokens, persistence |
 | Long-Polling | `test-longpoll.sh` | Real-time updates, wait behavior, timeouts |
 | End States | `test-endstate.sh` | Checkmate, stalemate, terminal custom positions |
-| Replay | `test-replay.sh` | SAN history, PGN export, ETag/304, promotion, FEN validation, cursor-paged listing |
+| Replay | `test-replay.sh` | SAN history, PGN export, ETag/304, promotion, FEN validation, cursor-paged listing, the public archive |
 | Draws & Resignation | `test-draw.sh` | Automatic draws, offers (human and computer), resignation and authorization, long-poll wake-up, concessions and claim control, server version, hand-deleted game row |
-| Web client (end-to-end) | `e2e/` | Playwright in Chromium against the embedded web client: play, My games, replay controls and keyboard, autoplay, FEN/PGN export and download compared with the API, deep links, engine analysis, device list |
-| Test Server | `run-test-server.sh` | Pre-populated test environment |
+| Web client (end-to-end) | `e2e/` | Playwright in Chromium against the embedded web client: play, My games, replay controls and keyboard, autoplay, FEN/PGN export and download compared with the API, deep links, engine analysis, the Library, device list |
+| Test Server | `run-test-server.sh` | Pre-populated test environment: two accounts, and a published archive collection from `archive.pgn` |
 
 ## 1. API Functionality Tests (`test-api.sh`)
 
@@ -230,7 +230,8 @@ server with PostgreSQL and Stockfish: it plays a short game, lists it under
 My games, replays it with the buttons and the keyboard, autoplays to the end,
 compares the FEN and PGN it exports (copy and download) with the API, follows
 a deep link to a checkmate, steps back through the browser history, reads the
-engine's lines on a replayed position as a signed-in viewer, replays
+engine's lines on a replayed position as a signed-in viewer, filters the
+Library and replays a game of its published collection, replays
 an anonymous game from the device list, continues an unfinished game the
 server unloaded, plays a game between two browsers through its invite link
 (a join, a draw offer, a resignation), checks that a phone-sized viewport

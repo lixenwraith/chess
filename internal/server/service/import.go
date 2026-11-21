@@ -29,11 +29,8 @@ type Imported struct {
 	Result string // stored result, "" while unfinished
 }
 
-// ImportGame stores a game read from PGN for userID: tags give the names,
-// event, site, round and date; every move is replayed by the rules core and
-// refused if illegal; the result comes from the PGN's result token, its
-// termination from the final position (mate, stalemate, a dead position,
-// repetition or the fifty-move rule) or else resignation or agreement.
+// ImportGame stores a game read from PGN for userID; see readPGNGame for
+// what is read and refused.
 func (s *Service) ImportGame(ctx context.Context, userID, text string) (*Imported, error) {
 	if s.store == nil {
 		return nil, ErrStorageDisabled
@@ -41,26 +38,47 @@ func (s *Service) ImportGame(ctx context.Context, userID, text string) (*Importe
 	if uuid.Validate(userID) != nil {
 		return nil, errors.New("an import needs a signed-in user")
 	}
-	game, err := chess.ParsePGN(text)
+	_, record, moves, err := readPGNGame(text)
 	if err != nil {
 		return nil, err
+	}
+	record.ImportedBy = userID
+	if err := s.store.ImportGame(ctx, record, moves); err != nil {
+		return nil, fmt.Errorf("%w: import game: %v", ErrStorageUnavailable, err)
+	}
+	slog.Info("game imported", "game_id", record.GameID, "user_id", userID, "plies", len(moves), "result", record.Result)
+	return &Imported{GameID: record.GameID, Plies: len(moves), Result: record.Result}, nil
+}
+
+// readPGNGame turns one PGN game into its row and line, owned by nobody yet.
+// Tags give the names, event, site, round and date; the rules core replays
+// every move and refuses an illegal one; the result is the PGN's token, its
+// termination what the final position shows (mate, stalemate, a dead
+// position, repetition, the fifty-move rule), else resignation or agreement.
+func readPGNGame(text string) (*chess.ParsedPGN, storage.GameRecord, []storage.MoveRecord, error) {
+	fail := func(err error) (*chess.ParsedPGN, storage.GameRecord, []storage.MoveRecord, error) {
+		return nil, storage.GameRecord{}, nil, err
+	}
+	game, err := chess.ParsePGN(text)
+	if err != nil {
+		return fail(err)
 	}
 
 	startFEN := chess.StartFEN
 	if fen := game.Tag("FEN"); fen != "" || game.Tag("SetUp") == "1" {
 		if fen == "" {
-			return nil, fmt.Errorf("%w: SetUp without a FEN tag", ErrInvalidPGN)
+			return fail(fmt.Errorf("%w: SetUp without a FEN tag", ErrInvalidPGN))
 		}
 		normalized, err := chess.NormalizeFEN(fen)
 		if err != nil {
-			return nil, fmt.Errorf("%w: FEN tag: %v", ErrInvalidPGN, err)
+			return fail(fmt.Errorf("%w: FEN tag: %v", ErrInvalidPGN, err))
 		}
 		startFEN = normalized
 	}
 
 	pos, err := chess.ParseFEN(startFEN)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidPGN, err)
+		return fail(fmt.Errorf("%w: %v", ErrInvalidPGN, err))
 	}
 	gameID := uuid.NewString()
 	start := importStartTime(game)
@@ -69,7 +87,7 @@ func (s *Service) ImportGame(ctx context.Context, userID, text string) (*Importe
 	for i, san := range game.SAN {
 		m, err := pos.ParseSAN(san)
 		if err != nil {
-			return nil, fmt.Errorf("%w: ply %d (%s): %v", ErrInvalidPGN, i+1, san, err)
+			return fail(fmt.Errorf("%w: ply %d (%s): %v", ErrInvalidPGN, i+1, san, err))
 		}
 		color := "w"
 		if pos.Turn() == chess.Black {
@@ -85,7 +103,7 @@ func (s *Service) ImportGame(ctx context.Context, userID, text string) (*Importe
 
 	result, termination, err := importOutcome(game.Result, positions)
 	if err != nil {
-		return nil, err
+		return fail(err)
 	}
 	record := storage.GameRecord{
 		GameID:        gameID,
@@ -99,7 +117,6 @@ func (s *Service) ImportGame(ctx context.Context, userID, text string) (*Importe
 		Result:        result,
 		Termination:   termination,
 		StartTimeUTC:  start,
-		ImportedBy:    userID,
 		Event:         importTag(game.Tag("Event"), 200),
 		Site:          importTag(game.Tag("Site"), 200),
 		Round:         importTag(game.Tag("Round"), 40),
@@ -108,11 +125,7 @@ func (s *Service) ImportGame(ctx context.Context, userID, text string) (*Importe
 		end := start
 		record.EndTimeUTC = &end
 	}
-	if err := s.store.ImportGame(ctx, record, moves); err != nil {
-		return nil, fmt.Errorf("%w: import game: %v", ErrStorageUnavailable, err)
-	}
-	slog.Info("game imported", "game_id", gameID, "user_id", userID, "plies", len(moves), "result", result)
-	return &Imported{GameID: gameID, Plies: len(moves), Result: result}, nil
+	return game, record, moves, nil
 }
 
 // importOutcome maps the PGN result to the stored result and a termination

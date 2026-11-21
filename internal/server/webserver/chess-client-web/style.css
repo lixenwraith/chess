@@ -231,7 +231,7 @@ button { cursor: pointer; }
 .btn-play[aria-pressed="true"] .icon-play { display: none; }
 .btn-play[aria-pressed="true"] .icon-pause { display: block; }
 
-#replay-flip[aria-pressed="true"], #replay-analyse[aria-pressed="true"] { border-color: var(--periwinkle); color: var(--periwinkle); }
+#replay-flip[aria-pressed="true"], #replay-analyse[aria-pressed="true"], #library-featured[aria-pressed="true"] { border-color: var(--periwinkle); color: var(--periwinkle); }
 
 #auth-btn[data-status="authenticated"] { color: var(--fg); }
 
@@ -962,6 +962,34 @@ input[type="range"]:focus-visible { outline: 2px solid var(--periwinkle); outlin
 .seg:hover { color: var(--fg); }
 .seg.active { background: var(--royal-soft); color: var(--white); }
 .seg:focus-visible { outline: 2px solid var(--periwinkle); outline-offset: -2px; }
+
+.games-views { flex: none; align-self: flex-start; margin-bottom: 0.6rem; }
+
+.library-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 0.6rem;
+}
+
+.library-filters select, .library-filters input {
+    height: 2.1rem;
+    min-width: 0;
+    padding: 0 0.5rem;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    color: var(--fg);
+    font-size: 0.85rem;
+}
+
+.library-filters select { flex: 2 1 9rem; }
+#library-player { flex: 2 1 7rem; }
+#library-eco { flex: 0 1 4.2rem; text-transform: uppercase; }
+#library-eco::placeholder { text-transform: none; }
+.library-filters select:focus-visible, .library-filters input:focus-visible { outline: 2px solid var(--periwinkle); }
+#library-featured { flex: none; }
+#library-rights { overflow-wrap: anywhere; }
 
 .games-body {
     flex: 1;

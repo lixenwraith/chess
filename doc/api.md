@@ -335,8 +335,11 @@ resignation or agreed draw, in stored-result form (`"result": "black_wins"`);
 see [Continuing after a resignation or agreed
 draw](#continuing-after-a-resignation-or-agreed-draw).
 
-`origin` is `played` or `imported`; an imported game also carries the
-`event`, `site` and `round` its PGN had.
+`origin` is `played`, `imported` or `archive`; a game read from PGN also
+carries the `event`, `site` and `round` it had. An archive game adds
+`archive`: its `collection` with the `title`, `sourceUrl`, `licence` and
+`attribution` it is published under, and the `whiteElo`, `blackElo` and `eco`
+its PGN gave.
 `result` is omitted while a game is ongoing. Persisted terminal values are
 `white_wins`, `black_wins`, `draw`, and `stalemate`. `pgnResult` is the PGN
 token for the same outcome (`1-0`, `0-1`, `1/2-1/2`, or `*` while ongoing),
@@ -367,7 +370,9 @@ Same visibility, `ETag`, and error responses as the history. `ply` (optional,
 result is then `*`, the `Termination` tag is left out, and the filename ends
 `-ply<N>.pgn`. A `fetch` of the URL returns the text, so clients can copy it
 as well as download it. `Site` is the host of the server's `-public-url` (`?`
-without one); an imported game keeps its own.
+without one); a game read from PGN keeps its own. An archive game adds, where
+known, `WhiteElo`, `BlackElo` and `ECO`, and its collection's `Source`,
+`Licence` and `Attribution`.
 
 ```
 [Event "Casual game"]
@@ -449,6 +454,86 @@ Returns 400 `INVALID_REQUEST` for a malformed cursor or filter.
   "limit": 50,
   "offset": 0,
   "nextCursor": "MTc5MDQ5NjQyMDU4MTg2NS42ODAwN2ZkMS04OTcwLTRkODQtOTUwZC0yZjZlYzYzNzVjMGI"
+}
+```
+
+### Browse the Archive
+`GET /archive?collection=<name>&eco=<prefix>&player=<prefix>&cursor=<nextCursor>&limit=20`
+
+The curated archive: games read from PGN that belong to a collection, not an
+account. Lists the games of published collections, newest first, to anyone;
+no token. Needs persistent storage.
+
+- `limit`: 1-100; defaults to 20
+- `cursor`: the previous page's `nextCursor`, as in the list of your games
+- `collection`: a collection's name
+- `eco`: the start of an opening code, in any case: `B`, `B9`, `B90`
+- `player`: the start of either player's name, in any case, at least two
+  characters; names read as the PGN wrote them (`Fischer, Robert`)
+- `featured=true`: the featured games in their order, at most `limit`, with
+  no cursor
+
+Each item is a game summary as in [List My Stored Games](#list-my-stored-games)
+with `"origin": "archive"` and an `archive` object: `collection`, and
+`whiteElo`, `blackElo` and `eco` where the PGN gave them.
+
+**Response (200):**
+```json
+{
+  "games": [
+    {
+      "gameId": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
+      "initialFen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+      "finalFen": "1n1Rkb1r/p4ppp/4q3/4p1B1/4P3/8/PPP2PPP/2K5 b k - 1 17",
+      "result": "white_wins",
+      "pgnResult": "1-0",
+      "termination": "checkmate",
+      "startTimeUtc": "1858-01-01T00:00:00Z",
+      "endTimeUtc": "1858-01-01T00:00:00Z",
+      "moveCount": 33,
+      "origin": "archive",
+      "event": "Paris Opera",
+      "archive": {"collection": "classics", "eco": "C41"},
+      "players": {
+        "white": {"id": "player-id", "color": 1, "type": 1, "name": "Morphy, Paul"},
+        "black": {"id": "player-id", "color": 2, "type": 1, "name": "Duke Karl / Count Isouard"}
+      }
+    }
+  ],
+  "limit": 20,
+  "nextCursor": "LTM1MzQyNzIwMDAwMDAwMDAwMC5hMWIyYzNkNC1lNWY2LTc4OTAtMTIzNC01Njc4OTBhYmNkZWY"
+}
+```
+
+An archive game replays through its [history](#get-durable-game-history) and
+[PGN](#export-pgn) like any stored game, and is never live:
+`GET /games/{gameId}` answers 404. A game of an unpublished collection is
+absent from this list only; its history and PGN answer to its ID.
+
+Responses carry `Cache-Control: public, max-age=300`: the list changes only
+with an import or a publication, which a cache shows up to five minutes late.
+Returns 400 `INVALID_REQUEST` for a malformed cursor or filter, 503 without
+storage.
+
+### List Archive Collections
+`GET /archive/collections`
+
+The published collections, featured ones first, then by title; no token, and
+cached like the list.
+
+**Response (200):**
+```json
+{
+  "collections": [
+    {
+      "name": "classics",
+      "title": "Classic games",
+      "sourceUrl": "https://example.org/classics",
+      "licence": "Public domain",
+      "attribution": "Compiled by the example project",
+      "games": 3
+    }
+  ]
 }
 ```
 

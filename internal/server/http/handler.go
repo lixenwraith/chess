@@ -240,6 +240,8 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 	api.Get("/games/:gameId/board", h.GetBoard)
 	api.Get("/users/me/games", AuthRequired(validateToken), h.GetCurrentUserGames)
 	api.Delete("/users/me/games/:gameId", AuthRequired(validateToken), h.RemoveGame)
+	api.Get("/archive", h.GetArchive)
+	api.Get("/archive/collections", h.GetCollections)
 	// Importing replays a whole game through the rules core: 5 a minute per IP.
 	api.Post("/games/import", AuthRequired(validateToken), limiter.New(limiter.Config{
 		Max:          5,
@@ -776,21 +778,66 @@ func (h *HTTPHandler) GetCurrentUserGames(c *fiber.Ctx) error {
 		Status: c.Query("status"),
 	})
 	if err != nil {
-		switch {
-		case errors.Is(err, service.ErrInvalidListQuery):
-			return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
-				Error: "invalid list query", Code: core.ErrInvalidRequest, Details: err.Error(),
-			})
-		case errors.Is(err, service.ErrStorageDisabled), errors.Is(err, service.ErrStorageUnavailable):
-			return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
-				Error: "stored games unavailable", Code: core.ErrStorageUnavailable,
-			})
-		}
-		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
-			Error: "failed to load stored games", Code: core.ErrInternalError,
-		})
+		return listError(c, err)
 	}
 	return c.JSON(games)
+}
+
+func listError(c *fiber.Ctx, err error) error {
+	switch {
+	case errors.Is(err, service.ErrInvalidListQuery):
+		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
+			Error: "invalid list query", Code: core.ErrInvalidRequest, Details: err.Error(),
+		})
+	case errors.Is(err, service.ErrStorageDisabled), errors.Is(err, service.ErrStorageUnavailable):
+		return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+			Error: "stored games unavailable", Code: core.ErrStorageUnavailable,
+		})
+	}
+	return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
+		Error: "failed to load stored games", Code: core.ErrInternalError,
+	})
+}
+
+// archiveCache lets a shared cache hold the public archive: a page changes
+// only with an import or a publication, and shows that five minutes late.
+const archiveCache = "public, max-age=300"
+
+// GetArchive lists the games of published collections, to anyone.
+func (h *HTTPHandler) GetArchive(c *fiber.Ctx) error {
+	limit, err := queryInt(c, "limit", 20, 1, 100)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
+			Error: "invalid pagination", Code: core.ErrInvalidRequest, Details: err.Error(),
+		})
+	}
+	featured := false
+	if raw := c.Query("featured"); raw != "" {
+		if featured, err = strconv.ParseBool(raw); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
+				Error: "invalid list query", Code: core.ErrInvalidRequest, Details: "featured must be true or false",
+			})
+		}
+	}
+	games, err := h.svc.GetArchive(c.UserContext(), service.ArchiveOptions{
+		Limit: limit, Cursor: c.Query("cursor"), Collection: c.Query("collection"),
+		ECO: c.Query("eco"), Player: c.Query("player"), Featured: featured,
+	})
+	if err != nil {
+		return listError(c, err)
+	}
+	c.Set(fiber.HeaderCacheControl, archiveCache)
+	return c.JSON(games)
+}
+
+// GetCollections lists the published collections.
+func (h *HTTPHandler) GetCollections(c *fiber.Ctx) error {
+	collections, err := h.svc.GetCollections(c.UserContext())
+	if err != nil {
+		return listError(c, err)
+	}
+	c.Set(fiber.HeaderCacheControl, archiveCache)
+	return c.JSON(collections)
 }
 
 // ImportGame stores a PGN game for the signed-in user and names it.

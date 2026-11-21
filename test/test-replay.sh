@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
 # Replay API test suite: SAN in history, PGN export, ETag revalidation,
-# promotion handling, FEN validation, and the cursor-paged game listing.
+# promotion handling, FEN validation, the cursor-paged game listing, and the
+# public archive.
 # Requires: curl, jq, and a server from test/run-test-server.sh. Games are
 # played human-vs-human, so no engine search is involved.
 
@@ -188,6 +189,33 @@ check "cursor with offset" 400 "$(request GET "/users/me/games?offset=2&cursor=$
     -H "Authorization: Bearer $TOKEN")"
 check "bad status" 400 "$(request GET "/users/me/games?status=paused" -H "Authorization: Bearer $TOKEN")"
 check "listing needs auth" 401 "$(request GET "/users/me/games")"
+
+section "8. Public archive (the collection run-test-server.sh imports)"
+
+check "collections status" 200 "$(request GET /archive/collections)"
+check "published collection and its size" "classics 3" "$(jq -r '.collections[] | "\(.name) \(.games)"' "$TMP/body")"
+check "collections are cacheable" "public, max-age=300" "$(header Cache-Control)"
+check "archive list needs no account" 200 "$(request GET "/archive?limit=2")"
+check "newest first" "2002-06-07 2001-03-04" "$(jq -r '[.games[].startTimeUtc[:10]] | join(" ")' "$TMP/body")"
+CURSOR=$(jq -r '.nextCursor // empty' "$TMP/body")
+check "second page" "1858-01-01" "$(request GET "/archive?limit=2&cursor=$CURSOR" >/dev/null; \
+    jq -r '[.games[].startTimeUtc[:10]] | join(" ")' "$TMP/body")"
+check "last page has no cursor" "" "$(jq -r '.nextCursor // empty' "$TMP/body")"
+ARCHIVED=$(jq -r '.games[0].gameId' "$TMP/body")
+check "opening prefix" "C20 C41" "$(request GET "/archive?eco=c" >/dev/null; jq -r '[.games[].archive.eco] | join(" ")' "$TMP/body")"
+check "player prefix, either side, any case" 2 "$(request GET "/archive?player=NOVICE" >/dev/null; jq '.games | length' "$TMP/body")"
+check "ratings from the tags" "1210 1105" "$(request GET "/archive?collection=classics&eco=C20" >/dev/null; \
+    jq -r '.games[0].archive | "\(.whiteElo) \(.blackElo)"' "$TMP/body")"
+check "unknown collection is empty" 0 "$(request GET "/archive?collection=nothing" >/dev/null; jq '.games | length' "$TMP/body")"
+check "bad opening prefix" 400 "$(request GET "/archive?eco=Z")"
+check "one-letter player" 400 "$(request GET "/archive?player=x")"
+check "cursor with featured" 400 "$(request GET "/archive?featured=true&cursor=$CURSOR")"
+check "archive history" "archive classics C41" "$(request GET "/games/$ARCHIVED/history" >/dev/null; \
+    jq -r '"\(.origin) \(.archive.collection) \(.archive.eco)"' "$TMP/body")"
+request GET "/games/$ARCHIVED/pgn" >/dev/null
+check "PGN carries the opening code" '[ECO "C41"]' "$(grep '^\[ECO ' "$TMP/body")"
+check "PGN carries the attribution" '[Attribution "Compiled for the tests"]' "$(grep '^\[Attribution ' "$TMP/body")"
+check "an archive game is not playable" 404 "$(request GET "/games/$ARCHIVED")"
 
 echo -e "\n${CYAN}Results: ${GREEN}$PASS passed${NC}, ${RED}$FAIL failed${NC}"
 [ "$FAIL" -eq 0 ]

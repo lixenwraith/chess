@@ -43,10 +43,11 @@ func (s *Service) GetGameHistory(ctx context.Context, gameID string) (*core.Game
 		Termination:  record.Termination,
 		StartTimeUTC: record.StartTimeUTC,
 		EndTimeUTC:   record.EndTimeUTC,
-		Origin:       record.Origin(),
+		Origin:       record.Origin,
 		Event:        record.Event,
 		Site:         record.Site,
 		Round:        record.Round,
+		Archive:      archiveInfo(record.Archive),
 		Players:      playersResponse(*record),
 		Moves:        make([]core.HistoryMove, 0, len(moves)),
 	}
@@ -172,22 +173,27 @@ func (s *Service) GetUserGames(ctx context.Context, userID string, opts UserGame
 		}
 	}
 	for _, record := range records {
-		response.Games = append(response.Games, core.GameSummary{
-			GameID:       record.GameID,
-			InitialFEN:   record.InitialFEN,
-			Result:       record.Result,
-			PGNResult:    chess.ResultToken(record.Result),
-			Termination:  record.Termination,
-			StartTimeUTC: record.StartTimeUTC,
-			EndTimeUTC:   record.EndTimeUTC,
-			MoveCount:    record.MoveCount,
-			FinalFEN:     record.FinalFEN,
-			Origin:       record.Origin(),
-			Event:        record.Event,
-			Players:      playersResponse(record.GameRecord),
-		})
+		response.Games = append(response.Games, gameSummary(record))
 	}
 	return response, nil
+}
+
+func gameSummary(record storage.GameSummaryRecord) core.GameSummary {
+	return core.GameSummary{
+		GameID:       record.GameID,
+		InitialFEN:   record.InitialFEN,
+		Result:       record.Result,
+		PGNResult:    chess.ResultToken(record.Result),
+		Termination:  record.Termination,
+		StartTimeUTC: record.StartTimeUTC,
+		EndTimeUTC:   record.EndTimeUTC,
+		MoveCount:    record.MoveCount,
+		FinalFEN:     record.FinalFEN,
+		Origin:       record.Origin,
+		Event:        record.Event,
+		Archive:      archiveInfo(record.Archive),
+		Players:      playersResponse(record.GameRecord),
+	}
 }
 
 // Cursors are opaque to clients: base64url of "<start µs>.<game ID>". The

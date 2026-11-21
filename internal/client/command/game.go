@@ -106,6 +106,15 @@ func (r *Registry) registerGameCommands() {
 	})
 
 	r.Register(&Command{
+		Name:        "archive",
+		ShortName:   "",
+		Description: "List the public archive, or one collection of it",
+		Usage:       "archive [collection] | archive more",
+		Handler:     archiveHandler,
+		Paged:       true,
+	})
+
+	r.Register(&Command{
 		Name:        "pgn",
 		ShortName:   "",
 		Description: "Print or save a stored game as PGN",
@@ -720,6 +729,48 @@ func gamesHandler(s *session.Session, args []string) error {
 // gamesDeleteHandler removes a game from the user's list by its number in
 // the last listing or its ID. A game another player also claims is only
 // released; one the user alone holds is deleted with its moves.
+// archiveHandler lists the published archive, numbered as "games" is, so
+// "replay <#>" opens a row.
+func archiveHandler(s *session.Session, args []string) error {
+	collection, cursor := "", ""
+	switch {
+	case len(args) > 0 && args[0] == "more":
+		if s.ArchiveCursor == "" {
+			return fmt.Errorf("no further games; run 'archive' to list from the newest")
+		}
+		collection, cursor = s.ArchiveOf, s.ArchiveCursor
+	case len(args) > 0:
+		collection = args[0]
+	}
+
+	resp, err := s.Client.GetArchive(20, collection, cursor)
+	if err != nil {
+		return err
+	}
+	s.ArchiveOf, s.ArchiveCursor, s.GamesPage = collection, resp.NextCursor, resp.Games
+	if len(resp.Games) == 0 {
+		display.Println(display.Yellow, "No archive games")
+		return nil
+	}
+
+	display.Printf("\n%3s  %-36s  %-22s  %-22s  %-7s  %5s  %-10s  %-3s  %s\n",
+		"#", "Game ID", "White", "Black", "Result", "Plies", "Date", "ECO", "Collection")
+	for i, g := range resp.Games {
+		var archive api.ArchiveInfo
+		if g.Archive != nil {
+			archive = *g.Archive
+		}
+		display.Printf("%3d  %-36s  %-22s  %-22s  %-7s  %5d  %-10s  %-3s  %s\n", i+1, g.GameID,
+			playerLabel(g.Players.White), playerLabel(g.Players.Black), g.PGNResult, g.MoveCount,
+			g.StartTimeUTC.UTC().Format("2006-01-02"), archive.ECO, archive.Collection)
+	}
+	display.Println(display.Cyan, "\nReplay one: replay <#> or replay <gameId>")
+	if resp.NextCursor != "" {
+		display.Println(display.Cyan, "More games: archive more")
+	}
+	return nil
+}
+
 func gamesDeleteHandler(s *session.Session, args []string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("usage: games delete <#|gameId>")

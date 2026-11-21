@@ -215,6 +215,33 @@ test.describe('web replay', () => {
         await expect(page.locator('#analysis-lines li')).toHaveCount(0);
     });
 
+    // The collection and its games come from run-test-server.sh.
+    test('the Library lists a published collection to a visitor, who replays a game of it', async ({ page }) => {
+        await page.goto('/');
+        await page.click('#games-btn');
+        await page.click('.seg[data-view="library"]');
+        await expect(page).toHaveURL(/\?games=library$/);
+        await expect(page.locator('#library-list .game-row')).toHaveCount(3);
+        await page.selectOption('#library-collection', 'classics');
+        await expect(page.locator('#library-rights')).toHaveText('Compiled for the tests · Public domain · https://example.org/classics');
+        await page.fill('#library-eco', 'c');
+        await expect(page.locator('#library-list .game-row')).toHaveCount(2);
+        await page.fill('#library-player', 'morphy');
+        const row = page.locator('#library-list .game-row');
+        await expect(row).toHaveCount(1);
+        await expect(row).toContainText('Morphy, Paul vs Duke Karl / Count Isouard');
+        await expect(row).toContainText('C41 · Paris Opera');
+        // A game nobody owns offers nothing to delete or continue.
+        await expect(page.locator('#library-list .game-delete, #library-list .game-continue')).toHaveCount(0);
+
+        await row.click();
+        await expect(page.locator('body')).toHaveAttribute('data-mode', 'replay');
+        await expect(page.locator('#replay-ply')).toHaveText('33 / 33');
+        await expect(page.locator('#replay-moves .move').last()).toHaveText('Rd8#');
+        await expect(page.locator('#replay-meta')).toContainText('C41');
+        await expect(page.locator('#replay-meta')).toHaveAttribute('title', /Classic games · Compiled for the tests/);
+    });
+
     test('import a PGN, replay it, delete it', async ({ page, request }) => {
         const user = await register(page, request);
         await page.goto('/');

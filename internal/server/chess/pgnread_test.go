@@ -2,6 +2,7 @@ package chess
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -75,6 +76,8 @@ func TestParsePGNRefusesWeirdness(t *testing.T) {
 		"text after result":       "1. e4 e5 * and then",
 		"unterminated comment":    "1. e4 {oops e5",
 		"unterminated variation":  "1. e4 (1. d4 e5",
+		"variation open at a ;":   "1. e4 (1. d4 ; to the end",
+		"variation open at a %":   "1. e4 (1. d4\n%to the end",
 		"stray paren":             "1. e4 ) e5",
 		"stray brace":             "1. e4 } e5",
 		"bad token":               "1. e4 e5 2. Nf3 hello",
@@ -123,6 +126,84 @@ func TestParsePGNRoundTripsExport(t *testing.T) {
 	if strings.Join(game.SAN, " ") != strings.Join(line.SAN, " ") || game.Tag("Event") != `Round trip "test"` || game.Result != "*" {
 		t.Errorf("round trip: %v %q", game.SAN, game.Tag("Event"))
 	}
+}
+
+// splitGames collects what SplitPGN yields: a game's text, or "!" and the
+// error that took its place.
+func splitGames(t testing.TB, database string) []string {
+	t.Helper()
+	var games []string
+	for text, err := range SplitPGN(strings.NewReader(database)) {
+		switch {
+		case err == nil:
+			games = append(games, text)
+		case errors.Is(err, ErrInvalidPGN):
+			games = append(games, "!"+err.Error())
+		default:
+			t.Fatalf("read error: %v", err)
+		}
+	}
+	return games
+}
+
+// A tag line starts a game only after movetext or when it repeats a tag, and
+// never inside a brace comment; a game too large is refused alone.
+func TestSplitPGNCutsADatabaseIntoItsGames(t *testing.T) {
+	database := "\uFEFF% exported for a test\n; a header comment\n" +
+		"[Event \"one\"]\n\n1. e4 {a comment over lines\n[%clk 0:05:00] still the comment} e5 *\n\n" +
+		"[Event \"two\"]\r\n[Result \"1-0\"]\r\n\r\n1. d4 ; not a { brace\r\nd5 1-0\r\n" +
+		"[Event \"no moves\"]\n[Result \"*\"]\n\n" +
+		"[Event \"four\"]\n\n1. c4 *\n" +
+		"[Event \"huge\"]\n\n1. e4 {" + strings.Repeat("x", MaxPGNSize) + "} e5 *\n" +
+		"[Event \"six\"]\n1. Nf3 *"
+	games := splitGames(t, database)
+	if len(games) != 6 {
+		t.Fatalf("%d games: %q", len(games), games)
+	}
+	for i, want := range []string{"one", "two", "", "four", "", "six"} {
+		game, err := ParsePGN(games[i])
+		switch {
+		case want == "" && err == nil:
+			t.Errorf("game %d accepted: %q", i+1, games[i])
+		case want != "" && (err != nil || game.Tag("Event") != want):
+			t.Errorf("game %d: %v, %v; want event %q", i+1, game, err, want)
+		}
+	}
+	if !strings.HasPrefix(games[2], `[Event "no moves"]`) || !strings.HasPrefix(games[4], "!") {
+		t.Errorf("game 3 = %q, game 5 = %q", games[2], games[4][:min(len(games[4]), 60)])
+	}
+}
+
+// FuzzSplitPGN holds the splitter to the parser: a game ParsePGN accepts is
+// handed over whole, alone or after another.
+func FuzzSplitPGN(f *testing.F) {
+	f.Add(scholarsMate)
+	f.Add("[A \"b\"]\n1. e4 {[x\n[y} e5 ; {\n1/2-1/2")
+	f.Add("\uFEFF%x\n[A \"b\"]\n[A \"c\"]\n\n1. e4 *\r\n[B \"]\"]")
+	f.Add("[A \"b\"]\n1. e4({0}Ba1;0")
+	f.Fuzz(func(t *testing.T, text string) {
+		for _, game := range splitGames(t, text) {
+			if len(game) > MaxPGNSize+len("!")+len(ErrInvalidPGN.Error())+64 {
+				t.Fatalf("a game of %d bytes", len(game))
+			}
+		}
+		want, err := ParsePGN(text)
+		if err != nil || len(want.Tags) == 0 || len(text)+2 > MaxPGNSize {
+			return
+		}
+		for i, database := range []string{text, text + "\n" + text} {
+			games := splitGames(t, database)
+			if len(games) != i+1 {
+				t.Fatalf("%d games from %q", len(games), database)
+			}
+			for _, game := range games {
+				got, err := ParsePGN(game)
+				if err != nil || !reflect.DeepEqual(got, want) {
+					t.Fatalf("split game %q parses to %v, %v; want %v", game, got, err, want)
+				}
+			}
+		}
+	})
 }
 
 func FuzzParsePGN(f *testing.F) {

@@ -155,6 +155,7 @@ func (r *Registry) helpHandler(s *session.Session, args []string) error {
 		{"resign", "", ""},
 		{"draw", "", ""},
 		{"games", "g", ""},
+		{"archive", "", ""},
 		{"pgn", "", ""},
 		{"import", "", ""},
 	}

@@ -24,7 +24,7 @@ type gameLoad struct {
 
 // LoadGame puts an unfinished stored game back in memory when it is not
 // loaded, reading it behind every queued write; concurrent misses share one
-// read. Finished, imported and unverifiable games stay replay-only
+// read. Finished, imported, archive and unverifiable games stay replay-only
 // (ErrGameNotFound); ErrStorageUnavailable means the rows could not be read.
 func (s *Service) LoadGame(ctx context.Context, gameID string) error {
 	s.mu.RLock()
@@ -92,7 +92,7 @@ func (s *Service) storedGame(ctx context.Context, gameID string) (*game.Game, er
 	case err != nil:
 		return nil, fmt.Errorf("%w: %v", ErrStorageUnavailable, err)
 	}
-	if record.Result != "" || record.ImportedBy != "" {
+	if record.Result != "" || record.FromPGN() {
 		return nil, fmt.Errorf("%w: %s is replay-only", ErrGameNotFound, gameID)
 	}
 	// The rules decide every later move from these positions.

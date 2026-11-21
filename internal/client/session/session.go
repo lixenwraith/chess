@@ -14,7 +14,9 @@ type Session struct {
 	Username      string
 	LastMoveCount int
 	GamesCursor   string            // next page of the "games" listing
-	GamesPage     []api.GameSummary // the last "games" page, for "replay <index>"
+	GamesPage     []api.GameSummary // the last "games" or "archive" page, for "replay <index>"
+	ArchiveCursor string            // next page of the "archive" listing,
+	ArchiveOf     string            // and the collection it lists ("" for all)
 	Client        *api.Client
 	// Replay is the stored game being stepped through, nil while live. The
 	// live game, user, and poll state above are untouched by a replay.

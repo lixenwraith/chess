@@ -35,6 +35,7 @@ const RECENT_GAMES_MAX = 20;
 const RECENT_GAMES_TTL_MS = 24 * 60 * 60 * 1000; // the server's anonymous-game retention
 const SEATS_KEY = 'chess.seats';
 const SEATS_TTL_MS = 8 * 24 * 60 * 60 * 1000;    // past the week a game stays in memory
+const LIBRARY_TYPING_MS = 350;
 const ANALYSIS_DELAY_MS = 400;
 const ANALYSIS_LINES = 3;
 const ANALYSIS_CACHE_MAX = 500;
@@ -90,12 +91,23 @@ const replay = {
 // The My games drawer.
 const games = {
     open: false,
+    view: 'mine',        // or 'library', the public archive
     status: '',
     color: '',
     items: [],
     cursor: '',
     loading: false,
     loadedFor: null,     // user ID the list was loaded for
+};
+
+// The public archive, the drawer's Library view.
+const library = {
+    collections: null,   // the published collections; null until asked for
+    items: [],
+    cursor: '',
+    featured: false,
+    request: 0,          // the latest list request; an older answer is dropped
+    timer: null,         // typing rests before the list reloads
 };
 
 const ui = {
@@ -105,6 +117,7 @@ const ui = {
     toastTimer: null,
     historyCache: new Map(), // gameId -> {etag, history}
     analysisCache: new Map(), // FEN -> the engine's answer
+    navigation: 0,           // the latest applyURL
     seats: new Map(),        // gameId -> {seat, side}, also for a blocked localStorage
 };
 
@@ -179,6 +192,13 @@ async function copyText(text) {
 function markDone(button) {
     button.classList.add('done');
     setTimeout(() => button.classList.remove('done'), 1500);
+}
+
+// The day alone, as a game read from PGN records it, without a time zone's shift.
+function formatDay(iso) {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '';
+    return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' });
 }
 
 function formatDate(iso) {
@@ -2050,6 +2070,7 @@ function openGames({ push = true } = {}) {
     document.addEventListener('keydown', handleGamesKeydown);
     renderGamesSections();
     if (auth.token) loadGames(true, games.loadedFor === auth.userId);
+    loadCollections().then(showGamesView);
     if (push) pushURL();
     $('games-close').focus();
 }
@@ -2082,14 +2103,104 @@ function refreshGamesForUser() {
 
 function renderGamesSections() {
     const signedIn = !!auth.token;
+    const mine = games.view === 'mine';
+    $('games-title').textContent = mine ? 'My games' : 'Library';
+    document.querySelectorAll('.seg[data-view]').forEach(b => b.classList.toggle('active', b.dataset.view === games.view));
+    $('account-games-section').classList.toggle('hidden', !mine);
+    $('library-section').classList.toggle('hidden', mine);
     $('games-signin-note').classList.toggle('hidden', signedIn);
-    $('games-filters').classList.toggle('hidden', !signedIn);
+    $('games-filters').classList.toggle('hidden', !signedIn || !mine);
     $('account-games-heading').textContent = 'Your games';
     $('games-list').classList.toggle('hidden', !signedIn);
-    $('games-import-btn').classList.toggle('hidden', !signedIn);
+    $('games-import-btn').classList.toggle('hidden', !signedIn || !mine);
     $('games-more').classList.toggle('hidden', !signedIn || !games.cursor);
     if (!signedIn) $('games-status').textContent = '';
     renderLocalGames();
+    if (!mine) $('local-games-section').classList.add('hidden');
+}
+
+// The Library is offered once the server has a published collection.
+async function loadCollections() {
+    if (library.collections) return;
+    try {
+        const response = await fetch(`${API}/api/archive/collections`);
+        if (!response.ok) return;
+        library.collections = (await response.json()).collections || [];
+    } catch {
+        return;
+    }
+    $('games-views').classList.toggle('hidden', library.collections.length === 0);
+    const select = $('library-collection');
+    select.replaceChildren(new Option('All collections', ''));
+    for (const c of library.collections) select.add(new Option(`${c.title} (${c.games})`, c.name));
+}
+
+// Shows the view chosen; a Library with nothing published falls back to My games.
+function showGamesView() {
+    if (games.view === 'library' && !library.collections?.length) games.view = 'mine';
+    renderGamesSections();
+    if (games.view === 'library' && library.items.length === 0) loadLibrary(true);
+}
+
+function setGamesView(view) {
+    if (games.view === view) return;
+    games.view = view;
+    showGamesView();
+    pushURL();
+}
+
+// Loads the Library's first page for the filters set, or its next one.
+async function loadLibrary(reset) {
+    clearTimeout(library.timer);
+    const query = new URLSearchParams({ limit: String(GAMES_PAGE_SIZE) });
+    const collection = $('library-collection').value;
+    const player = $('library-player').value.trim();
+    const eco = $('library-eco').value.trim();
+    if (collection) query.set('collection', collection);
+    if (player.length >= 2) query.set('player', player);
+    if (/^[a-e][0-9]{0,2}$/i.test(eco)) query.set('eco', eco);
+    if (library.featured) query.set('featured', 'true');
+    else if (!reset && library.cursor) query.set('cursor', library.cursor);
+
+    const status = $('library-status');
+    status.classList.remove('error');
+    status.textContent = 'Loading…';
+    $('library-more').disabled = true;
+    renderLibraryRights(collection);
+    const request = ++library.request;
+    let page = null;
+    try {
+        const response = await fetch(`${API}/api/archive?${query}`);
+        if (response.ok) page = await response.json();
+    } catch { /* reported below */ }
+    if (request !== library.request) return;
+    $('library-more').disabled = false;
+    if (!page) {
+        status.classList.add('error');
+        status.textContent = 'The library could not be loaded. ';
+        appendRetry(status, () => loadLibrary(reset));
+        return;
+    }
+    library.items = reset ? (page.games || []) : library.items.concat(page.games || []);
+    library.cursor = page.nextCursor || '';
+    status.textContent = library.items.length ? '' : 'No games match.';
+    $('library-list').replaceChildren(...library.items.map(renderGameRow));
+    $('library-more').classList.toggle('hidden', !library.cursor);
+}
+
+// A collection is shown with its source, licence and attribution.
+function renderLibraryRights(name) {
+    const note = $('library-rights');
+    const c = (library.collections || []).find(c => c.name === name);
+    note.classList.toggle('hidden', !c);
+    if (!c) return;
+    note.textContent = [c.attribution, c.licence, c.sourceUrl].join(' · ');
+}
+
+// A filter typed into rests a moment before the list reloads.
+function libraryTyped() {
+    clearTimeout(library.timer);
+    library.timer = setTimeout(() => loadLibrary(true), LIBRARY_TYPING_MS);
 }
 
 function setGamesFilter(kind, value) {
@@ -2215,7 +2326,9 @@ function renderGameRow(summary) {
     info.className = 'game-info';
     const players = document.createElement('div');
     players.className = 'game-players';
-    players.textContent = `${sideLabel(summary.players?.white)} vs ${sideLabel(summary.players?.black)}`;
+    const archive = summary.origin === 'archive' ? (summary.archive || {}) : null;
+    const rated = (player, elo) => sideLabel(player) + (elo ? ` (${elo})` : '');
+    players.textContent = `${rated(summary.players?.white, archive?.whiteElo)} vs ${rated(summary.players?.black, archive?.blackElo)}`;
     const outcome = document.createElement('div');
     outcome.className = 'game-outcome';
     const token = document.createElement('span');
@@ -2232,7 +2345,9 @@ function renderGameRow(summary) {
     const when = document.createElement('div');
     when.className = 'game-when';
     const notes = [formatDate(summary.startTimeUtc)];
-    if (summary.origin === 'imported') {
+    if (archive) {
+        when.textContent = [formatDay(summary.startTimeUtc), archive.eco, summary.event].filter(Boolean).join(' · ');
+    } else if (summary.origin === 'imported') {
         const origin = document.createElement('span');
         origin.className = 'game-origin';
         origin.textContent = summary.event ? `imported · ${summary.event}` : 'imported';
@@ -2264,6 +2379,8 @@ function renderGameRow(summary) {
         resume.addEventListener('click', () => continueGame(summary, side));
         li.appendChild(resume);
     }
+
+    if (archive) return li;
 
     // Delete, with an in-row confirmation.
     const del = document.createElement('button');
@@ -2616,7 +2733,15 @@ function renderReplayHead() {
     $('replay-players').title = `White: ${sideLabel(h.players?.white)} · Black: ${sideLabel(h.players?.black)}`;
     const plies = h.moves.length;
     const meta = [formatDate(h.startTimeUtc), `${plies} ${plies === 1 ? 'ply' : 'plies'}`];
+    $('replay-meta').removeAttribute('title');
     if (h.origin === 'imported') meta.unshift(h.event || 'imported');
+    if (h.origin === 'archive' && h.archive) {
+        meta[0] = formatDay(h.startTimeUtc);
+        meta.unshift(...[h.event, h.archive.eco].filter(Boolean));
+        meta.push(h.archive.title);
+        $('replay-meta').title = [h.archive.title, h.archive.attribution, h.archive.licence, h.archive.sourceUrl]
+            .filter(Boolean).join(' · ');
+    }
     if (h.concession && h.concession.termination) {
         meta.push(h.concession.termination === 'agreement'
             ? `draw agreed at ply ${h.concession.ply}`
@@ -2950,7 +3075,7 @@ function urlForState() {
     } else if (live.gameId && live.friend) {
         parts.push(`game=${encodeURIComponent(live.gameId)}`);
     }
-    if (games.open) parts.push('games');
+    if (games.open) parts.push(games.view === 'library' ? 'games=library' : 'games');
     return location.pathname + (parts.length ? `?${parts.join('&')}` : '');
 }
 
@@ -2966,8 +3091,10 @@ function replaceURL() {
     } catch { /* history blocked */ }
 }
 
-// Brings the page to what the URL names, without touching history.
+// Brings the page to what the URL names, without touching history. A
+// navigation that arrives while a game loads takes over from this one.
 async function applyURL() {
+    const turn = ++ui.navigation;
     const params = new URLSearchParams(location.search);
     const id = params.get('replay');
     const ply = parseInt(params.get('ply') || '0', 10);
@@ -2986,8 +3113,11 @@ async function applyURL() {
     } else if (replay.active) {
         exitReplay({ push: false });
     }
+    if (turn !== ui.navigation) return;
+    if (wantGames) games.view = params.get('games') === 'library' ? 'library' : 'mine';
     if (wantGames && !games.open) openGames({ push: false });
     else if (!wantGames && games.open) closeGames({ push: false });
+    else if (wantGames) showGamesView();
 }
 
 // ------------------------------------------------------------- keyboard
@@ -3084,9 +3214,21 @@ function bindEvents() {
         if (e.target === e.currentTarget) closeGames();
     });
     $('games-more').addEventListener('click', () => loadGames(false));
-    document.querySelectorAll('.seg').forEach(seg => {
+    document.querySelectorAll('.seg[data-filter]').forEach(seg => {
         seg.addEventListener('click', () => setGamesFilter(seg.dataset.filter, seg.dataset.value));
     });
+    document.querySelectorAll('.seg[data-view]').forEach(seg => {
+        seg.addEventListener('click', () => setGamesView(seg.dataset.view));
+    });
+    $('library-collection').addEventListener('change', () => loadLibrary(true));
+    $('library-player').addEventListener('input', libraryTyped);
+    $('library-eco').addEventListener('input', libraryTyped);
+    $('library-featured').addEventListener('click', () => {
+        library.featured = !library.featured;
+        $('library-featured').setAttribute('aria-pressed', library.featured ? 'true' : 'false');
+        loadLibrary(true);
+    });
+    $('library-more').addEventListener('click', () => loadLibrary(false));
 
     $('replay-first').addEventListener('click', () => { stopAutoplay(); gotoPly(0); });
     $('replay-prev').addEventListener('click', () => { stopAutoplay(); stepReplay(-1); });
