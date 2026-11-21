@@ -40,6 +40,8 @@ func validationMiddleware(c *fiber.Ctx) error {
 		requestType = &core.DrawRequest{}
 	case strings.HasSuffix(path, "/join") && method == fiber.MethodPost:
 		requestType = &core.JoinRequest{}
+	case strings.HasSuffix(path, "/analysis") && method == fiber.MethodPost:
+		requestType = &core.AnalysisRequest{}
 	default:
 		return c.Next() // No validation for unknown endpoints
 	}

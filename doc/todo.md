@@ -17,7 +17,6 @@ batch under Done says what it delivered.
 - Phase 2, next, in this order:
   - R8.2 P2: email verification, after R8.1
 - Phase 3, later, each after its decision:
-  - R9.2 P3: analysis on a replay
   - R8.4 P3: recovery timing through the sender
   - R7.3 P3: retire the engine shadow, after a release without a finding
   - R5.1–R5.4 P3: the curated archive, rights first
@@ -56,12 +55,14 @@ batch under Done says what it delivered.
   move takes no engine round trip and no lock, and a game between humans no
   engine. Stockfish replays each ruling off the request path and logs a
   disagreement (R7.3 retires it).
-- R9, in part: Ctrl-C stops a running `auto`, `poll` or `computer` in the
+- R9 Clients: Ctrl-C stops a running `auto`, `poll` or `computer` in the
   terminal client, natively and in the browser, and the session stays. The
   web client plays a friend: the creator picks a side, an invite link
   (`?game=<id>`) offers the open one, a join takes it without a move, the
   game is watched by long-poll, Draw shows and accepts a standing offer, and
-  the turn strip names the opponent. Schema v6.
+  the turn strip names the opponent. Schema v6. A signed-in viewer turns the
+  Engine on in a replay: the evaluation and best three lines of the position
+  shown, from `POST /api/analysis` (D13).
 
 - R10 Observability: the measures (queues, retries, degraded transitions,
   flush, replay-read and KDF-slot latency, loaded games, long-poll waiters,
@@ -101,10 +102,14 @@ batch under Done says what it delivered.
   stored games as a gate: a stored game is verified before it resumes and
   stays replay-only when it fails; `db verify` checks them all at any time
   (R7.3).
+- D13 Analysis, done: a server endpoint that searches one position within a
+  node budget, on an engine of its own, signed-in, rate-limited and cached by
+  position. No whole-game review (a search per ply: a background job with
+  stored results) and no engine in the browser.
 
 ## Web Client Constraints
 
-The host's security headers bind every web client item (R5.4, R9.2):
+The host's security headers bind every web client item (R5.4):
 
 - `script-src 'self' 'wasm-unsafe-eval'`: code lives in `app.js`; no inline
   scripts, `on*` attributes, `eval` or `new Function`.
@@ -349,39 +354,3 @@ email.
 
 - Closing it needs the sender's work per request to be the same for every
   account.
-
-## R9 Clients
-
-The web client plays the computer or a friend and replays stored games; the
-terminal client drives the whole API, natively and in the browser, without
-guest seats.
-
-### R9.2 Analysis on a replay
-
-- Priority: P3, a decision first: which engine, and at whose cost
-- Affected files: `internal/server/webserver/chess-client-web/` (`app.js`,
-  `index.html`, `style.css`); for a server endpoint also
-  `internal/server/engine/engine.go`, `internal/server/processor/queue.go`,
-  `internal/server/http/handler.go`, `internal/server/core/api.go`,
-  `doc/api.md`
-- Guide: [Get Durable Game History](api.md#get-durable-game-history),
-  [Application Usage](stockfish.md#application-usage),
-  [Web Client Constraints](#web-client-constraints)
-
-The replay pane shows stored positions and exports FEN and PGN; nothing
-evaluates a position. Three ways, cheapest first:
-
-- A link out: the position opened on an external analysis board (lichess's
-  takes a FEN in its URL). No engine and no server cost; the game leaves the
-  site only when the user follows the link, and `connect-src` does not
-  govern a navigation.
-- A server endpoint: an evaluation of a FEN with Stockfish (`MultiPV`, a
-  depth or node budget) on its own worker, so it never delays computer
-  moves; signed-in, rate-limited, cached by normalized FEN. A whole-game
-  review (an evaluation per ply, blunders marked) is a search per ply: a
-  background job with stored results, so a schema change.
-- In the browser: a Stockfish WASM build served from the same origin
-  (`'wasm-unsafe-eval'` allows it); single-threaded, since threads need
-  cross-origin isolation that the embedding page would have to serve too; a
-  full NNUE network weighs tens of megabytes; Stockfish is GPLv3, so its
-  source is offered with the binary.

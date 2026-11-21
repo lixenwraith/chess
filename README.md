@@ -34,6 +34,8 @@ Go backend server providing a RESTful API for chess gameplay with user authentic
   rulings in the background
 - Games without a registered player are purged 24 hours after their last activity
 - Authenticated stored-game listing with cursor pagination and filters
+- Position analysis for signed-in users: Stockfish's best lines within a
+  node budget, on an engine of its own, cached by position
 - Configurable structured debug logs for persistence, cleanup, and engine work
 - Metrics without an endpoint: one `msg=metrics` log line a minute (queues,
   retries, latencies, loaded games) for a log shipper to stream
@@ -190,6 +192,8 @@ The chess server includes an embedded web UI for playing games through a browser
 - **Replay** of any stored game: step, autoplay, flip, keyboard navigation,
   export FEN and PGN at any ply, and shareable links
   (`?replay=<gameId>&ply=<n>`)
+- **Engine** on a replay, for signed-in users: the evaluation and the best
+  three lines of the position shown
 - Server and storage health in the top bar
 - Accounts: register, sign in, forgotten-password recovery by email, delete
 - Responsive layout, board beside or above the panel

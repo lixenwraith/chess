@@ -24,6 +24,17 @@ Calculates best move with time constraint. Returns:
 - `info depth X score cp Y pv ...` (evaluation info)
 - `bestmove <move>` (final result)
 
+#### Analysis
+```
+setoption name MultiPV value <1-3>
+position fen <fen_string>
+go nodes <budget>
+```
+Reports each of the best lines as `info depth X multipv K score cp Y pv ...`
+(`score mate N` for a forced mate). The lines kept are those of the deepest
+iteration that finished them all: when the budget runs out mid-iteration the
+engine reports a mixed set, some scores only bounds, which is dropped.
+
 #### Board State Query
 ```
 d
@@ -71,6 +82,14 @@ Worker pool with dedicated engines per worker:
 2. Configure skill level
 3. Search for best move
 4. Return result via callback
+
+#### Analysis (Processor)
+An engine of its own, started on the first request and never set below full
+strength:
+1. The rules core answers a position where the game is over
+2. A position searched before is answered from memory
+3. Otherwise search 500,000 nodes for up to three lines
+4. Scores are turned to White's side and the moves to SAN by the rules core
 
 ### Error Handling
 

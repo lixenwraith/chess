@@ -48,6 +48,7 @@ type Processor struct {
 	quit          chan struct{}
 	shadowDone    chan struct{}
 	disagreements atomic.Int64
+	analyst       *analyst
 }
 
 // Metrics reports the engine queue's depth, the engines' restarts, and how
@@ -72,6 +73,7 @@ func New(svc *service.Service) (*Processor, error) {
 		shadows:       make(chan shadowCheck, shadowBacklog),
 		quit:          make(chan struct{}),
 		shadowDone:    make(chan struct{}),
+		analyst:       newAnalyst(),
 	}
 	go p.shadowLoop()
 	return p, nil
@@ -689,6 +691,7 @@ func (p *Processor) Close() error {
 	p.mu.Lock()
 	engineErr := p.validationEng.Close()
 	p.mu.Unlock()
+	p.analyst.close()
 	return errors.Join(queueErr, engineErr)
 }
 

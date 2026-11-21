@@ -189,6 +189,32 @@ test.describe('web replay', () => {
         await expect(page).toHaveURL(/\/$/);
     });
 
+    test('the engine analyses a replayed position for a signed-in viewer', async ({ page, request }) => {
+        const created = await request.post(`${API}/api/games`, { data: { white: { type: 1 }, black: { type: 1 } } });
+        const { gameId } = await created.json();
+        for (const m of ['f2f3', 'e7e5', 'g2g4', 'd8h4']) {
+            const r = await request.post(`${API}/api/games/${gameId}/moves`, { data: { move: m } });
+            expect(r.status(), await r.text()).toBe(200);
+        }
+        // A guest is offered no engine.
+        await page.goto(`/?replay=${gameId}&ply=3`);
+        await expect(page.locator('#replay-ply')).toHaveText('3 / 4');
+        await expect(page.locator('#replay-analyse')).toBeHidden();
+
+        await signIn(page, request, 'alice', 'AlicePass123');
+        await page.reload();
+        await expect(page.locator('#auth-label')).toHaveText('alice');
+        await page.click('#replay-analyse');
+        // Black mates in one from here, and the score is White's.
+        await expect(page.locator('#analysis-eval')).toHaveText('#-1', { timeout: 30_000 });
+        await expect(page.locator('#analysis-lines li')).toHaveCount(3);
+        await expect(page.locator('#analysis-lines li').first()).toContainText('2… Qh4#');
+        // The final position is the rules' to describe.
+        await page.keyboard.press('End');
+        await expect(page.locator('#analysis-eval')).toHaveText('Checkmate — Black wins');
+        await expect(page.locator('#analysis-lines li')).toHaveCount(0);
+    });
+
     test('import a PGN, replay it, delete it', async ({ page, request }) => {
         const user = await register(page, request);
         await page.goto('/');

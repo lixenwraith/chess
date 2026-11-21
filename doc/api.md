@@ -485,6 +485,45 @@ An imported game has no claimed side: it is listed for its importer with
 `"origin": "imported"` and its `event`, is excluded from the `color` filter,
 and is never purged as anonymous. Its history and PGN carry the tags.
 
+### Analyse a Position
+`POST /analysis`
+
+The engine's view of one position: its best variations, best first. Requires
+`Authorization: Bearer <token>`; 30 requests a minute per IP. Stockfish
+searches at full strength within 500,000 nodes, about a second, on an engine
+of its own that no computer move waits for. One position is searched at a
+time and four requests may wait; an answer is kept in memory by position, so
+asking again costs nothing.
+
+**Request:** `lines` is 1 to 3 (default 1), and at most the legal moves.
+```json
+{"fen": "rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq - 0 2", "lines": 2}
+```
+
+**Response (200):**
+```json
+{
+  "fen": "rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq - 0 2",
+  "depth": 19,
+  "lines": [
+    {"score": 0, "mate": -1, "moves": ["d8h4"], "san": ["Qh4#"]},
+    {"score": -260, "moves": ["h7h5", "g4g5", "d8g5"], "san": ["h5", "g5", "Qxg5"]}
+  ]
+}
+```
+
+- `score` is White's, in centipawns. `mate`, when present, replaces it: the
+  moves to mate, negative when Black mates.
+- `moves` holds at most 12 plies in UCI (the second line above is cut short),
+  `san` the same moves in notation.
+- `fen` is the position as the rules core writes it.
+- Where the game is over (mate, stalemate, dead material, the fifty-move
+  rule) the rules answer without the engine: `lines` is empty, and `state`
+  and `termination` say how, as in a game response.
+
+Errors: 400 `INVALID_FEN` with `details`, 400 `INVALID_REQUEST`, 401 without
+a token, 429 past the limit, 503 `RESOURCE_LIMIT` when too many are waiting.
+
 ### Remove a Stored Game
 `DELETE /users/me/games/{gameId}`
 
@@ -715,6 +754,7 @@ Error codes:
 - Account deletion: 5 requests/minute/IP
 - Password recovery: 3 requests/minute/IP; reset: 10 requests/minute/IP
 - PGN import: 5 requests/minute/IP
+- Analysis: 30 requests/minute/IP
 
 Exceeding limit returns 429 status. Behind a reverse proxy the client IP is the
 proxy's `X-Real-IP` header, trusted only from addresses listed in

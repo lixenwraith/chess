@@ -11,6 +11,7 @@ to finish.
 
 ### Processing Layer (`internal/server/processor`)
 Central command handler containing business logic. Single `Execute(ctx, Command)` entry point decouples transport from logic; a command that names a stored game loads it first. The rules core validates moves; the asynchronous EngineQueue computes the computer's, and one more engine answers draw offers and re-checks the core's rulings off the request path. Commands include optional user context for authenticated operations.
+Analysis (`POST /api/analysis`) has an engine of its own, started on its first request: one position at a time within a node budget, four requests waiting at most, answers kept in memory by position.
 
 ### Service Layer (`internal/server/service`)
 In-memory live-game storage with authentication support. A mutex protects each
@@ -254,6 +255,7 @@ gives `count`, `avg` and `max` since the last line.
 - **Move Validation**: The rules core, on the request's goroutine; optimistic FEN/state/turn checks reject a result if the game changed meanwhile
 - **Engine Workers**: Fixed pool (2 workers) with dedicated Stockfish processes
 - **Processor Engine**: Single mutex-protected instance for draw-offer evaluation and the shadow check (64 rulings may wait)
+- **Analysis Engine**: A fourth Stockfish process, started by the first analysis; one search at a time, four requests waiting
 - **Storage Writer**: Single goroutine processes game write queue sequentially
 - **User Operations**: Direct database access; account creation serialized by a PostgreSQL advisory lock
 - **Password Hashing**: Four Argon2id slots; waiters give up after five seconds (HTTP 503)
@@ -418,6 +420,7 @@ See [`deploy/postgresql`](../deploy/postgresql) for provisioning,
 - General API: 10 req/s per IP (20 in dev mode)
 - Registration: 5 req/min per IP (prevent spam accounts)
 - Login: 10 req/min per IP (prevent brute force)
+- Analysis: 30 req/min per IP, signed-in only (a search costs a second of CPU)
 - Game operations unaffected for authenticated users
 
 ### Data Protection

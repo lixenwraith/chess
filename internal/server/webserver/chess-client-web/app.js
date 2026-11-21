@@ -35,6 +35,9 @@ const RECENT_GAMES_MAX = 20;
 const RECENT_GAMES_TTL_MS = 24 * 60 * 60 * 1000; // the server's anonymous-game retention
 const SEATS_KEY = 'chess.seats';
 const SEATS_TTL_MS = 8 * 24 * 60 * 60 * 1000;    // past the week a game stays in memory
+const ANALYSIS_DELAY_MS = 400;
+const ANALYSIS_LINES = 3;
+const ANALYSIS_CACHE_MAX = 500;
 
 // The live game played on this board.
 const live = {
@@ -80,6 +83,8 @@ const replay = {
     timer: null,         // autoplay timeout
     speedMs: 1000,
     loading: null,       // the game ID whose history is being fetched
+    analyse: false,      // the engine panel is on
+    analysisTimer: null, // a position rests before it is sent
 };
 
 // The My games drawer.
@@ -99,6 +104,7 @@ const ui = {
     mail: 'unknown',    // "ok" when the server emails password-reset links
     toastTimer: null,
     historyCache: new Map(), // gameId -> {etag, history}
+    analysisCache: new Map(), // FEN -> the engine's answer
     seats: new Map(),        // gameId -> {seat, side}, also for a blocked localStorage
 };
 
@@ -479,6 +485,7 @@ function setSignedIn(userId, username, token) {
     auth.username = username;
     try { localStorage.setItem('authToken', token); } catch { /* storage blocked */ }
     updateAuthButton();
+    updateAnalysisAvailability();
     if (games.open) refreshGamesForUser();
 }
 
@@ -488,6 +495,7 @@ function clearAuthState() {
     auth.username = null;
     try { localStorage.removeItem('authToken'); } catch { /* storage blocked */ }
     updateAuthButton();
+    updateAnalysisAvailability();
     if (games.open) refreshGamesForUser();
 }
 
@@ -2550,6 +2558,7 @@ function setReplayExitLabel(text, short) {
 function exitReplay({ push = true } = {}) {
     if (!replay.active) return;
     stopAutoplay();
+    clearTimeout(replay.analysisTimer);
     replay.active = false;
     replay.loading = null;
     replay.gameId = null;
@@ -2575,6 +2584,7 @@ function renderReplayLoading() {
     const grid = $('replay-moves');
     grid.innerHTML = '';
     $('replay-moves-empty').textContent = 'Loading…';
+    renderAnalysisNote('');
     setReplayNavEnabled(false);
     setReplayExitLabel(live.gameId ? 'Back to live game' : 'Close replay', live.gameId ? 'Live' : 'Close');
 }
@@ -2656,6 +2666,7 @@ function gotoPly(n, { announce = true } = {}) {
 
     if (announce) $('ply-announcer').textContent = plyLabel(n);
     replaceURL();
+    scheduleAnalysis();
 }
 
 function plyLabel(n) {
@@ -2704,8 +2715,131 @@ function stopAutoplay() {
         clearTimeout(replay.timer);
         replay.timer = null;
     }
+    const wasPlaying = autoplaying();
     $('replay-play').setAttribute('aria-pressed', 'false');
     $('replay-play').setAttribute('aria-label', 'Autoplay');
+    if (wasPlaying) scheduleAnalysis();
+}
+
+function autoplaying() {
+    return $('replay-play').getAttribute('aria-pressed') === 'true';
+}
+
+// The Engine button is for signed-in users: the server searches for them only.
+function updateAnalysisAvailability() {
+    $('replay-analyse').classList.toggle('hidden', !auth.token);
+    if (!auth.token && replay.analyse) setAnalysis(false);
+}
+
+function setAnalysis(on) {
+    replay.analyse = on;
+    $('replay-analyse').setAttribute('aria-pressed', on ? 'true' : 'false');
+    $('replay-analysis').classList.toggle('hidden', !on);
+    // The panel takes its height from the move list.
+    scrollMoveIntoView($('replay-moves'), replay.ply);
+    if (on) scheduleAnalysis(); else clearTimeout(replay.analysisTimer);
+}
+
+// Asks for the position on the board once it has rested there. Autoplay
+// moves on faster than a search answers, so it waits for the pause.
+function scheduleAnalysis() {
+    clearTimeout(replay.analysisTimer);
+    if (!replay.analyse || !replay.active || !replay.history) return;
+    const fen = replayFen();
+    const known = ui.analysisCache.get(fen);
+    if (known) {
+        renderAnalysis(known);
+    } else if (autoplaying()) {
+        renderAnalysisNote('Paused during autoplay');
+    } else {
+        renderAnalysisNote('Analysing…');
+        replay.analysisTimer = setTimeout(() => analysePosition(fen), ANALYSIS_DELAY_MS);
+    }
+}
+
+async function analysePosition(fen) {
+    const shown = () => replay.analyse && replay.active && replay.history && replayFen() === fen;
+    let response;
+    try {
+        response = await apiJSON('POST', '/api/analysis', { fen, lines: ANALYSIS_LINES });
+    } catch {
+        if (shown()) renderAnalysisNote('Connection failed');
+        return;
+    }
+    if (!response.ok) {
+        const message = {
+            401: 'Sign in again to analyse',
+            429: 'Too many analyses; wait a moment',
+            503: 'The engine is busy; try again shortly',
+        }[response.status] || 'Analysis unavailable';
+        if (shown()) renderAnalysisNote(message);
+        return;
+    }
+    const analysis = await response.json();
+    if (ui.analysisCache.size >= ANALYSIS_CACHE_MAX) ui.analysisCache.clear();
+    ui.analysisCache.set(fen, analysis);
+    if (shown()) renderAnalysis(analysis);
+}
+
+function renderAnalysisNote(text) {
+    $('analysis-eval').textContent = '';
+    $('analysis-eval').removeAttribute('title');
+    $('analysis-note').textContent = text;
+    $('analysis-lines').replaceChildren();
+}
+
+function renderAnalysis(analysis) {
+    if (analysis.state) {
+        renderAnalysisNote('');
+        $('analysis-eval').textContent = describeResult(analysis.state, analysis.termination);
+        return;
+    }
+    const best = analysis.lines[0];
+    $('analysis-eval').textContent = scoreText(best);
+    $('analysis-eval').title = scoreMeaning(best);
+    $('analysis-note').textContent = `depth ${analysis.depth}`;
+    $('analysis-lines').replaceChildren(...analysis.lines.map(line => {
+        const item = document.createElement('li');
+        const score = document.createElement('span');
+        score.className = 'analysis-score';
+        score.textContent = scoreText(line);
+        const moves = document.createElement('span');
+        moves.className = 'analysis-moves';
+        moves.textContent = numberedLine(analysis.fen, line.san);
+        item.title = moves.textContent;
+        item.append(score, moves);
+        return item;
+    }));
+}
+
+// A score is White's: pawns, or "#n" for a mate in n, "#-n" when Black mates.
+function scoreText(line) {
+    if (line.mate) return `#${line.mate}`;
+    const pawns = line.score / 100;
+    return `${pawns > 0 ? '+' : ''}${pawns.toFixed(2)}`;
+}
+
+function scoreMeaning(line) {
+    if (line.mate) return `${line.mate > 0 ? 'White' : 'Black'} mates in ${Math.abs(line.mate)}`;
+    if (line.score === 0) return 'Level';
+    return `${line.score > 0 ? 'White' : 'Black'} is ahead by ${(Math.abs(line.score) / 100).toFixed(2)} pawns`;
+}
+
+// numberedLine writes a variation with its move numbers, from the FEN's side
+// to move and move number.
+function numberedLine(fen, san) {
+    const fields = fen.split(' ');
+    let number = parseInt(fields[5], 10) || 1;
+    let white = fields[1] !== 'b';
+    const out = [];
+    san.forEach((move, i) => {
+        if (white) out.push(`${number}.`);
+        else if (i === 0) out.push(`${number}…`);
+        out.push(move);
+        if (!white) number++;
+        white = !white;
+    });
+    return out.join(' ');
 }
 
 function flipReplayBoard() {
@@ -2968,6 +3102,7 @@ function bindEvents() {
         }
     });
     $('replay-flip').addEventListener('click', flipReplayBoard);
+    $('replay-analyse').addEventListener('click', () => setAnalysis(!replay.analyse));
     $('replay-copy-fen').addEventListener('click', copyReplayFen);
     $('replay-copy-pgn').addEventListener('click', copyReplayPgn);
     $('replay-download').addEventListener('click', downloadReplayPgn);

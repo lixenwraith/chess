@@ -253,6 +253,19 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 			})
 		},
 	}), h.ImportGame)
+	// An analysis is a search of about a second on one engine: 30 a minute per IP.
+	api.Post("/analysis", AuthRequired(validateToken), limiter.New(limiter.Config{
+		Max:          30,
+		Expiration:   1 * time.Minute,
+		KeyGenerator: clientIP,
+		LimitReached: func(c *fiber.Ctx) error {
+			return c.Status(fiber.StatusTooManyRequests).JSON(core.ErrorResponse{
+				Error:   "rate limit exceeded",
+				Code:    core.ErrRateLimitExceeded,
+				Details: "30 analyses per minute allowed",
+			})
+		},
+	}), h.Analyse)
 
 	return app
 }
@@ -816,6 +829,34 @@ func (h *HTTPHandler) ImportGame(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(core.ImportGameResponse{
 		GameID: imported.GameID, MoveCount: imported.Plies, Result: imported.Result,
 		PGNResult: chess.ResultToken(imported.Result),
+	})
+}
+
+// Analyse answers a signed-in user with the engine's view of a position.
+func (h *HTTPHandler) Analyse(c *fiber.Ctx) error {
+	body := c.Locals("validatedBody")
+	if validated, _ := c.Locals("validated").(bool); !validated || body == nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
+			Error: "validation bypass detected", Code: core.ErrInternalError,
+		})
+	}
+	req := body.(*core.AnalysisRequest)
+
+	analysis, err := h.proc.Analyse(c.UserContext(), req.FEN, req.Lines)
+	switch {
+	case err == nil:
+		return c.JSON(analysis)
+	case errors.Is(err, chess.ErrInvalidFEN):
+		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
+			Error: "invalid FEN", Code: core.ErrInvalidFEN, Details: err.Error(),
+		})
+	case errors.Is(err, processor.ErrAnalysisBusy), c.UserContext().Err() != nil:
+		return c.Status(fiber.StatusServiceUnavailable).JSON(core.ErrorResponse{
+			Error: "analysis is busy", Code: core.ErrResourceLimit, Details: "try again shortly",
+		})
+	}
+	return c.Status(fiber.StatusInternalServerError).JSON(core.ErrorResponse{
+		Error: "analysis failed", Code: core.ErrInternalError,
 	})
 }
 

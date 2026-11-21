@@ -231,7 +231,7 @@ button { cursor: pointer; }
 .btn-play[aria-pressed="true"] .icon-play { display: none; }
 .btn-play[aria-pressed="true"] .icon-pause { display: block; }
 
-#replay-flip[aria-pressed="true"] { border-color: var(--periwinkle); color: var(--periwinkle); }
+#replay-flip[aria-pressed="true"], #replay-analyse[aria-pressed="true"] { border-color: var(--periwinkle); color: var(--periwinkle); }
 
 #auth-btn[data-status="authenticated"] { color: var(--fg); }
 
@@ -597,6 +597,36 @@ body[data-mode="replay"] .pane-live { display: none; }
     white-space: nowrap;
     font-size: 0.78rem;
 }
+
+/* The engine's view of the replayed position; the list keeps the height of
+   its three lines so a new position does not move the move list. */
+.analysis {
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    padding: 0.4rem 0.6rem;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    font-size: 0.82rem;
+}
+
+.analysis-head { display: flex; align-items: baseline; gap: 0.5rem; min-height: 1.35rem; }
+.analysis-eval { color: var(--fg); font-family: var(--mono); font-weight: 600; font-size: 0.95rem; }
+.analysis-note { color: var(--muted); font-size: 0.78rem; }
+
+.analysis-lines {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    min-height: 3.9em;
+    line-height: 1.3;
+}
+
+.analysis-lines li { display: flex; gap: 0.5rem; white-space: nowrap; }
+.analysis-score { flex: none; width: 3.1rem; color: var(--fg); font-family: var(--mono); text-align: right; }
+.analysis-moves { color: var(--fg-soft); overflow: hidden; text-overflow: ellipsis; }
 
 .replay-nav {
     flex: none;
@@ -1230,6 +1260,11 @@ input[type="range"]:focus-visible { outline: 2px solid var(--periwinkle); outlin
     .pane-replay .btn-exit { flex: 1.3 1 0; min-width: 0; padding: 0.45rem 0.3rem; font-size: 0.82rem; }
     .pane-replay .btn-exit #replay-exit-label { display: none; }
     .pane-replay .btn-exit .label-short { display: inline; }
+    /* The best line alone, beside its score. */
+    .analysis { flex-direction: row; align-items: baseline; gap: 0.5rem; padding: 0.3rem 0.6rem; }
+    .analysis-head { flex: none; min-height: 0; }
+    .analysis-lines { flex: 1 1 auto; min-width: 0; min-height: 1.3em; }
+    .analysis-lines li:not(:first-child), .analysis-score { display: none; }
     .pane-replay .replay-nav {
         display: grid;
         grid-template-columns: repeat(5, 1fr) 1.4fr 1fr;

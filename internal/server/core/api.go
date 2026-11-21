@@ -45,7 +45,35 @@ type UndoRequest struct {
 	Count int `json:"count" validate:"required,min=1,max=300"` // Max based on longest games in history (272), theoretical max 5949
 }
 
+// AnalysisRequest asks for the engine's best Lines variations of a position:
+// 1 to 3, one when omitted.
+type AnalysisRequest struct {
+	FEN   string `json:"fen" validate:"required,max=100"`
+	Lines int    `json:"lines,omitempty" validate:"omitempty,min=1,max=3"`
+}
+
 // Response types
+
+// AnalysisResponse is the engine's view of a position, best line first. A
+// position where the game is over has no lines and names its State and
+// Termination instead, as the rules give them.
+type AnalysisResponse struct {
+	FEN         string         `json:"fen"`
+	Depth       int            `json:"depth,omitempty"`
+	State       string         `json:"state,omitempty"`
+	Termination string         `json:"termination,omitempty"`
+	Lines       []AnalysisLine `json:"lines"`
+}
+
+// AnalysisLine is a variation in UCI with its SAN. Score is White's, in
+// centipawns; Mate, when present, is the moves to mate instead, negative when
+// Black mates.
+type AnalysisLine struct {
+	Score int      `json:"score"`
+	Mate  int      `json:"mate,omitempty"`
+	Moves []string `json:"moves"`
+	SAN   []string `json:"san"`
+}
 
 // GameResponse is the live game. DrawOutcome ("offered", "accepted",
 // "declined") is set only on the answer to a draw request; Side and Seat only
