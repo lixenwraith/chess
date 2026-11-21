@@ -253,6 +253,78 @@ func (s *Store) RewindGame(gameID string, afterMoveNumber int) error {
 	})
 }
 
+// SyncGame queues a game whole, as memory holds it: its row inserted or
+// brought up to date, moves past its line removed, the line written over. It
+// restores a game whose writes were lost (Recover). The first concession and
+// the name of an unchanged claim stay as stored.
+func (s *Store) SyncGame(record GameRecord, moves []MoveRecord) error {
+	if record.GameID == "" || record.InitialFEN == "" || record.WhitePlayerID == "" || record.BlackPlayerID == "" {
+		return errors.New("game ID, initial FEN, and player IDs are required")
+	}
+	if err := validateOutcome(record.Result, record.Termination, record.EndTimeUTC); err != nil {
+		return err
+	}
+	numbers := make([]int32, len(moves))
+	uci, fens, colors := make([]string, len(moves)), make([]string, len(moves)), make([]string, len(moves))
+	times := make([]time.Time, len(moves))
+	for i, move := range moves {
+		numbers[i], uci[i], fens[i], colors[i], times[i] =
+			int32(i+1), move.MoveUCI, move.FENAfterMove, move.PlayerColor, move.MoveTimeUTC
+	}
+	var concessionPly any
+	if record.ConcessionResult != "" {
+		concessionPly = record.ConcessionPly
+	}
+
+	return s.enqueueRequest(writeRequest{operation: "sync_game", gameID: record.GameID, whole: true,
+		run: func(ctx context.Context, tx *sql.Tx) error {
+			const slot = `%[1]s_player_id = excluded.%[1]s_player_id, %[1]s_type = excluded.%[1]s_type,
+				%[1]s_level = excluded.%[1]s_level, %[1]s_search_time = excluded.%[1]s_search_time,
+				%[1]s_claimed_by = excluded.%[1]s_claimed_by,
+				%[1]s_name = CASE WHEN games.%[1]s_claimed_by IS NOT DISTINCT FROM excluded.%[1]s_claimed_by
+					THEN COALESCE(games.%[1]s_name, excluded.%[1]s_name) ELSE excluded.%[1]s_name END`
+			if _, err := tx.ExecContext(ctx, `INSERT INTO games (
+				game_id, initial_fen,
+				white_player_id, white_type, white_level, white_search_time, white_claimed_by, white_name,
+				black_player_id, black_type, black_level, black_search_time, black_claimed_by, black_name,
+				start_time_utc, result, termination, end_time_utc,
+				concession_result, concession_termination, concession_ply, concession_time_utc
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, `+claimantName("$7")+`,
+				$8, $9, $10, $11, $12, `+claimantName("$12")+`, $13, $14, $15, $16, $17, $18, $19, $20)
+			ON CONFLICT (game_id) DO UPDATE SET `+fmt.Sprintf(slot, "white")+`, `+fmt.Sprintf(slot, "black")+`,
+				result = excluded.result, termination = excluded.termination, end_time_utc = excluded.end_time_utc,
+				concession_result = COALESCE(games.concession_result, excluded.concession_result),
+				concession_termination = COALESCE(games.concession_termination, excluded.concession_termination),
+				concession_ply = COALESCE(games.concession_ply, excluded.concession_ply),
+				concession_time_utc = COALESCE(games.concession_time_utc, excluded.concession_time_utc)`,
+				record.GameID, record.InitialFEN,
+				record.WhitePlayerID, record.WhiteType, record.WhiteLevel, record.WhiteSearchTime,
+				nullableString(record.WhiteClaimedBy),
+				record.BlackPlayerID, record.BlackType, record.BlackLevel, record.BlackSearchTime,
+				nullableString(record.BlackClaimedBy),
+				record.StartTimeUTC, nullableString(record.Result), nullableString(record.Termination),
+				record.EndTimeUTC,
+				nullableString(record.ConcessionResult), nullableString(record.ConcessionTermination),
+				concessionPly, record.ConcessionTimeUTC,
+			); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx,
+				`DELETE FROM moves WHERE game_id = $1 AND move_number > $2`, record.GameID, len(moves),
+			); err != nil {
+				return err
+			}
+			_, err := tx.ExecContext(ctx, `INSERT INTO moves (
+				game_id, move_number, move_uci, fen_after_move, player_color, move_time_utc
+			) SELECT $1, line.* FROM unnest($2::int[], $3::text[], $4::text[], $5::text[], $6::timestamptz[]) AS line
+			ON CONFLICT (game_id, move_number) DO UPDATE SET
+				move_uci = excluded.move_uci, fen_after_move = excluded.fen_after_move,
+				player_color = excluded.player_color, move_time_utc = excluded.move_time_utc`,
+				record.GameID, numbers, uci, fens, colors, times)
+			return err
+		}})
+}
+
 // DeleteAnonymousGames queues removal of games that no registered user
 // claimed and whose last activity (start, last move, or end) precedes cutoff.
 // Games still loaded in memory are listed in live and always kept, so a queued

@@ -1,7 +1,7 @@
 # Roadmap
 
-What is left to build, in batches of numbered items: R5 on, R1–R4 being
-done. Each item names its priority, the files it touches and the docs that
+What is left to build, in batches of numbered items: R5 on, R1–R4 and R6
+being done. Each item names its priority, the files it touches and the docs that
 explain the area. A finished item leaves this file, and the line of its
 batch under Done says what it delivered.
 
@@ -16,7 +16,6 @@ batch under Done says what it delivered.
   - R8.1 P1: deliver mail through the mail jail (operations)
 - Phase 2, next, in this order:
   - R8.2 P2: email verification, after R8.1
-  - R6.3 P2: recover from degraded storage
 - Phase 3, later, each after its decision:
   - R9.3 P3: human against human in the web client (D8)
   - R10.1 P3: metrics
@@ -44,14 +43,16 @@ batch under Done says what it delivered.
   per 5 minutes while its link is pending.
 - Operations: transient write retries, degraded mode reported by `/health`,
   the integrity sweep (`-db-cleanup`), draw and resign flows.
-- R6, in part: no cap on computer games; the engine queue takes two moves a
-  worker and refuses more with 503, the game left `ongoing` for a retry;
+- R6 Live games: no cap on computer games; the engine queue takes two moves
+  a worker and refuses more with 503, the game left `ongoing` for a retry;
   unfinished claimed games leave memory after a week idle (`-idle-game-ttl`);
   a request's 35-second deadline and the server's lifetime reach its storage
   calls, while queued writes keep the writer's own. A disconnect stays
   unnoticed: that needs net/http. An unfinished game played here loads from
   its rows on its next request, so a restart or the idle unload loses no
-  game; the web client's lists offer Continue.
+  game; the web client's lists offer Continue. Degraded storage recovers
+  without a restart: the games whose writes were lost are written whole from
+  memory once the database answers.
 - R7 Move authority: the rules core decides legality, the resulting
   position, mate and stalemate for every move and every new game, so a human
   move takes no engine round trip and no lock, and a game between humans no
@@ -220,53 +221,6 @@ history and PGN are public by ID (D2). The archive adds a public listing:
   players, result, ECO); replay and deep links (`?replay=<id>`) work as they
   are.
 - CLI: `archive [collection]`, numbered for `replay <#>` as `games` is.
-
-## R6 Live Games: Memory, Restarts and Outages
-
-A live game is held in memory (`Service.games`) and mirrored to the database
-through the ordered writer; memory is the authority while it is loaded. An
-unfinished game that left memory loads again from its rows
-(`Service.LoadGame`), but once storage degrades nothing is written until a
-restart. R6.3 reuses the load's mapping, between a `game.View` and its rows
-(`storedView`), in the other direction.
-
-### R6.3 Recover from degraded storage without a restart
-
-- Priority: P2: an outage longer than the retry window stops durable
-  history until someone restarts the server
-- Affected files: `internal/server/storage/storage.go`,
-  `internal/server/storage/game.go`,
-  `internal/server/storage/storage_test.go`,
-  `internal/server/service/service.go`, `internal/server/service/game.go`,
-  `doc/architecture.md`, `doc/api.md`, `doc/deployment.md`
-- Guide: [Storage Layer](architecture.md#storage-layer-internalserverstorage),
-  [Health Check](api.md#health-check),
-  [Backups and restores](deployment.md#backups-and-restores)
-
-The writer retries a transient failure for about three seconds. A COMMIT
-error or a permanent error then latches `writeFailed` and `healthStatus`,
-and a full queue latches `healthStatus` alone, for the life of the process:
-every later write is refused at `enqueue`, history and listings answer 503,
-and live play goes on in memory with nothing written. After a full queue the
-writer still commits what was queued, while new writes are dropped.
-
-Two ways out; pick one:
-
-- Resync from memory: while degraded, record which loaded games changed; a
-  probe on an interval finds the database back; each changed game is written
-  whole in one transaction (upsert the row, delete moves past memory's last
-  ply, insert the missing ones), the inverse of the load; then the latch
-  clears. A game unloaded while degraded keeps only what was durable, as
-  today.
-- Fail closed: while degraded, refuse moves, undo, resignation, draws and new
-  games with `STORAGE_UNAVAILABLE`, so memory cannot run ahead; the probe
-  clears the latch, and only the game whose write failed is reloaded from its
-  rows or unloaded.
-
-Either way, a COMMIT error has an unknown outcome, so its game is re-read
-rather than assumed, and `/health` reports both transitions. The storage
-tests already terminate a backend and force a permanent failure; recovery
-extends them.
 
 ## R7 Rules Core as the Move Authority
 

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/lixenwraith/chess/internal/server/replay"
+	"github.com/lixenwraith/chess/internal/server/storage"
 
 	"github.com/lixenwraith/auth"
 )
@@ -108,7 +109,7 @@ func (s *Service) checkIntegrity(ctx context.Context, now time.Time) {
 	}
 
 	for gameID := range findings.vanished {
-		s.evictMissingGame(gameID)
+		s.evictDroppedGame(gameID, storage.ErrGameMissing)
 	}
 	// Unloaded and queued under one lock: no write follows the deletion, and
 	// a load that crossed it reads again, behind it.
@@ -235,14 +236,15 @@ func (s *Service) forgetLocked(gameID string) bool {
 	return ok
 }
 
-// evictMissingGame unloads a game whose database row disappeared, typically
-// deleted by hand. It runs when a write for the game finds the row gone.
-func (s *Service) evictMissingGame(gameID string) {
+// evictDroppedGame unloads a game whose writes can never be stored: its row
+// disappeared, typically deleted by hand, or the database refuses its whole
+// row. The store calls it when it drops such a write.
+func (s *Service) evictDroppedGame(gameID string, cause error) {
 	s.mu.Lock()
 	ok := s.forgetLocked(gameID)
 	s.mu.Unlock()
 	if ok {
 		s.waiter.RemoveGame(gameID)
-		slog.Warn("game unloaded: its database row no longer exists", "game_id", gameID)
+		slog.Warn("game unloaded: it cannot be stored", "game_id", gameID, "cause", cause)
 	}
 }

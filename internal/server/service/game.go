@@ -104,25 +104,7 @@ func (s *Service) CreateGame(
 	s.games[id] = g
 
 	if s.store != nil {
-		result, _ := initialState.Result()
-		record := storage.GameRecord{
-			GameID:          id,
-			InitialFEN:      initialFEN,
-			WhitePlayerID:   whitePlayer.ID,
-			WhiteType:       int(whitePlayer.Type),
-			WhiteLevel:      whitePlayer.Level,
-			WhiteSearchTime: whitePlayer.SearchTime,
-			WhiteClaimedBy:  whitePlayer.ClaimedBy,
-			BlackPlayerID:   blackPlayer.ID,
-			BlackType:       int(blackPlayer.Type),
-			BlackLevel:      blackPlayer.Level,
-			BlackSearchTime: blackPlayer.SearchTime,
-			BlackClaimedBy:  blackPlayer.ClaimedBy,
-			Result:          result,
-			Termination:     string(g.Termination()),
-			StartTimeUTC:    now,
-			EndTimeUTC:      g.EndTimeUTC(),
-		}
+		record, _ := gameRows(id, g.View())
 		if err := s.store.RecordNewGame(record); err != nil {
 			slog.Error("failed to queue game persistence", "game_id", id, "error", err)
 		}

@@ -190,7 +190,7 @@ predates.
 Storage states:
 - `"disabled"` - No database configured (`-dsn` or `CHESS_DSN`)
 - `"ok"` - Database operational with auth enabled
-- `"degraded"` - A persistence write failed or the write queue filled; live games continue in memory, but durable history is no longer complete
+- `"degraded"` - A persistence write failed or the write queue filled; live games continue in memory, and history, listings and resuming a stored game answer 503. The server tries the database every 5 seconds; when it answers, the games that changed are written whole and the state returns to `"ok"`
 
 The top-level `status` is also `"degraded"` when storage is degraded.
 

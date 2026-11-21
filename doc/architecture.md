@@ -54,6 +54,16 @@ restart does not degrade storage. A COMMIT error (unknown outcome), a permanent
 error, or a full queue marks storage degraded; live play remains available in
 memory and `/health` reports that durable history may be incomplete.
 
+While degraded, every write is refused and its game remembered. Every five
+seconds the service asks the store to recover: once the queue has settled and
+the database answers a ping, the writer hands the service the games whose
+writes were lost. Under its lock the service readmits writes and queues each
+of those games whole (row upserted, moves past the line removed, the line
+written over), so a later write for a game follows its whole row, and
+whether the failed COMMIT landed no longer matters. A whole row the database
+refuses for good drops that game alone. Nothing leaves memory by cleanup
+while storage is degraded; a restart then loses what only memory held.
+
 Synchronous operations run under the caller's context (a request's, the
 cleanup job's): five seconds a query, ten for the sweep's flush and account
 purge. Queued writes keep the writer's own deadline. A caller that has ended
@@ -202,7 +212,8 @@ start the server.
 3. Writer goroutine processes queue sequentially
 4. Each logical mutation commits in one transaction
 5. A full queue or write failure is logged and triggers degraded memory-only mode
-6. Shutdown rejects new writes and drains every write already accepted
+6. Recovery readmits writes and stores each game that changed meanwhile whole
+7. Shutdown rejects new writes and drains every write already accepted
 
 ### Query Operations
 1. Replay-sensitive game reads wait on the async-write barrier
@@ -358,7 +369,7 @@ outlives deleted accounts, and the name snapshot keeps it readable.
   no live game can lose its row.
 - A write whose game row was deleted by hand fails only that game: the
   writer drops it and the service unloads the game, instead of degrading
-  storage for everyone.
+  storage for everyone. A whole row refused during recovery does the same.
 - With `-db-cleanup report|delete`, the hourly cleanup also runs an integrity
   sweep: loaded games without a row, games with missing plies, stored games
   failing verification (200 per run, resuming in ID order), games whose

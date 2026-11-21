@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -419,6 +420,156 @@ func TestWritesAfterTransactionFailureAreSkippedExplicitly(t *testing.T) {
 	}
 	if ran {
 		t.Fatal("write ran after an earlier transaction broke ordering")
+	}
+}
+
+// TestRecoverReadmitsWritesAndNamesTheGamesThatLostThem: the failed write,
+// the one skipped behind it and the one refused at the queue are what the
+// resync is handed, and writes are stored again once it readmits them.
+func TestRecoverReadmitsWritesAndNamesTheGamesThatLostThem(t *testing.T) {
+	store := openStore(t, pgtest.DSN(t))
+	failed, skipped, refused := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	store.handleWrite(writeRequest{operation: "forced_failure", gameID: failed,
+		run: func(context.Context, *sql.Tx) error { return errors.New("forced failure") }})
+	store.handleWrite(writeRequest{operation: "queued_behind", gameID: skipped,
+		run: func(context.Context, *sql.Tx) error { return nil }})
+	if err := store.RewindGame(refused, 0); !errors.Is(err, ErrStorageDegraded) {
+		t.Fatalf("write while degraded: %v, want ErrStorageDegraded", err)
+	}
+
+	// A resync that readmits nothing leaves storage degraded and the games lost.
+	if err := store.Recover(t.Context(), func(func() []string) {}); !errors.Is(err, ErrStorageDegraded) || store.IsHealthy() {
+		t.Fatalf("recover without readmission: %v, healthy %v", err, store.IsHealthy())
+	}
+	var lost []string
+	if err := store.Recover(t.Context(), func(readmit func() []string) { lost = readmit() }); err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(lost)
+	want := []string{failed, skipped, refused}
+	slices.Sort(want)
+	if !slices.Equal(lost, want) || !store.IsHealthy() {
+		t.Fatalf("lost games = %v, want %v; healthy %v", lost, want, store.IsHealthy())
+	}
+
+	gameID := uuid.NewString()
+	if err := store.RecordNewGame(GameRecord{
+		GameID: gameID, InitialFEN: "initial",
+		WhitePlayerID: uuid.NewString(), WhiteType: 1,
+		BlackPlayerID: uuid.NewString(), BlackType: 1,
+		StartTimeUTC: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.GetGameHistory(t.Context(), gameID); err != nil {
+		t.Fatalf("write after recovery: %v", err)
+	}
+	if err := store.Recover(t.Context(), func(readmit func() []string) { t.Error("healthy storage was resynced") }); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestSyncGameStoresTheGameWhole: the row and the line become what memory
+// holds, over a stored line that diverged; the first concession and the
+// claimant's name stay, and a game with no row gets one.
+func TestSyncGameStoresTheGameWhole(t *testing.T) {
+	store := openStore(t, pgtest.DSN(t))
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	alice := uuid.NewString()
+	if err := store.CreateUser(t.Context(), UserRecord{UserID: alice, Username: "alice", PasswordHash: "hash", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	gameID, black := uuid.NewString(), uuid.NewString()
+	stored := GameRecord{
+		GameID: gameID, InitialFEN: "initial",
+		WhitePlayerID: alice, WhiteType: 1, WhiteClaimedBy: alice,
+		BlackPlayerID: black, BlackType: 2, BlackLevel: 3, BlackSearchTime: 100,
+		StartTimeUTC: now,
+	}
+	if err := store.RecordNewGame(stored); err != nil {
+		t.Fatal(err)
+	}
+	for i, uci := range []string{"e2e4", "e7e5", "g1f3"} {
+		if err := store.RecordMove(MovePersistence{Move: MoveRecord{
+			GameID: gameID, MoveNumber: i + 1, MoveUCI: uci, FENAfterMove: "stored" + uci,
+			PlayerColor: "wb"[i%2 : i%2+1], MoveTimeUTC: now,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// White resigns at ply 3 and an undo plays on: the concession is on record.
+	if err := store.RecordGameEnd(GameEnd{
+		GameID: gameID, Result: "black_wins", Termination: "resignation", EndTimeUTC: now, Ply: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The rename follows the queued writes that took the name.
+	if err := errors.Join(store.Flush(t.Context()), store.UpdateUserUsername(t.Context(), alice, "alicia")); err != nil {
+		t.Fatal(err)
+	}
+
+	ended := now.Add(time.Minute)
+	memory := stored
+	memory.BlackLevel, memory.Result, memory.Termination, memory.EndTimeUTC = 7, "draw", "agreement", &ended
+	memory.ConcessionResult, memory.ConcessionTermination, memory.ConcessionPly, memory.ConcessionTimeUTC = "draw", "agreement", 2, &ended
+	line := []MoveRecord{
+		{GameID: gameID, MoveNumber: 1, MoveUCI: "e2e4", FENAfterMove: "storede2e4", PlayerColor: "w", MoveTimeUTC: now},
+		{GameID: gameID, MoveNumber: 2, MoveUCI: "c7c5", FENAfterMove: "memoryc7c5", PlayerColor: "b", MoveTimeUTC: ended},
+	}
+	fresh := GameRecord{
+		GameID: uuid.NewString(), InitialFEN: "initial",
+		WhitePlayerID: alice, WhiteType: 1, WhiteClaimedBy: alice,
+		BlackPlayerID: uuid.NewString(), BlackType: 1, StartTimeUTC: now,
+	}
+	if err := errors.Join(store.SyncGame(memory, line), store.SyncGame(fresh, nil)); err != nil {
+		t.Fatal(err)
+	}
+
+	record, moves, err := store.GetGameHistory(t.Context(), gameID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(moves) != 2 || moves[1] != line[1] || moves[0] != line[0] {
+		t.Errorf("line = %+v, want %+v", moves, line)
+	}
+	if record.Result != "draw" || record.Termination != "agreement" || !record.EndTimeUTC.Equal(ended) ||
+		record.BlackLevel != 7 || record.WhiteClaimedBy != alice || record.WhiteName != "alice" {
+		t.Errorf("row = %+v", record)
+	}
+	if record.ConcessionResult != "black_wins" || record.ConcessionTermination != "resignation" || record.ConcessionPly != 3 {
+		t.Errorf("first concession overwritten: %+v", record)
+	}
+	if record, moves, err := store.GetGameHistory(t.Context(), fresh.GameID); err != nil || len(moves) != 0 ||
+		record.WhiteName != "alicia" || record.Result != "" {
+		t.Errorf("game without a row: %+v, %v", record, err)
+	}
+}
+
+// TestRefusedWholeGameIsDroppedWithoutDegrading: a row the database will
+// never take costs its game alone.
+func TestRefusedWholeGameIsDroppedWithoutDegrading(t *testing.T) {
+	store := openStore(t, pgtest.DSN(t))
+	dropped := make(chan string, 1)
+	store.SetGameDroppedHandler(func(gameID string, _ error) { dropped <- gameID })
+	gameID := uuid.NewString()
+	if err := store.SyncGame(GameRecord{
+		GameID: gameID, InitialFEN: "initial",
+		WhitePlayerID: uuid.NewString(), WhiteType: 1,
+		BlackPlayerID: uuid.NewString(), BlackType: 2, BlackLevel: 99, // games_black_level_check
+		StartTimeUTC: time.Now().UTC(),
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Flush(t.Context()); err != nil || !store.IsHealthy() {
+		t.Fatalf("a refused whole game degraded storage: %v", err)
+	}
+	select {
+	case id := <-dropped:
+		if id != gameID {
+			t.Fatalf("handler got %s, want %s", id, gameID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the dropped game was not reported")
 	}
 }
 
@@ -1135,7 +1286,7 @@ func TestMigrationV3BackfillsConcessions(t *testing.T) {
 func TestWriteForDeletedGameIsDroppedWithoutDegrading(t *testing.T) {
 	store := openStore(t, pgtest.DSN(t))
 	missing := make(chan string, 4)
-	store.SetGameMissingHandler(func(gameID string) { missing <- gameID })
+	store.SetGameDroppedHandler(func(gameID string, _ error) { missing <- gameID })
 
 	gameID := uuid.NewString()
 	if err := store.RecordNewGame(GameRecord{

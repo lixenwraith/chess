@@ -354,7 +354,11 @@ Restore the previous web client files on the host as well.
   (`--role=chess_owner` in split mode).
 - PostgreSQL restarts: the server retries in-flight writes across a brief
   outage. A write that still fails marks storage `degraded` in `/health`; live
-  games continue in memory, but durable history stops until `chessd` restarts.
+  games continue in memory. Every 5 seconds the server tries the database
+  again, and once it answers writes each game that changed in the meantime
+  and reports `ok`: the log says `storage recovered`. Restarting `chessd`
+  while degraded loses the moves only memory held, so restore PostgreSQL
+  first.
 
 ### Verification checklist
 

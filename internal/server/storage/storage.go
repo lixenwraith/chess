@@ -52,6 +52,7 @@ type writeRequest struct {
 	gameID    string
 	run       func(context.Context, *sql.Tx) error
 	barrier   chan error
+	whole     bool // writes its game whole: a refusal costs that game alone
 }
 
 // Store handles PostgreSQL operations with ordered async writes for gameplay
@@ -59,6 +60,7 @@ type writeRequest struct {
 type Store struct {
 	db           *sql.DB
 	writeChan    chan writeRequest
+	control      chan func() // run by the writer between writes
 	healthStatus atomic.Bool
 	writeFailed  atomic.Bool
 	closed       atomic.Bool
@@ -68,15 +70,21 @@ type Store struct {
 	enqueueMu    sync.RWMutex
 	closeOnce    sync.Once
 	closeErr     error
-	gameMissing  atomic.Pointer[func(gameID string)]
+	gameDropped  atomic.Pointer[func(gameID string, cause error)]
+
+	// lost holds the games whose writes were refused, skipped or failed since
+	// storage degraded: what Recover has written again from memory.
+	lostMu     sync.Mutex
+	lost       map[string]struct{}
+	degradedAt time.Time
 }
 
-// SetGameMissingHandler registers the callback run, on its own goroutine,
-// when a write finds its game row gone. Such a write is dropped without
-// degrading storage: later writes for that game fail the same way and write
-// nothing, so no other game's history is affected.
-func (s *Store) SetGameMissingHandler(handler func(gameID string)) {
-	s.gameMissing.Store(&handler)
+// SetGameDroppedHandler registers the callback run, on its own goroutine,
+// when a game's writes can never be stored: its row is gone, or its whole
+// row is refused. Such a write is dropped without degrading storage, so no
+// other game's history is affected.
+func (s *Store) SetGameDroppedHandler(handler func(gameID string, cause error)) {
+	s.gameDropped.Store(&handler)
 }
 
 // NewStore connects to PostgreSQL and starts the async writer. dsn is a
@@ -111,6 +119,8 @@ func NewStore(dsn string) (*Store, error) {
 	s := &Store{
 		db:        db,
 		writeChan: make(chan writeRequest, writeQueueCapacity),
+		control:   make(chan func()),
+		lost:      make(map[string]struct{}),
 		ctx:       writerCtx,
 		cancel:    writerCancel,
 	}
@@ -154,6 +164,9 @@ func (s *Store) writerLoop() {
 
 		case req := <-s.writeChan:
 			s.handleWrite(req)
+
+		case run := <-s.control:
+			run()
 		}
 	}
 }
@@ -174,6 +187,7 @@ func (s *Store) handleWrite(req writeRequest) {
 	if s.writeFailed.Load() {
 		slog.Error("storage write skipped after earlier transaction failure",
 			"operation", req.operation, "game_id", req.gameID)
+		s.markLost(req.gameID)
 		if req.barrier != nil {
 			req.barrier <- ErrStorageDegraded
 			close(req.barrier)
@@ -191,7 +205,7 @@ func (s *Store) handleWrite(req writeRequest) {
 // executeWrite runs one logical mutation as one transaction. A transient error
 // before COMMIT is retried: the rollback makes a retry safe, and the single
 // writer keeps the order while it waits. A COMMIT error has an unknown outcome
-// and is never retried. Any unrecovered failure degrades storage for good, as
+// and is never retried. An unrecovered failure degrades storage until Recover:
 // skipping one write would apply later ones to an incomplete history.
 func (s *Store) executeWrite(req writeRequest) error {
 	started := time.Now()
@@ -209,11 +223,13 @@ func (s *Store) executeWrite(req writeRequest) error {
 			)
 			return nil
 		}
-		if errors.Is(err, ErrGameMissing) {
-			slog.Warn("storage write dropped: game row no longer exists",
-				"operation", req.operation, "game_id", req.gameID)
-			if handler := s.gameMissing.Load(); handler != nil && req.gameID != "" {
-				go (*handler)(req.gameID)
+		// A missing row fails every write for its game; a whole row the
+		// database refuses fails again however often it is sent.
+		if errors.Is(err, ErrGameMissing) || (req.whole && !committing && !isTransient(err)) {
+			slog.Warn("storage write dropped: its game cannot be stored",
+				"operation", req.operation, "game_id", req.gameID, "error", err)
+			if handler := s.gameDropped.Load(); handler != nil && req.gameID != "" {
+				go (*handler)(req.gameID, err)
 			}
 			return err
 		}
@@ -227,11 +243,95 @@ func (s *Store) executeWrite(req writeRequest) error {
 		time.Sleep(backoff)
 	}
 
+	s.markLost(req.gameID)
 	s.writeFailed.Store(true)
-	s.healthStatus.Store(false)
+	s.degrade()
 	slog.Error("storage degraded: write operation failed",
 		"operation", req.operation, "game_id", req.gameID, "error", err)
 	return err
+}
+
+// degrade refuses writes until Recover; it reports whether this call did it.
+func (s *Store) degrade() bool {
+	if !s.healthStatus.CompareAndSwap(true, false) {
+		return false
+	}
+	s.lostMu.Lock()
+	s.degradedAt = time.Now()
+	s.lostMu.Unlock()
+	return true
+}
+
+func (s *Store) markLost(gameID string) {
+	if gameID == "" {
+		return
+	}
+	s.lostMu.Lock()
+	s.lost[gameID] = struct{}{}
+	s.lostMu.Unlock()
+}
+
+// Recover readmits writes once every queued one has settled and the database
+// answers. It runs resync on the writer's goroutine: resync takes the lock
+// its games change under, calls readmit for the games whose writes were
+// lost, and queues each one whole (SyncGame) before it lets go of the lock.
+func (s *Store) Recover(ctx context.Context, resync func(readmit func() (lost []string))) error {
+	if s.healthStatus.Load() {
+		return nil
+	}
+	done := make(chan error, 1)
+	select {
+	case s.control <- func() { done <- s.tryRecover(resync) }:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.ctx.Done():
+		return ErrStoreClosed
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-s.ctx.Done():
+		return ErrStoreClosed
+	}
+}
+
+func (s *Store) tryRecover(resync func(readmit func() []string)) error {
+	// Writes are refused while degraded, so the queue only drains: one that
+	// passed the check before the latch is in it once this lock is held.
+	s.enqueueMu.Lock()
+	queued := len(s.writeChan)
+	s.enqueueMu.Unlock()
+	if queued > 0 {
+		return fmt.Errorf("%w: %d queued writes still settling", ErrStorageDegraded, queued)
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, queryTimeout)
+	defer cancel()
+	if err := s.db.PingContext(ctx); err != nil {
+		return fmt.Errorf("%w: %v", ErrStorageDegraded, err)
+	}
+
+	games, readmitted := 0, false
+	resync(func() []string {
+		s.lostMu.Lock()
+		defer s.lostMu.Unlock()
+		lost := make([]string, 0, len(s.lost))
+		for gameID := range s.lost {
+			lost = append(lost, gameID)
+		}
+		clear(s.lost)
+		s.writeFailed.Store(false)
+		s.healthStatus.Store(true)
+		games, readmitted = len(lost), true
+		return lost
+	})
+	if !readmitted {
+		return fmt.Errorf("%w: resync readmitted nothing", ErrStorageDegraded)
+	}
+	s.lostMu.Lock()
+	outage := time.Since(s.degradedAt)
+	s.lostMu.Unlock()
+	slog.Info("storage recovered: writes readmitted", "games_resynced", games, "degraded_for", outage)
+	return nil
 }
 
 func (s *Store) runWriteTx(run func(context.Context, *sql.Tx) error) (committing bool, err error) {
@@ -252,6 +352,12 @@ func (s *Store) runWriteTx(run func(context.Context, *sql.Tx) error) (committing
 }
 
 func (s *Store) enqueue(operation, gameID string, fn func(context.Context, *sql.Tx) error) error {
+	return s.enqueueRequest(writeRequest{operation: operation, gameID: gameID, run: fn})
+}
+
+// enqueueRequest queues a gameplay write without waiting. Refused while
+// degraded or by a full queue, it leaves its game marked lost for Recover.
+func (s *Store) enqueueRequest(req writeRequest) error {
 	s.enqueueMu.RLock()
 	defer s.enqueueMu.RUnlock()
 
@@ -259,24 +365,27 @@ func (s *Store) enqueue(operation, gameID string, fn func(context.Context, *sql.
 		return ErrStoreClosed
 	}
 	if !s.healthStatus.Load() {
+		s.markLost(req.gameID)
 		return ErrStorageDegraded
 	}
 
 	select {
-	case s.writeChan <- writeRequest{operation: operation, gameID: gameID, run: fn}:
+	case s.writeChan <- req:
 		slog.Debug("storage write queued",
-			"operation", operation,
-			"game_id", gameID,
+			"operation", req.operation,
+			"game_id", req.gameID,
 			"queue_depth", len(s.writeChan),
 		)
 		return nil
 	default:
-		s.healthStatus.Store(false)
-		slog.Error("storage degraded: write queue full",
-			"operation", operation,
-			"game_id", gameID,
-			"queue_capacity", cap(s.writeChan),
-		)
+		s.markLost(req.gameID)
+		if s.degrade() {
+			slog.Error("storage degraded: write queue full",
+				"operation", req.operation,
+				"game_id", req.gameID,
+				"queue_capacity", cap(s.writeChan),
+			)
+		}
 		return ErrWriteQueueFull
 	}
 }

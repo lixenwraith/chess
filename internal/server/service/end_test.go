@@ -3,6 +3,7 @@ package service
 import (
 	"database/sql"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -291,5 +292,69 @@ func TestGameWithDeletedRowIsUnloadedNotDegraded(t *testing.T) {
 	}
 	if health := svc.GetStorageHealth(); health != "ok" {
 		t.Fatalf("storage health %q after a write for a deleted game", health)
+	}
+}
+
+// TestDegradedStorageResyncsFromMemory: a write the database refuses degrades
+// storage while play goes on in memory; recovery writes each game that
+// changed whole, and its later moves are stored as before.
+func TestDegradedStorageResyncsFromMemory(t *testing.T) {
+	svc, dsn := newPersistentTestServiceDSN(t)
+	ctx := t.Context()
+	gameID := newHumanGame(t, svc)
+	move(t, svc, gameID, "", "e2e4")
+	if _, err := svc.GetGameHistory(ctx, gameID); err != nil { // flushes
+		t.Fatal(err)
+	}
+	// A row in the way of the next ply: its insert fails for good.
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`INSERT INTO moves (game_id, move_number, move_uci, fen_after_move, player_color)
+		VALUES ($1, 2, 'a7a6', 'in the way', 'b')`, gameID); err != nil {
+		t.Fatal(err)
+	}
+	move(t, svc, gameID, "", "e7e5")
+	for deadline := time.Now().Add(5 * time.Second); svc.GetStorageHealth() != "degraded"; {
+		if time.Now().After(deadline) {
+			t.Fatal("the refused write did not degrade storage")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Play goes on in memory, and so does a game that starts now.
+	move(t, svc, gameID, "", "g1f3")
+	started := newHumanGame(t, svc)
+	move(t, svc, started, "", "d2d4")
+	if _, err := svc.GetGameHistory(ctx, gameID); !errors.Is(err, ErrStorageUnavailable) {
+		t.Fatalf("history while degraded: %v, want ErrStorageUnavailable", err)
+	}
+	svc.cleanupGames(time.Now().UTC().Add(30 * 24 * time.Hour))
+	if _, err := svc.GetGameView(started); err != nil {
+		t.Fatalf("cleanup unloaded a game whose moves are in memory alone: %v", err)
+	}
+
+	svc.recoverStorage(ctx)
+	if health := svc.GetStorageHealth(); health != "ok" {
+		t.Fatalf("storage health after recovery = %q", health)
+	}
+	for id, want := range map[string][]string{gameID: {"e2e4", "e7e5", "g1f3"}, started: {"d2d4"}} {
+		history, err := svc.GetGameHistory(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var line []string
+		for _, m := range history.Moves {
+			line = append(line, m.MoveUCI)
+		}
+		if !slices.Equal(line, want) {
+			t.Errorf("resynced line = %v, want %v", line, want)
+		}
+	}
+	move(t, svc, gameID, "", "b8c6")
+	if history, err := svc.GetGameHistory(ctx, gameID); err != nil || len(history.Moves) != 4 {
+		t.Fatalf("move after recovery: %+v, %v", history, err)
 	}
 }

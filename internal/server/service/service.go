@@ -21,7 +21,9 @@ const (
 	DefaultMaxUsers    = 100
 	SessionTTL         = 7 * 24 * time.Hour
 	CleanupJobInterval = 1 * time.Hour
-	FinishedGameTTL    = 1 * time.Hour
+	// RecoveryInterval is how often degraded storage is tried again.
+	RecoveryInterval = 5 * time.Second
+	FinishedGameTTL  = 1 * time.Hour
 	// AnonymousGameTTL is how long a game no registered user claimed survives
 	// after its last activity, in memory and in the database.
 	AnonymousGameTTL = 24 * time.Hour
@@ -76,7 +78,7 @@ func New(store *storage.Store, jwtSecret []byte) (*Service, error) {
 	}
 	s.maxUsers.Store(DefaultMaxUsers)
 	if store != nil {
-		store.SetGameMissingHandler(s.evictMissingGame)
+		store.SetGameDroppedHandler(s.evictDroppedGame)
 	}
 	return s, nil
 }
@@ -174,11 +176,13 @@ func (s *Service) Shutdown(timeout time.Duration) error {
 
 // RunCleanupJob periodically removes expired sessions, unloads idle games,
 // deletes anonymous games past their retention, and runs the integrity sweep
-// when enabled.
+// when enabled. Between runs it tries degraded storage again.
 func (s *Service) RunCleanupJob(ctx context.Context, interval time.Duration) {
 	s.cleanupExpired(ctx)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	recovery := time.NewTicker(RecoveryInterval)
+	defer recovery.Stop()
 
 	for {
 		select {
@@ -186,6 +190,8 @@ func (s *Service) RunCleanupJob(ctx context.Context, interval time.Duration) {
 			return
 		case <-ticker.C:
 			s.cleanupExpired(ctx)
+		case <-recovery.C:
+			s.recoverStorage(ctx)
 		}
 	}
 }
@@ -214,6 +220,10 @@ func (s *Service) cleanupExpired(ctx context.Context) {
 // loaded are excluded under the eviction's lock, so no live game loses its
 // row while writes for it are still possible.
 func (s *Service) cleanupGames(now time.Time) {
+	// Memory holds what the rows lack until storage recovers.
+	if s.store != nil && !s.store.IsHealthy() {
+		return
+	}
 	s.mu.Lock()
 	finishedTTL, anonymousTTL, idleTTL := s.finishedTTL, s.anonymousTTL, s.idleTTL
 	finishedCutoff := now.Add(-finishedTTL)

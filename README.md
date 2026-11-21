@@ -25,6 +25,8 @@ Go backend server providing a RESTful API for chess gameplay with user authentic
 - PostgreSQL 18 persistence with ordered async writes for games
 - Durable game results, player claims and names, ordered move history, and replay API
 - Unfinished games resume from storage after a restart or a week idle
+- A database outage degrades to memory-only play and heals itself: the games
+  that changed are written once PostgreSQL answers again
 - Dependency-free rules core: move validation, mate, stalemate and draw
   rules, SAN history, PGN export, FEN validation; Stockfish re-checks its
   rulings in the background

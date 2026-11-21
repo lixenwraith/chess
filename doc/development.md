@@ -237,6 +237,7 @@ CHESS_E2E_MAIL_DIR=/tmp/chess-mail make test-e2e                 # terminal 2
 - DB operation deadline: 5 seconds, within the caller's context; write transactions 10 seconds
 - Request deadline: 35 seconds, the response write timeout too (internal/server/http/handler.go)
 - Transient write retries: 6 attempts, 100 ms doubling backoff
+- Degraded storage is tried again every 5 seconds (internal/server/service/service.go)
 - JWT expiration: 7 days (internal/server/service/service.go)
 - Concurrent Argon2id derivations: 4, five-second wait (internal/server/service/user.go)
 - Long-poll timeout: 30 seconds (internal/server/service/waiter.go)
@@ -251,12 +252,12 @@ CHESS_E2E_MAIL_DIR=/tmp/chess-mail make test-e2e                 # terminal 2
 ### Storage Configuration
 - PostgreSQL via pgx; schema chosen by `search_path`; migrations run at startup
 - Async write pattern for games; shutdown drains every accepted write
-- Transient failures before COMMIT are retried; others degrade storage
+- Transient failures before COMMIT are retried; others degrade storage until it recovers
 - Replay reads wait for prior queued writes and use one REPEATABLE READ transaction
 - Synchronous writes for user operations (data consistency)
 - Registration limit check, user creation, and initial session are atomic
 - Games without a registered player are deleted 24 hours after their last activity
-- A full queue or unrecovered write failure degrades to memory-only and is visible in logs and `/health`
+- A full queue or unrecovered write failure degrades to memory-only and is visible in logs and `/health`; once the database answers again the games that changed are written whole
 - Usernames and emails stored lowercase with unique constraints
 
 ### Rate Limiting Configuration

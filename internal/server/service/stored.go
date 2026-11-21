@@ -143,3 +143,70 @@ func storedView(record *storage.GameRecord, moves []storage.MoveRecord) (game.Vi
 	}
 	return view, nil
 }
+
+// gameRows is the row and line of a view: the inverse of storedView. Names
+// are left to the store, which snapshots them when it writes a claim.
+func gameRows(gameID string, v game.View) (storage.GameRecord, []storage.MoveRecord) {
+	result, _ := v.State.Result()
+	record := storage.GameRecord{
+		GameID:          gameID,
+		InitialFEN:      v.InitialFEN,
+		WhitePlayerID:   v.WhitePlayer.ID,
+		WhiteType:       int(v.WhitePlayer.Type),
+		WhiteLevel:      v.WhitePlayer.Level,
+		WhiteSearchTime: v.WhitePlayer.SearchTime,
+		WhiteClaimedBy:  v.WhitePlayer.ClaimedBy,
+		BlackPlayerID:   v.BlackPlayer.ID,
+		BlackType:       int(v.BlackPlayer.Type),
+		BlackLevel:      v.BlackPlayer.Level,
+		BlackSearchTime: v.BlackPlayer.SearchTime,
+		BlackClaimedBy:  v.BlackPlayer.ClaimedBy,
+		Result:          result,
+		Termination:     string(v.Termination),
+		StartTimeUTC:    v.StartTimeUTC,
+		EndTimeUTC:      v.EndTimeUTC,
+	}
+	if c := v.Concession; c != nil {
+		at := c.At
+		record.ConcessionResult, _ = c.State.Result()
+		record.ConcessionTermination, record.ConcessionPly, record.ConcessionTimeUTC = string(c.Termination), c.Ply, &at
+	}
+	moves := make([]storage.MoveRecord, len(v.Moves))
+	mover := v.NextTurnColor
+	for i := len(moves) - 1; i >= 0; i-- {
+		mover = core.OppositeColor(mover)
+		moves[i] = storage.MoveRecord{
+			GameID: gameID, MoveNumber: i + 1, MoveUCI: v.Moves[i], FENAfterMove: v.FENs[i+1],
+			PlayerColor: mover.String(), MoveTimeUTC: v.MoveTimes[i],
+		}
+	}
+	return record, moves
+}
+
+// recoverStorage tries degraded storage again; resyncGames restores what it
+// lost in the meantime.
+func (s *Service) recoverStorage(ctx context.Context) {
+	if s.store == nil || s.store.IsHealthy() {
+		return
+	}
+	if err := s.store.Recover(ctx, s.resyncGames); err != nil {
+		slog.Debug("storage still degraded", "error", err)
+	}
+}
+
+// resyncGames queues every game whose writes were lost, whole, as memory has
+// it. It holds the lock from readmit to the last one, so each game's later
+// writes queue behind its whole row. A game unloaded since keeps its rows.
+func (s *Service) resyncGames(readmit func() []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, gameID := range readmit() {
+		g, ok := s.games[gameID]
+		if !ok {
+			continue
+		}
+		if err := s.store.SyncGame(gameRows(gameID, g.View())); err != nil {
+			slog.Error("failed to queue game resync", "game_id", gameID, "error", err)
+		}
+	}
+}
