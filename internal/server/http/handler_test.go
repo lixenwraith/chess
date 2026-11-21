@@ -57,6 +57,26 @@ func TestClientIPTrustsProxyHeaderOnlyFromTrustedPeers(t *testing.T) {
 	}
 }
 
+func TestRouteParamsOutliveTheirRequest(t *testing.T) {
+	app := fiber.New(appConfig(Options{}))
+	var kept string
+	app.Get("/api/games/:gameId", func(c fiber.Ctx) error {
+		kept = c.Params("gameId")
+		return nil
+	})
+	app.Get("/api/users/me/games", func(fiber.Ctx) error { return nil })
+	const id = "5579b47e-4d3b-4eb3-abbd-846fe94cb955"
+	// Later requests reuse the request buffers a zero-copy parameter points into.
+	for _, path := range []string{"/api/games/" + id, "/api/users/me/games?limit=50", "/api/users/me/games?offset=0"} {
+		if _, err := app.Test(httptest.NewRequest("GET", path, nil)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if kept != id {
+		t.Errorf("kept game ID = %q, want %q", kept, id)
+	}
+}
+
 func TestIsValidUUIDRequiresCanonicalForm(t *testing.T) {
 	for value, want := range map[string]bool{
 		"5579b47e-4d3b-4eb3-abbd-846fe94cb955":          true,

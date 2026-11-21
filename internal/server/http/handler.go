@@ -66,6 +66,9 @@ type Options struct {
 func appConfig(opts Options) fiber.Config {
 	config := fiber.Config{
 		ErrorHandler: customErrorHandler,
+		// Request strings are copies: a game ID from the path outlives its
+		// request as a map key and in the engine's callbacks.
+		Immutable:    true,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: requestTimeout,
 		IdleTimeout:  60 * time.Second,
