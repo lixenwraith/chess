@@ -232,7 +232,8 @@ reproduced, the result and its termination consistent with the final
 position) and exits non-zero on any problem:
 
 ```sh
-sudo chess-db verify
+sudo chess-db verify                                                 # Linux
+su -m chess -c '/home/chess/bin/chess-server db verify -dsn "postgres:///chess?host=/tmp"'  # FreeBSD
 ```
 
 ### Deleting games
