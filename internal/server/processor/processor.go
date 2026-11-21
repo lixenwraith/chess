@@ -93,6 +93,8 @@ func (p *Processor) Execute(ctx context.Context, cmd Command) ProcessorResponse 
 		return p.handleResign(cmd)
 	case CmdDraw:
 		return p.handleDraw(cmd)
+	case CmdJoinGame:
+		return p.handleJoin(cmd)
 	default:
 		return p.errorResponse("unknown command", core.ErrInvalidRequest)
 	}
@@ -172,16 +174,28 @@ func (p *Processor) handleCreateGame(cmd Command) ProcessorResponse {
 	whitePlayer := core.NewPlayer(args.White, core.ColorWhite)
 	blackPlayer := core.NewPlayer(args.Black, core.ColorBlack)
 
-	// Only assign authenticated user to ONE human slot.
-	// If both are human, authenticated user gets white; black remains unclaimed.
-	if cmd.UserID != "" {
-		if args.White.Type == core.PlayerHuman {
-			whitePlayer.ID = cmd.UserID
-			whitePlayer.ClaimedBy = cmd.UserID
-		} else if args.Black.Type == core.PlayerHuman {
-			blackPlayer.ID = cmd.UserID
-			blackPlayer.ClaimedBy = cmd.UserID
+	// The creator takes one side: the one asked for, else, signed in, White
+	// if human and otherwise Black. The other human side stays open.
+	sides := map[core.Color]*core.Player{core.ColorWhite: whitePlayer, core.ColorBlack: blackPlayer}
+	side := core.ParseColor(args.Side)
+	switch {
+	case side != 0 && sides[side].Type != core.PlayerHuman:
+		return p.errorResponse("side must name a human side", core.ErrInvalidRequest)
+	case side == 0 && cmd.Actor.UserID != "" && args.White.Type == core.PlayerHuman:
+		side = core.ColorWhite
+	case side == 0 && cmd.Actor.UserID != "" && args.Black.Type == core.PlayerHuman:
+		side = core.ColorBlack
+	}
+	token := ""
+	switch taken := sides[side]; {
+	case taken == nil:
+	case cmd.Actor.UserID != "":
+		taken.ID, taken.ClaimedBy, taken.Name = cmd.Actor.UserID, cmd.Actor.UserID, cmd.Actor.Name
+	default:
+		if token, taken.Seat, err = service.NewSeat(); err != nil {
+			return p.errorResponse("failed to create game", core.ErrInternalError)
 		}
+		taken.Seated = true
 	}
 
 	if err = p.svc.CreateGame(gameID, whitePlayer, blackPlayer, start.FEN(),
@@ -193,11 +207,41 @@ func (p *Processor) handleCreateGame(cmd Command) ProcessorResponse {
 	if err != nil {
 		return p.errorResponse("game creation failed", core.ErrInternalError)
 	}
-
-	return ProcessorResponse{
-		Success: true,
-		Data:    p.buildGameResponse(gameID, g),
+	response := p.buildGameResponse(gameID, g)
+	if side != 0 {
+		response.Side, response.Seat = side.String(), token
 	}
+	return ProcessorResponse{Success: true, Data: response}
+}
+
+// handleJoin gives the caller an open human side without a move: a claim
+// when signed in, else a guest's seat, whose secret only this answer carries.
+func (p *Processor) handleJoin(cmd Command) ProcessorResponse {
+	args, ok := cmd.Args.(core.JoinRequest)
+	if !ok {
+		return p.errorResponse("invalid arguments", core.ErrInvalidRequest)
+	}
+	token, seat := "", []byte(nil)
+	if cmd.Actor.UserID == "" {
+		var err error
+		if token, seat, err = service.NewSeat(); err != nil {
+			return p.errorResponse("failed to join game", core.ErrInternalError)
+		}
+	}
+	side, taken, err := p.svc.JoinGame(cmd.GameID, core.ParseColor(args.Color), cmd.Actor, seat)
+	if err != nil {
+		return p.endGameError(err)
+	}
+	g, err := p.svc.GetGameView(cmd.GameID)
+	if err != nil {
+		return p.errorResponse("game not found", core.ErrGameNotFound)
+	}
+	response := p.buildGameResponse(cmd.GameID, g)
+	response.Side = side.String()
+	if taken {
+		response.Seat = token
+	}
+	return ProcessorResponse{Success: true, Data: response}
 }
 
 // handleConfigurePlayers updates player configuration mid-game; another
@@ -227,12 +271,12 @@ func (p *Processor) handleConfigurePlayers(cmd Command) ProcessorResponse {
 	whitePlayer := core.NewPlayer(args.White, core.ColorWhite)
 	blackPlayer := core.NewPlayer(args.Black, core.ColorBlack)
 
-	if err = p.svc.UpdatePlayers(cmd.GameID, whitePlayer, blackPlayer, cmd.UserID); err != nil {
+	if err = p.svc.UpdatePlayers(cmd.GameID, whitePlayer, blackPlayer, cmd.Actor); err != nil {
 		switch {
 		case errors.Is(err, service.ErrGameNotFound):
 			return p.endGameError(err)
 		case errors.Is(err, service.ErrSlotOwner):
-			return p.errorResponse("another player has claimed a side of this game; players cannot be changed", core.ErrUnauthorized)
+			return p.errorResponse("another player holds a side of this game; players cannot be changed", core.ErrUnauthorized)
 		}
 		return p.errorResponse(fmt.Sprintf("failed to update players: %v", err), core.ErrInternalError)
 	}
@@ -328,17 +372,10 @@ func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 		return p.errorResponse("not human player's turn", core.ErrNotHumanTurn)
 	}
 
-	// Authorization: first-move-claims-slot model
-	slotOwner := currentPlayer.ClaimedBy
-
-	if slotOwner == "" {
-		// An authenticated user claims only when the validated move commits.
-		// Anonymous moves deliberately leave the slot unclaimed.
-	} else if cmd.UserID != "" && slotOwner != cmd.UserID {
-		return p.errorResponse("not your turn - slot claimed by another player", core.ErrUnauthorized)
-	}
-	if slotOwner != "" && cmd.UserID == "" {
-		return p.errorResponse("slot claimed - authentication required", core.ErrUnauthorized)
+	// A held side moves only for its holder. An open one takes the move, and
+	// is claimed by it when the mover is signed in.
+	if refusal := heldBy(currentPlayer, cmd.Actor); refusal != "" {
+		return p.errorResponse(refusal, core.ErrUnauthorized)
 	}
 
 	move := strings.ToLower(strings.TrimSpace(args.Move))
@@ -364,11 +401,11 @@ func (p *Processor) handleMakeMove(cmd Command) ProcessorResponse {
 
 	if err = p.svc.ApplyMoveWithState(cmd.GameID, service.MoveCommit{
 		ExpectedFEN: currentFEN, ExpectedState: core.StateOngoing, ExpectedTurn: currentColor,
-		ActorUserID: cmd.UserID, MoveUCI: move, NewFEN: newFEN, State: finalState, Termination: termination,
+		Actor: cmd.Actor, MoveUCI: move, NewFEN: newFEN, State: finalState, Termination: termination,
 		Result: &game.MoveResult{Move: move, PlayerColor: currentColor, GameState: finalState},
 	}); err != nil {
 		if errors.Is(err, service.ErrSlotOwner) {
-			return p.errorResponse("not your turn - slot claimed by another player", core.ErrUnauthorized)
+			return p.errorResponse("that side is held by another player", core.ErrUnauthorized)
 		}
 		if errors.Is(err, service.ErrGameChanged) {
 			return p.errorResponse("game changed while move was being validated; refresh and retry", core.ErrConflict)
@@ -406,12 +443,12 @@ func (p *Processor) handleUndoMove(cmd Command) ProcessorResponse {
 		}
 	}
 
-	if err = p.svc.UndoMoves(cmd.GameID, args.Count, cmd.UserID); err != nil {
+	if err = p.svc.UndoMoves(cmd.GameID, args.Count, cmd.Actor); err != nil {
 		switch {
 		case errors.Is(err, service.ErrGameNotFound), errors.Is(err, service.ErrConcessionFinal):
 			return p.endGameError(err)
 		case errors.Is(err, service.ErrSlotOwner):
-			return p.errorResponse("another player has claimed a side of this game; moves cannot be taken back", core.ErrUnauthorized)
+			return p.errorResponse("another player holds a side of this game; moves cannot be taken back", core.ErrUnauthorized)
 		}
 		return p.errorResponse(err.Error(), core.ErrInvalidRequest)
 	}
@@ -435,12 +472,12 @@ func (p *Processor) handleDeleteGame(cmd Command) ProcessorResponse {
 		return p.errorResponse("cannot delete game while computer move is in progress", core.ErrInvalidRequest)
 	}
 
-	if err = p.svc.UnloadGame(cmd.GameID, cmd.UserID); err != nil {
+	if err = p.svc.UnloadGame(cmd.GameID, cmd.Actor); err != nil {
 		switch {
 		case errors.Is(err, service.ErrGameNotFound):
 			return p.endGameError(err)
 		case errors.Is(err, service.ErrSlotOwner):
-			return p.errorResponse("only a player who claimed a side can unload this game", core.ErrUnauthorized)
+			return p.errorResponse("only a player who holds a side can unload this game", core.ErrUnauthorized)
 		}
 		return p.errorResponse(err.Error(), core.ErrInvalidRequest)
 	}
@@ -590,6 +627,7 @@ func coreColor(c chess.Color) core.Color {
 func (p *Processor) buildGameResponse(gameID string, g game.View) core.GameResponse {
 	resp := core.GameResponse{
 		GameID:      gameID,
+		InitialFEN:  g.InitialFEN,
 		FEN:         g.FEN,
 		Turn:        g.NextTurnColor.String(),
 		State:       g.State.String(),
@@ -738,7 +776,7 @@ func (p *Processor) handleResign(cmd Command) ProcessorResponse {
 	if g.State.IsTerminal() {
 		return p.errorResponse(fmt.Sprintf("game is over: %s", g.State), core.ErrGameOver)
 	}
-	color, failure := actingColor(g, args.Color, cmd.UserID)
+	color, failure := actingColor(g, args.Color, cmd.Actor)
 	if failure != nil {
 		return *failure
 	}
@@ -747,7 +785,7 @@ func (p *Processor) handleResign(cmd Command) ProcessorResponse {
 		winner = core.StateBlackWins
 	}
 	err = p.svc.EndGame(cmd.GameID, service.EndCommit{
-		ExpectedFEN: g.FEN, Color: color, ActorUserID: cmd.UserID,
+		ExpectedFEN: g.FEN, Color: color, Actor: cmd.Actor,
 		State: winner, Termination: core.TermResignation,
 	})
 	if err != nil {
@@ -776,7 +814,7 @@ func (p *Processor) handleDraw(cmd Command) ProcessorResponse {
 	case g.State != core.StateOngoing:
 		return p.errorResponse("draws can be agreed only while no computer move is running", core.ErrInvalidRequest)
 	}
-	color, failure := actingColor(g, args.Color, cmd.UserID)
+	color, failure := actingColor(g, args.Color, cmd.Actor)
 	if failure != nil {
 		return *failure
 	}
@@ -784,7 +822,7 @@ func (p *Processor) handleDraw(cmd Command) ProcessorResponse {
 
 	accept := func() ProcessorResponse {
 		err := p.svc.EndGame(cmd.GameID, service.EndCommit{
-			ExpectedFEN: g.FEN, Color: color, ActorUserID: cmd.UserID,
+			ExpectedFEN: g.FEN, Color: color, Actor: cmd.Actor,
 			State: core.StateDraw, Termination: core.TermAgreement, OfferFrom: opponent,
 		})
 		if err != nil {
@@ -800,7 +838,7 @@ func (p *Processor) handleDraw(cmd Command) ProcessorResponse {
 		}
 		return accept()
 	case "decline":
-		if err := p.svc.DeclineDraw(cmd.GameID, color, cmd.UserID); err != nil {
+		if err := p.svc.DeclineDraw(cmd.GameID, color, cmd.Actor); err != nil {
 			return p.endGameError(err)
 		}
 		return p.drawResponse(cmd.GameID, "declined")
@@ -824,7 +862,7 @@ func (p *Processor) handleDraw(cmd Command) ProcessorResponse {
 		}
 		if agrees {
 			err = p.svc.EndGame(cmd.GameID, service.EndCommit{
-				ExpectedFEN: g.FEN, Color: color, ActorUserID: cmd.UserID,
+				ExpectedFEN: g.FEN, Color: color, Actor: cmd.Actor,
 				State: core.StateDraw, Termination: core.TermAgreement,
 			})
 			if err != nil {
@@ -832,12 +870,12 @@ func (p *Processor) handleDraw(cmd Command) ProcessorResponse {
 			}
 			return p.drawResponse(cmd.GameID, "accepted")
 		}
-		if err := p.svc.RecordDeclinedOffer(cmd.GameID, color, cmd.UserID, g.FEN); err != nil {
+		if err := p.svc.RecordDeclinedOffer(cmd.GameID, color, cmd.Actor, g.FEN); err != nil {
 			return p.endGameError(err)
 		}
 		return p.drawResponse(cmd.GameID, "declined")
 	}
-	if err := p.svc.OfferDraw(cmd.GameID, color, cmd.UserID, g.FEN); err != nil {
+	if err := p.svc.OfferDraw(cmd.GameID, color, cmd.Actor, g.FEN); err != nil {
 		return p.endGameError(err)
 	}
 	return p.drawResponse(cmd.GameID, "offered")
@@ -877,9 +915,9 @@ func (p *Processor) computerAcceptsDraw(fen string, computer core.Color) (bool, 
 }
 
 // actingColor resolves which side a resignation or draw request acts for: the
-// requested color, else the one side the caller claimed, else the only human
-// side. It enforces slot ownership: a claimed side acts only for its claimant.
-func actingColor(g game.View, requested, userID string) (core.Color, *ProcessorResponse) {
+// requested color, else the one side the caller holds, else the only human
+// side. A held side acts only for its holder.
+func actingColor(g game.View, requested string, actor core.Actor) (core.Color, *ProcessorResponse) {
 	fail := func(message, code string) (core.Color, *ProcessorResponse) {
 		return 0, &ProcessorResponse{Error: &core.ErrorResponse{Error: message, Code: code}}
 	}
@@ -888,21 +926,21 @@ func actingColor(g game.View, requested, userID string) (core.Color, *ProcessorR
 	case requested != "":
 		color = core.ParseColor(requested)
 	default:
-		var claimed, humans []core.Color
+		var held, humans []core.Color
 		for _, c := range []core.Color{core.ColorWhite, core.ColorBlack} {
 			player := g.Player(c)
 			if player == nil || player.Type != core.PlayerHuman {
 				continue
 			}
 			humans = append(humans, c)
-			if userID != "" && player.ClaimedBy == userID {
-				claimed = append(claimed, c)
+			if player.HeldBy(actor) {
+				held = append(held, c)
 			}
 		}
 		switch {
-		case len(claimed) == 1:
-			color = claimed[0]
-		case len(claimed) == 0 && len(humans) == 1:
+		case len(held) == 1:
+			color = held[0]
+		case len(held) == 0 && len(humans) == 1:
 			color = humans[0]
 		case len(humans) == 0:
 			return fail("both sides are played by the computer", core.ErrInvalidRequest)
@@ -917,13 +955,23 @@ func actingColor(g game.View, requested, userID string) (core.Color, *ProcessorR
 	if player.Type != core.PlayerHuman {
 		return fail(service.ErrNotHuman.Error(), core.ErrInvalidRequest)
 	}
-	if player.ClaimedBy != "" && player.ClaimedBy != userID {
-		if userID == "" {
-			return fail("slot claimed - authentication required", core.ErrUnauthorized)
-		}
-		return fail("slot claimed by another player", core.ErrUnauthorized)
+	if refusal := heldBy(player, actor); refusal != "" {
+		return fail(refusal, core.ErrUnauthorized)
 	}
 	return color, nil
+}
+
+// heldBy says why actor may not act for player's side, or nothing when it may.
+func heldBy(player *core.Player, actor core.Actor) string {
+	switch {
+	case player.Admits(actor):
+		return ""
+	case player.Seated:
+		return "side held by a guest - its seat is required"
+	case actor.UserID == "":
+		return "slot claimed - authentication required"
+	}
+	return "slot claimed by another player"
 }
 
 // endGameError maps a service refusal to a response; the service re-checks
@@ -946,6 +994,10 @@ func (p *Processor) endGameError(err error) ProcessorResponse {
 		return p.errorResponse("game changed; refresh and retry", core.ErrConflict)
 	case errors.Is(err, service.ErrConcessionFinal):
 		return p.errorResponse(err.Error(), core.ErrGameOver)
+	case errors.Is(err, service.ErrSideTaken):
+		return p.errorResponse(err.Error(), core.ErrConflict)
+	case errors.Is(err, service.ErrSideRequired):
+		return p.errorResponse(err.Error(), core.ErrInvalidRequest)
 	}
 	return p.errorResponse(fmt.Sprintf("failed to update game: %v", err), core.ErrInternalError)
 }

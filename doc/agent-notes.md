@@ -21,3 +21,11 @@ What earlier agents learned that neither AGENTS.md nor the other docs state.
   8080 and 9090 and the next suite runs against it. Stop it by PID.
 - The Playwright suite registers accounts, so `--repeat-each` soon meets the
   5-a-minute registration limit: those 429s are not regressions.
+- The Playwright suite, `test-replay.sh` and `test-draw.sh` each register
+  accounts: run back to back they pass the 5-a-minute limit and the later one
+  fails on 429. New e2e tests sign in as `alice` or `bob`, which
+  `run-test-server.sh` creates.
+- `core.Player` holds a slice (`Seat`): compare players with
+  `reflect.DeepEqual`, not `==`.
+- A storage test that renames a user after queueing a claim flushes first:
+  the queued write takes the name when it runs.

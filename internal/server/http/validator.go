@@ -12,18 +12,14 @@ import (
 	"github.com/google/uuid"
 )
 
-// Add validator instance near top of file
 var validate = validator.New()
 
-// Add custom validation middleware function
 func validationMiddleware(c *fiber.Ctx) error {
-	// Skip validation for GET, DELETE, OPTIONS
 	method := c.Method()
 	if method == fiber.MethodGet || method == fiber.MethodDelete || method == fiber.MethodOptions {
 		return c.Next()
 	}
 
-	// Determine request type based on path
 	path := c.Path()
 	var requestType any
 
@@ -42,11 +38,12 @@ func validationMiddleware(c *fiber.Ctx) error {
 		requestType = &core.ResignRequest{}
 	case strings.HasSuffix(path, "/draw") && method == fiber.MethodPost:
 		requestType = &core.DrawRequest{}
+	case strings.HasSuffix(path, "/join") && method == fiber.MethodPost:
+		requestType = &core.JoinRequest{}
 	default:
 		return c.Next() // No validation for unknown endpoints
 	}
 
-	// Parse body
 	if err := c.BodyParser(requestType); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(core.ErrorResponse{
 			Error:   "invalid request body",
@@ -55,7 +52,6 @@ func validationMiddleware(c *fiber.Ctx) error {
 		})
 	}
 
-	// Validate
 	if errs := validate.Struct(requestType); errs != nil {
 		var details strings.Builder
 		for _, err := range errs.(validator.ValidationErrors) {
@@ -95,7 +91,6 @@ func validationMiddleware(c *fiber.Ctx) error {
 		})
 	}
 
-	// Store validated body for handler use
 	c.Locals("validatedBody", requestType)
 	c.Locals("validated", true)
 

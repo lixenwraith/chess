@@ -832,8 +832,8 @@ func TestExpiredSessionsAreDeleted(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if valid, err := store.IsSessionValidForUser(t.Context(), oldSession, userID); err != nil || valid {
-		t.Fatalf("expired session valid = %v, %v", valid, err)
+	if _, err := store.SessionUser(t.Context(), oldSession, userID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expired session: %v, want sql.ErrNoRows", err)
 	}
 	if deleted, err := store.DeleteExpiredSessions(t.Context()); err != nil || deleted != 1 {
 		t.Fatalf("expired sessions deleted = %d, %v; want 1", deleted, err)
@@ -841,8 +841,8 @@ func TestExpiredSessionsAreDeleted(t *testing.T) {
 	if _, err := store.GetUserByID(t.Context(), userID); err != nil {
 		t.Fatalf("session cleanup removed the account: %v", err)
 	}
-	if valid, err := store.IsSessionValidForUser(t.Context(), "not-a-uuid", userID); err != nil || valid {
-		t.Fatalf("malformed session valid = %v, %v", valid, err)
+	if _, err := store.SessionUser(t.Context(), "not-a-uuid", userID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("malformed session: %v, want sql.ErrNoRows", err)
 	}
 }
 

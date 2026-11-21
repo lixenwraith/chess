@@ -99,6 +99,7 @@ func TestAPIRoutes(t *testing.T) {
 		"POST /api/games/:gameId/moves",
 		"POST /api/games/:gameId/resign",
 		"POST /api/games/:gameId/draw",
+		"POST /api/games/:gameId/join",
 		"GET /api/users/me/games",
 		"DELETE /api/users/me/games/:gameId",
 		"POST /api/games/import",

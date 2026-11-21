@@ -80,22 +80,18 @@ func (s *Store) DeleteExpiredSessions(ctx context.Context) (int64, error) {
 	return deleted, err
 }
 
-// IsSessionValidForUser verifies both expiry and the binding between a JWT
-// subject and its persisted session. Checking only the session ID would allow
-// a malformed server-issued token to authenticate as the wrong subject.
-func (s *Store) IsSessionValidForUser(ctx context.Context, sessionID, userID string) (bool, error) {
+// SessionUser verifies both expiry and the binding between a JWT subject and
+// its persisted session, and names the user; sql.ErrNoRows means no such
+// session. Checking only the session ID would allow a malformed
+// server-issued token to authenticate as the wrong subject.
+func (s *Store) SessionUser(ctx context.Context, sessionID, userID string) (username string, err error) {
 	if !validUUID(sessionID) || !validUUID(userID) {
-		return false, nil
+		return "", sql.ErrNoRows
 	}
 	ctx, cancel := opContext(ctx)
 	defer cancel()
-	var valid bool
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(
-		SELECT 1 FROM sessions
-		WHERE session_id = $1 AND user_id = $2 AND expires_at > $3
-	)`, sessionID, userID, time.Now().UTC()).Scan(&valid)
-	if err != nil {
-		return false, err
-	}
-	return valid, nil
+	err = s.db.QueryRowContext(ctx, `SELECT u.username FROM sessions s JOIN users u USING (user_id)
+		WHERE s.session_id = $1 AND s.user_id = $2 AND s.expires_at > $3`,
+		sessionID, userID, time.Now().UTC()).Scan(&username)
+	return username, err
 }

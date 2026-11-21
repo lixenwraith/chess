@@ -18,7 +18,7 @@ const gameSelectColumns = `
 	g.black_player_id, g.black_type, g.black_level, g.black_search_time, g.black_claimed_by, g.black_name,
 	g.result, g.termination, g.start_time_utc, g.end_time_utc,
 	g.concession_result, g.concession_termination, g.concession_ply, g.concession_time_utc,
-	g.imported_by, g.event, g.site, g.round`
+	g.imported_by, g.event, g.site, g.round, g.white_seat, g.black_seat`
 
 // claimantName snapshots a claimant's username inside the writing
 // transaction; NULL when the slot is unclaimed or the account is gone.
@@ -46,9 +46,9 @@ func (s *Store) RecordNewGame(record GameRecord) error {
 			game_id, initial_fen,
 			white_player_id, white_type, white_level, white_search_time, white_claimed_by, white_name,
 			black_player_id, black_type, black_level, black_search_time, black_claimed_by, black_name,
-			start_time_utc, result, termination, end_time_utc
+			start_time_utc, result, termination, end_time_utc, white_seat, black_seat
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, ` + claimantName("$7") + `,
-			$8, $9, $10, $11, $12, ` + claimantName("$12") + `, $13, $14, $15, $16)`
+			$8, $9, $10, $11, $12, ` + claimantName("$12") + `, $13, $14, $15, $16, $17, $18)`
 
 		_, err := tx.ExecContext(ctx, query,
 			record.GameID, record.InitialFEN,
@@ -57,7 +57,7 @@ func (s *Store) RecordNewGame(record GameRecord) error {
 			record.BlackPlayerID, record.BlackType, record.BlackLevel, record.BlackSearchTime,
 			nullableString(record.BlackClaimedBy),
 			record.StartTimeUTC, nullableString(record.Result), nullableString(record.Termination),
-			record.EndTimeUTC,
+			record.EndTimeUTC, record.WhiteSeat, record.BlackSeat,
 		)
 		return err
 	})
@@ -196,6 +196,26 @@ func updateGameEnd(ctx context.Context, tx *sql.Tx, gameID, claimColor, claimedB
 	return requireOneGame(ctx, tx, res, gameID)
 }
 
+// RecordJoin gives an open side to the one who joined the game: a claim for
+// claimedBy, or a guest's seat. The side must still be open in the row.
+func (s *Store) RecordJoin(gameID, color, claimedBy string, seat []byte) error {
+	if gameID == "" || (color != "w" && color != "b") || (claimedBy == "") == (len(seat) == 0) {
+		return errors.New("game ID, a color, and either a claimant or a seat are required")
+	}
+	return s.enqueue("record_join", gameID, func(ctx context.Context, tx *sql.Tx) error {
+		if claimedBy != "" {
+			return updateGameEnd(ctx, tx, gameID, color, claimedBy, "", "", nil)
+		}
+		side := map[string]string{"w": "white", "b": "black"}[color]
+		res, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE games SET %[1]s_seat = $2
+			WHERE game_id = $1 AND %[1]s_seat IS NULL AND %[1]s_claimed_by IS NULL`, side), gameID, seat)
+		if err != nil {
+			return err
+		}
+		return requireOneGame(ctx, tx, res, gameID)
+	})
+}
+
 // PlayerRecord is the persistence subset of a player configuration.
 type PlayerRecord struct {
 	PlayerID   string
@@ -280,7 +300,7 @@ func (s *Store) SyncGame(record GameRecord, moves []MoveRecord) error {
 		run: func(ctx context.Context, tx *sql.Tx) error {
 			const slot = `%[1]s_player_id = excluded.%[1]s_player_id, %[1]s_type = excluded.%[1]s_type,
 				%[1]s_level = excluded.%[1]s_level, %[1]s_search_time = excluded.%[1]s_search_time,
-				%[1]s_claimed_by = excluded.%[1]s_claimed_by,
+				%[1]s_claimed_by = excluded.%[1]s_claimed_by, %[1]s_seat = excluded.%[1]s_seat,
 				%[1]s_name = CASE WHEN games.%[1]s_claimed_by IS NOT DISTINCT FROM excluded.%[1]s_claimed_by
 					THEN COALESCE(games.%[1]s_name, excluded.%[1]s_name) ELSE excluded.%[1]s_name END`
 			if _, err := tx.ExecContext(ctx, `INSERT INTO games (
@@ -288,9 +308,10 @@ func (s *Store) SyncGame(record GameRecord, moves []MoveRecord) error {
 				white_player_id, white_type, white_level, white_search_time, white_claimed_by, white_name,
 				black_player_id, black_type, black_level, black_search_time, black_claimed_by, black_name,
 				start_time_utc, result, termination, end_time_utc,
-				concession_result, concession_termination, concession_ply, concession_time_utc
+				concession_result, concession_termination, concession_ply, concession_time_utc,
+				white_seat, black_seat
 			) VALUES ($1, $2, $3, $4, $5, $6, $7, `+claimantName("$7")+`,
-				$8, $9, $10, $11, $12, `+claimantName("$12")+`, $13, $14, $15, $16, $17, $18, $19, $20)
+				$8, $9, $10, $11, $12, `+claimantName("$12")+`, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
 			ON CONFLICT (game_id) DO UPDATE SET `+fmt.Sprintf(slot, "white")+`, `+fmt.Sprintf(slot, "black")+`,
 				result = excluded.result, termination = excluded.termination, end_time_utc = excluded.end_time_utc,
 				concession_result = COALESCE(games.concession_result, excluded.concession_result),
@@ -305,7 +326,7 @@ func (s *Store) SyncGame(record GameRecord, moves []MoveRecord) error {
 				record.StartTimeUTC, nullableString(record.Result), nullableString(record.Termination),
 				record.EndTimeUTC,
 				nullableString(record.ConcessionResult), nullableString(record.ConcessionTermination),
-				concessionPly, record.ConcessionTimeUTC,
+				concessionPly, record.ConcessionTimeUTC, record.WhiteSeat, record.BlackSeat,
 			); err != nil {
 				return err
 			}
@@ -625,7 +646,7 @@ func scanGame(scanner rowScanner, record *GameRecord, extra ...any) error {
 		&blackClaimed, &blackName,
 		&result, &termination, &record.StartTimeUTC, &endTime,
 		&concessionResult, &concessionTermination, &concessionPly, &concessionTime,
-		&importedBy, &event, &site, &round,
+		&importedBy, &event, &site, &round, &record.WhiteSeat, &record.BlackSeat,
 	}
 	if err := scanner.Scan(append(dest, extra...)...); err != nil {
 		return err

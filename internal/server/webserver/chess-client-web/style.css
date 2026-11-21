@@ -1063,6 +1063,25 @@ input[type="range"]:focus-visible { outline: 2px solid var(--periwinkle); outlin
 
 .game-continue { flex: none; align-self: center; padding: 0.35rem 0.55rem; font-size: 0.8rem; }
 
+/* A game against a friend: the invite while the other side is open, and the
+   Draw button while the friend's offer stands. */
+.invite {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.35rem 0.5rem;
+    border: 1px dashed var(--periwinkle);
+    border-radius: var(--radius-sm);
+    font-size: 0.82rem;
+    color: var(--fg-soft);
+}
+
+.invite .btn { flex: none; }
+.invite-text { min-width: 0; }
+
+#draw-btn.offered { border-color: var(--yellow); color: var(--yellow); }
+
 .game-confirm {
     flex: none;
     display: flex;

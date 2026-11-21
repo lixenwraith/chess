@@ -4,10 +4,19 @@ import "time"
 
 // Request types
 
+// CreateGameRequest creates a game. Side is the human side its creator takes:
+// a claim when signed in, a guest's seat otherwise. Without it a signed-in
+// creator claims White if human, else Black, and a guest takes nothing.
 type CreateGameRequest struct {
 	White PlayerConfig `json:"white" validate:"required"`
 	Black PlayerConfig `json:"black" validate:"required"`
 	FEN   string       `json:"fen,omitempty" validate:"omitempty,max=100"`
+	Side  string       `json:"side,omitempty" validate:"omitempty,oneof=w b white black"`
+}
+
+// JoinRequest takes an open human side: the one named, or the only one.
+type JoinRequest struct {
+	Color string `json:"color,omitempty" validate:"omitempty,oneof=w b white black"`
 }
 
 type ConfigurePlayersRequest struct {
@@ -38,21 +47,22 @@ type UndoRequest struct {
 
 // Response types
 
-// GameResponse is the live game. Termination names how a finished game ended;
-// DrawOffer is the color whose draw offer awaits an answer; DrawOutcome
-// reports what a draw request did ("offered", "accepted", "declined") and is
-// set only on responses to that request. Concession is the game's first
-// resignation or agreed draw, kept after an undo continues play. SAN runs
-// parallel to Moves, derived by the rules core from the position before each
-// move; an entry is empty only for a move the core cannot notate.
+// GameResponse is the live game. DrawOutcome ("offered", "accepted",
+// "declined") is set only on the answer to a draw request; Side and Seat only
+// on the answer to the create or join that gave the caller a side, Seat being
+// a guest's secret, shown once. SAN runs parallel to Moves; an entry is empty
+// only for a move the rules core cannot notate.
 type GameResponse struct {
 	GameID      string          `json:"gameId"`
+	InitialFEN  string          `json:"initialFen"`
 	FEN         string          `json:"fen"`
 	Turn        string          `json:"turn"`  // "w" or "b"
 	State       string          `json:"state"` // "ongoing", "white wins", etc
 	Termination string          `json:"termination,omitempty"`
 	DrawOffer   string          `json:"drawOffer,omitempty"`
 	DrawOutcome string          `json:"drawOutcome,omitempty"`
+	Side        string          `json:"side,omitempty"`
+	Seat        string          `json:"seat,omitempty"`
 	Concession  *Concession     `json:"concession,omitempty"`
 	Moves       []string        `json:"moves"`
 	SAN         []string        `json:"san"`
@@ -102,15 +112,11 @@ type RemoveGameResponse struct {
 	Removed string `json:"removed"`
 }
 
-// GameHistoryResponse is the durable replay representation of a game. Moves
-// are ordered and include the resulting FEN so clients do not need an engine
-// to replay a stored game. Origin is "played" or "imported"; Event, Site and
-// Round are set for imported games that carried them.
-//
-// PGNResult is the PGN result token ("1-0", "0-1", "1/2-1/2", or "*") and
-// Termination names how a result was reached (see core.Termination; omitted
-// while the game is unfinished). Concession is the game's first resignation
-// or agreed draw, kept when an undo continued play past it.
+// GameHistoryResponse is a stored game for replay: ordered moves, each with
+// the FEN after it, so a client needs no engine. Origin is "played" or
+// "imported", with the Event, Site and Round an import carried. PGNResult is
+// the PGN token ("1-0", "0-1", "1/2-1/2", "*"); Concession is the first
+// resignation or agreed draw, kept when an undo played on past it.
 type GameHistoryResponse struct {
 	GameID       string          `json:"gameId"`
 	InitialFEN   string          `json:"initialFen"`

@@ -150,7 +150,7 @@ func TestRemoveGameDeletesOwnAndReleasesShared(t *testing.T) {
 	shared := playLine(t, svc, alice.UserID, human, []string{"e2e4"}, core.StateOngoing)
 	if err := svc.ApplyMoveWithState(shared, MoveCommit{
 		ExpectedFEN: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1", ExpectedState: core.StateOngoing,
-		ExpectedTurn: core.ColorBlack, ActorUserID: bob.UserID, MoveUCI: "e7e5",
+		ExpectedTurn: core.ColorBlack, Actor: core.Actor{UserID: bob.UserID}, MoveUCI: "e7e5",
 		NewFEN: "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2", State: core.StateOngoing,
 	}); err != nil {
 		t.Fatal(err)

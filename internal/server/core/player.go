@@ -1,6 +1,8 @@
 package core
 
 import (
+	"crypto/subtle"
+
 	"github.com/google/uuid"
 )
 
@@ -11,7 +13,8 @@ const (
 	PlayerComputer
 )
 
-// Player is the complete game entity with all state
+// Player is one side of a game. An account holds it by a claim, a guest by a
+// seat: the secret whose SHA-256 is Seat, which no response carries.
 type Player struct {
 	ID         string     `json:"id"`
 	Color      Color      `json:"color"`
@@ -19,10 +22,39 @@ type Player struct {
 	Level      int        `json:"level,omitempty"`      // Only for computer
 	SearchTime int        `json:"searchTime,omitempty"` // Only for computer
 	ClaimedBy  string     `json:"claimedBy,omitempty"`  // UserID that claimed this slot
-	Name       string     `json:"name,omitempty"`       // Claimant's username when the claim was stored (history only)
+	Name       string     `json:"name,omitempty"`       // Claimant's username when the claim was made
+	Seated     bool       `json:"seated,omitempty"`     // a guest holds this side
+	Seat       []byte     `json:"-"`
 }
 
-// PlayerConfig for API requests and configuration
+// Actor is who a request acts as: a signed-in user, the guest whose seat
+// secret hashes to Seat, both, or neither. Name is the user's name.
+type Actor struct {
+	UserID string
+	Name   string
+	Seat   []byte
+}
+
+// Held reports whether an account or a guest holds this side; an open side
+// takes a move from anyone who knows the game.
+func (p *Player) Held() bool {
+	return p.ClaimedBy != "" || p.Seated
+}
+
+// HeldBy reports whether a is the one who holds this side.
+func (p *Player) HeldBy(a Actor) bool {
+	if p.ClaimedBy != "" {
+		return a.UserID == p.ClaimedBy
+	}
+	return p.Seated && subtle.ConstantTimeCompare(p.Seat, a.Seat) == 1
+}
+
+// Admits reports whether a may act for this side: a holds it, or nobody does.
+func (p *Player) Admits(a Actor) bool {
+	return !p.Held() || p.HeldBy(a)
+}
+
+// PlayerConfig is a side's configuration in a request.
 type PlayerConfig struct {
 	Type       PlayerType `json:"type" validate:"required,oneof=1 2"`
 	Level      int        `json:"level,omitempty" validate:"omitempty,min=0,max=20"`
@@ -49,16 +81,6 @@ func NewPlayer(config PlayerConfig, color Color) *Player {
 	}
 
 	return player
-}
-
-// IsClaimed returns true if this slot has been claimed by a user
-func (p *Player) IsClaimed() bool {
-	return p.ClaimedBy != ""
-}
-
-// CanBeClaimed returns true if this slot can be claimed
-func (p *Player) CanBeClaimed() bool {
-	return p.Type == PlayerHuman && !p.IsClaimed()
 }
 
 type Color byte

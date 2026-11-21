@@ -410,6 +410,7 @@ A replay lists the stored game in SAN, with the current ply in brackets:
 - No algebraic notation input (UCI format only)
 - Single game context at a time (plus one replay)
 - No persistent authentication across restarts
+- No guest seats: `login` to hold a side of a game between two people
 
 ## Error Handling
 

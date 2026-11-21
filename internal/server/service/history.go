@@ -228,12 +228,12 @@ func playersResponse(record storage.GameRecord) core.PlayersResponse {
 		White: &core.Player{
 			ID: record.WhitePlayerID, Color: core.ColorWhite, Type: core.PlayerType(record.WhiteType),
 			Level: record.WhiteLevel, SearchTime: record.WhiteSearchTime, ClaimedBy: record.WhiteClaimedBy,
-			Name: record.WhiteName,
+			Name: record.WhiteName, Seat: record.WhiteSeat, Seated: len(record.WhiteSeat) > 0,
 		},
 		Black: &core.Player{
 			ID: record.BlackPlayerID, Color: core.ColorBlack, Type: core.PlayerType(record.BlackType),
 			Level: record.BlackLevel, SearchTime: record.BlackSearchTime, ClaimedBy: record.BlackClaimedBy,
-			Name: record.BlackName,
+			Name: record.BlackName, Seat: record.BlackSeat, Seated: len(record.BlackSeat) > 0,
 		},
 	}
 }

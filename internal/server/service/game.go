@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/lixenwraith/chess/internal/server/core"
@@ -17,6 +18,8 @@ var (
 	ErrGameNotFound = errors.New("game not found")
 	ErrGameChanged  = errors.New("game changed while move was being validated")
 	ErrSlotOwner    = errors.New("player slot is owned by another user")
+	ErrSideTaken    = errors.New("that side is taken")
+	ErrSideRequired = errors.New("color required: both sides are open")
 	ErrGameOver     = errors.New("game is over")
 	ErrNotHuman     = errors.New("that side is played by the computer")
 	ErrNoDrawOffer  = errors.New("no draw offer from the opponent")
@@ -26,32 +29,30 @@ var (
 	ErrConcessionFinal = errors.New("a resignation or agreed draw between two human players is final")
 )
 
-// requireControl lets actor rewind or reconfigure g only when no side is
-// claimed by another user. A claim is what protects a player's moves; an
-// unclaimed side is open to anyone holding the game ID.
-func requireControl(g *game.Game, actor string) error {
+// requireControl lets actor rewind or reconfigure g only when nobody else
+// holds a side. A claim or a seat is what protects a player's moves; an open
+// side takes them from anyone holding the game ID.
+func requireControl(g *game.Game, actor core.Actor) error {
 	for _, color := range []core.Color{core.ColorWhite, core.ColorBlack} {
-		if owner := g.GetSlotOwner(color); owner != "" && owner != actor {
+		if !g.GetPlayer(color).Admits(actor) {
 			return ErrSlotOwner
 		}
 	}
 	return nil
 }
 
-// requireParticipant lets actor unload g when it holds one of its claims, or
-// when nothing is claimed.
-func requireParticipant(g *game.Game, actor string) error {
-	claimed := false
+// requireParticipant lets actor unload g when it holds one of its sides, or
+// when nobody holds any.
+func requireParticipant(g *game.Game, actor core.Actor) error {
+	held := false
 	for _, color := range []core.Color{core.ColorWhite, core.ColorBlack} {
-		switch g.GetSlotOwner(color) {
-		case "":
-		case actor:
+		player := g.GetPlayer(color)
+		if player.HeldBy(actor) {
 			return nil
-		default:
-			claimed = true
 		}
+		held = held || player.Held()
 	}
-	if claimed {
+	if held {
 		return ErrSlotOwner
 	}
 	return nil
@@ -61,7 +62,7 @@ type MoveCommit struct {
 	ExpectedFEN   string
 	ExpectedState core.State
 	ExpectedTurn  core.Color
-	ActorUserID   string
+	Actor         core.Actor
 	MoveUCI       string
 	NewFEN        string
 	State         core.State
@@ -71,12 +72,12 @@ type MoveCommit struct {
 }
 
 // EndCommit ends a game without a move: a resignation or a draw by
-// agreement. Color is the side acting (resigning or accepting); an
-// authenticated actor claims it if unclaimed, as a first move would.
+// agreement. Color is the side acting (resigning or accepting); a signed-in
+// actor claims it if open, as a first move would.
 type EndCommit struct {
 	ExpectedFEN string
 	Color       core.Color
-	ActorUserID string
+	Actor       core.Actor
 	State       core.State
 	Termination core.Termination
 	// OfferFrom, when set, requires that side's draw offer to still stand.
@@ -115,8 +116,8 @@ func (s *Service) CreateGame(
 }
 
 // UpdatePlayers replaces players in an existing game on behalf of actor, who
-// must not be locked out by another user's claim.
-func (s *Service) UpdatePlayers(gameID string, whitePlayer, blackPlayer *core.Player, actor string) error {
+// must not be locked out by a side another player holds.
+func (s *Service) UpdatePlayers(gameID string, whitePlayer, blackPlayer *core.Player, actor core.Actor) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -134,20 +135,19 @@ func (s *Service) UpdatePlayers(gameID string, whitePlayer, blackPlayer *core.Pl
 	oldWhite := g.GetPlayer(core.ColorWhite)
 	oldBlack := g.GetPlayer(core.ColorBlack)
 
-	// Player configuration is mutable, but historical user association is not.
-	// Preserve a human ID while the slot remains human, and preserve any claim
-	// even if the slot later becomes computer-controlled.
-	if oldWhite != nil {
-		if oldWhite.Type == core.PlayerHuman && whitePlayer.Type == core.PlayerHuman {
-			whitePlayer.ID = oldWhite.ID
+	// Player configuration is mutable, but who holds a side is not: a human ID
+	// stays while the slot remains human, and a claim or a seat stays even if
+	// the slot becomes computer-controlled.
+	for _, pair := range [][2]*core.Player{{oldWhite, whitePlayer}, {oldBlack, blackPlayer}} {
+		old, replacement := pair[0], pair[1]
+		if old == nil {
+			continue
 		}
-		whitePlayer.ClaimedBy = oldWhite.ClaimedBy
-	}
-	if oldBlack != nil {
-		if oldBlack.Type == core.PlayerHuman && blackPlayer.Type == core.PlayerHuman {
-			blackPlayer.ID = oldBlack.ID
+		if old.Type == core.PlayerHuman && replacement.Type == core.PlayerHuman {
+			replacement.ID = old.ID
 		}
-		blackPlayer.ClaimedBy = oldBlack.ClaimedBy
+		replacement.ClaimedBy, replacement.Name = old.ClaimedBy, old.Name
+		replacement.Seat, replacement.Seated = old.Seat, old.Seated
 	}
 
 	g.UpdatePlayers(whitePlayer, blackPlayer)
@@ -238,14 +238,9 @@ func (s *Service) ApplyMoveWithState(gameID string, commit MoveCommit) error {
 		return errors.New("current player is missing")
 	}
 	if currentPlayer.Type == core.PlayerHuman {
-		owner := g.GetSlotOwner(currentTurn)
-		switch {
-		case owner != "" && commit.ActorUserID == "":
-			return ErrSlotOwner
-		case owner != "" && owner != commit.ActorUserID:
-			return ErrSlotOwner
-		case owner == "" && commit.ActorUserID != "":
-			claimUserID = commit.ActorUserID
+		var err error
+		if claimUserID, err = actorClaim(g, currentTurn, commit.Actor); err != nil {
+			return err
 		}
 	}
 
@@ -254,7 +249,7 @@ func (s *Service) ApplyMoveWithState(gameID string, commit MoveCommit) error {
 		at = time.Now().UTC()
 	}
 	if claimUserID != "" {
-		if err := g.ClaimSlot(currentTurn, claimUserID); err != nil {
+		if err := g.ClaimSlot(currentTurn, claimUserID, commit.Actor.Name); err != nil {
 			return err
 		}
 	}
@@ -356,14 +351,14 @@ func (s *Service) EndGame(gameID string, commit EndCommit) error {
 	if commit.OfferFrom != 0 && g.DrawOffer() != commit.OfferFrom {
 		return ErrNoDrawOffer
 	}
-	claimUserID, err := actorClaim(g, commit.Color, commit.ActorUserID)
+	claimUserID, err := actorClaim(g, commit.Color, commit.Actor)
 	if err != nil {
 		return err
 	}
 
 	now := time.Now().UTC()
 	if claimUserID != "" {
-		if err := g.ClaimSlot(commit.Color, claimUserID); err != nil {
+		if err := g.ClaimSlot(commit.Color, claimUserID, commit.Actor.Name); err != nil {
 			return err
 		}
 	}
@@ -388,29 +383,83 @@ func (s *Service) EndGame(gameID string, commit EndCommit) error {
 	return nil
 }
 
-// actorClaim authorizes actor to act for color and returns the user ID to
-// record as the slot's claim, empty when nothing is to be claimed.
-func actorClaim(g *game.Game, color core.Color, actor string) (string, error) {
+// actorClaim authorizes actor to act for color's human side and returns the
+// user ID to record as its claim: a signed-in actor claims an open side, a
+// guest's act leaves it open.
+func actorClaim(g *game.Game, color core.Color, actor core.Actor) (string, error) {
 	player := g.GetPlayer(color)
-	if player == nil {
-		return "", errors.New("invalid color")
-	}
-	if player.Type != core.PlayerHuman {
-		return "", ErrNotHuman
-	}
-	owner := g.GetSlotOwner(color)
 	switch {
-	case owner != "" && owner != actor:
+	case player == nil:
+		return "", errors.New("invalid color")
+	case player.Type != core.PlayerHuman:
+		return "", ErrNotHuman
+	case !player.Admits(actor):
 		return "", ErrSlotOwner
-	case owner == "" && actor != "":
-		return actor, nil
+	case !player.Held():
+		return actor.UserID, nil
 	}
 	return "", nil
 }
 
+// JoinGame gives actor an open human side without a move: color, or the only
+// open one. A signed-in actor claims it; a guest takes it with seat, whose
+// secret the caller then hands them. It returns the side and whether it was
+// taken now: an actor who holds one already keeps it, and nothing changes.
+func (s *Service) JoinGame(gameID string, color core.Color, actor core.Actor, seat []byte) (core.Color, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	g, ok := s.games[gameID]
+	if !ok {
+		return 0, false, fmt.Errorf("%w: %s", ErrGameNotFound, gameID)
+	}
+	if g.State().IsTerminal() {
+		return 0, false, ErrGameOver
+	}
+	var open []core.Color
+	for _, c := range []core.Color{core.ColorWhite, core.ColorBlack} {
+		player := g.GetPlayer(c)
+		if (color == 0 || color == c) && player.HeldBy(actor) {
+			return c, false, nil
+		}
+		if player.Type == core.PlayerHuman && !player.Held() {
+			open = append(open, c)
+		}
+	}
+	switch {
+	case color != 0 && g.GetPlayer(color).Type != core.PlayerHuman:
+		return 0, false, ErrNotHuman
+	case color != 0 && !slices.Contains(open, color), len(open) == 0:
+		return 0, false, ErrSideTaken
+	case color == 0 && len(open) == 2:
+		return 0, false, ErrSideRequired
+	case color == 0:
+		color = open[0]
+	}
+
+	claimedBy := actor.UserID
+	if claimedBy != "" {
+		seat = nil
+		if err := g.ClaimSlot(color, claimedBy, actor.Name); err != nil {
+			return 0, false, err
+		}
+	} else if err := g.SeatGuest(color, seat); err != nil {
+		return 0, false, err
+	}
+	g.Touch(time.Now().UTC())
+	if s.store != nil {
+		if err := s.store.RecordJoin(gameID, color.String(), claimedBy, seat); err != nil {
+			slog.Error("failed to queue join persistence", "game_id", gameID, "error", err)
+		}
+	}
+	s.waiter.NotifyAll(gameID)
+	slog.Debug("side joined", "game_id", gameID, "side", color.String(), "guest", claimedBy == "")
+	return color, true, nil
+}
+
 // OfferDraw records color's offer for a human opponent to answer. Repeating
 // a standing offer is a no-op; a new offer needs a move since the last one.
-func (s *Service) OfferDraw(gameID string, color core.Color, actor, expectedFEN string) error {
+func (s *Service) OfferDraw(gameID string, color core.Color, actor core.Actor, expectedFEN string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -433,7 +482,7 @@ func (s *Service) OfferDraw(gameID string, color core.Color, actor, expectedFEN 
 
 // RecordDeclinedOffer counts an offer the computer answered at once against
 // color's one-offer-per-move allowance.
-func (s *Service) RecordDeclinedOffer(gameID string, color core.Color, actor, expectedFEN string) error {
+func (s *Service) RecordDeclinedOffer(gameID string, color core.Color, actor core.Actor, expectedFEN string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -451,7 +500,7 @@ func (s *Service) RecordDeclinedOffer(gameID string, color core.Color, actor, ex
 }
 
 // DeclineDraw lets color turn down the opponent's standing offer.
-func (s *Service) DeclineDraw(gameID string, color core.Color, actor string) error {
+func (s *Service) DeclineDraw(gameID string, color core.Color, actor core.Actor) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -471,7 +520,7 @@ func (s *Service) DeclineDraw(gameID string, color core.Color, actor string) err
 
 // drawTarget returns an unfinished game whose side color the actor may play,
 // optionally still at expectedFEN. Caller holds s.mu.
-func (s *Service) drawTarget(gameID string, color core.Color, actor, expectedFEN string) (*game.Game, error) {
+func (s *Service) drawTarget(gameID string, color core.Color, actor core.Actor, expectedFEN string) (*game.Game, error) {
 	g, ok := s.games[gameID]
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrGameNotFound, gameID)
@@ -495,11 +544,11 @@ func offerAllowed(g *game.Game, color core.Color) error {
 	return nil
 }
 
-// UndoMoves takes back count moves on behalf of actor. Another user's claim
-// refuses it, so two players cannot rewind each other; a resignation or agreed
-// draw between two humans is final. Against the computer an undo reopens a
-// finished game and the first concession stays on record.
-func (s *Service) UndoMoves(gameID string, count int, actor string) error {
+// UndoMoves takes back count moves on behalf of actor. A side another player
+// holds refuses it, so two players cannot rewind each other; a resignation or
+// agreed draw between two humans is final. Against the computer an undo
+// reopens a finished game and the first concession stays on record.
+func (s *Service) UndoMoves(gameID string, count int, actor core.Actor) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -538,8 +587,8 @@ func (s *Service) UndoMoves(gameID string, count int, actor string) error {
 }
 
 // UnloadGame removes a live game on behalf of actor, who must hold one of
-// its claims when it has any. Durable history is kept.
-func (s *Service) UnloadGame(gameID string, actor string) error {
+// its sides when anyone does. Durable history is kept.
+func (s *Service) UnloadGame(gameID string, actor core.Actor) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	g, ok := s.games[gameID]

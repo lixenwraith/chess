@@ -387,6 +387,72 @@ test.describe('web replay', () => {
         await expect(item.locator('.game-continue')).toHaveCount(0);
     });
 
+    test('two visitors play through an invite link: a join, a draw offer, a resignation', async ({ browser, request }) => {
+        const options = { permissions: ['clipboard-read', 'clipboard-write'] };
+        const hostContext = await browser.newContext(options), guestContext = await browser.newContext(options);
+        const host = await hostContext.newPage(), guest = await guestContext.newPage();
+        await signIn(host, request, 'bob', 'BobSecure456');
+        await host.goto('/');
+        await expect(host.locator('#auth-label')).toHaveText('bob');
+
+        // The host starts a game against a friend and copies its link.
+        await host.click('#new-game-btn');
+        await host.check('input[name="opponent"][value="friend"]');
+        await expect(host.locator('#level-group')).toBeHidden();
+        await host.click('#start-game-btn');
+        await expect(host.locator('#modal-overlay')).not.toHaveClass(/show/);
+        await expect(host.locator('#invite-row')).toBeVisible();
+        await expect(host.locator('#undo-btn')).toBeDisabled();
+        await host.click('#invite-copy-btn');
+        const link = await host.evaluate(() => navigator.clipboard.readText());
+        expect(link).toMatch(/\?game=[0-9a-f-]{36}$/);
+        expect(host.url()).toBe(link);
+        const gameId = new URL(link).searchParams.get('game');
+
+        // The guest opens it, is offered the open side, and takes it.
+        await guest.goto(link);
+        await expect(guest.locator('#join-overlay')).toHaveClass(/show/);
+        await expect(guest.locator('#join-modal-message')).toContainText('bob invites you');
+        await guest.click('.join-side[data-side="b"]');
+        await expect(guest.locator('#join-overlay')).not.toHaveClass(/show/);
+        await expect(guest.locator('.coordinates.ranks span').first()).toHaveText('1');
+        await expect(guest.locator('#turn-text')).toHaveText('bob');
+        await expect(host.locator('#invite-row')).toBeHidden();
+        await expect(host.locator('#turn-text')).toHaveText('Your move');
+
+        // Each sees the other's move; a side moves only for its holder.
+        await move(host, 'e2', 'e4');
+        await expect(guest.locator('#live-moves .move')).toHaveCount(1);
+        await expect(guest.locator('#turn-text')).toHaveText('Your move');
+        const stranger = await request.post(`${API}/api/games/${gameId}/moves`, { data: { move: 'e7e5' } });
+        expect(stranger.status()).toBe(403);
+        await move(guest, 'e7', 'e5');
+        await expect(host.locator('#live-moves .move')).toHaveCount(2);
+        await expect(host.locator('#live-moves .move').nth(1)).toHaveText('e5');
+
+        // The guest offers a draw; the host sees it on Draw and declines by moving.
+        await guest.click('#draw-btn');
+        await expect(guest.locator('#draw-btn')).toBeDisabled();
+        await expect(host.locator('#draw-btn')).toHaveText('Accept');
+        await expect(host.locator('#draw-btn')).toHaveClass(/offered/);
+        await move(host, 'g1', 'f3');
+        await expect(host.locator('#draw-btn')).toHaveText('Draw');
+        await expect(guest.locator('#live-moves .move')).toHaveCount(3);
+        await expect(guest.locator('#draw-btn')).toBeEnabled();
+
+        // The guest resigns: both boards show the result.
+        await guest.click('#resign-btn');
+        await guest.click('#resign-confirm-btn');
+        await expect(guest.locator('#turn-text')).toHaveText('White wins · resigned');
+        await expect(host.locator('#turn-text')).toHaveText('White wins · resigned');
+        const history = await (await request.get(`${API}/api/games/${gameId}/history`)).json();
+        expect(history.termination).toBe('resignation');
+        expect(history.players.white.name).toBe('bob');
+        expect(history.players.black.seated).toBe(true);
+        await hostContext.close();
+        await guestContext.close();
+    });
+
     test('an anonymous visitor replays from the device list', async ({ page }) => {
         await page.goto('/');
         await expect(page.locator('#auth-label')).toHaveText('Sign in');

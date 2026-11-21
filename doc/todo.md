@@ -17,7 +17,6 @@ batch under Done says what it delivered.
 - Phase 2, next, in this order:
   - R8.2 P2: email verification, after R8.1
 - Phase 3, later, each after its decision:
-  - R9.3 P3: human against human in the web client (D8)
   - R10.1 P3: metrics
   - R9.2 P3: analysis on a replay
   - R8.4 P3: recovery timing through the sender
@@ -59,7 +58,11 @@ batch under Done says what it delivered.
   engine. Stockfish replays each ruling off the request path and logs a
   disagreement (R7.3 retires it).
 - R9, in part: Ctrl-C stops a running `auto`, `poll` or `computer` in the
-  terminal client, natively and in the browser, and the session stays.
+  terminal client, natively and in the browser, and the session stays. The
+  web client plays a friend: the creator picks a side, an invite link
+  (`?game=<id>`) offers the open one, a join takes it without a move, the
+  game is watched by long-poll, Draw shows and accepts a standing offer, and
+  the turn strip names the opponent. Schema v6.
 
 ## Decisions
 
@@ -82,7 +85,9 @@ batch under Done says what it delivered.
   the first concession stays on record.
 - D7 List pagination, done: keyset cursor on `(start_time_utc, game_id)`;
   `offset` kept, exclusive with it.
-- D8 Human against human in the web client: open, R9.3.
+- D8 Human against human in the web client, done: signed-in players hold a
+  side by their claim and guests by a seat, a secret per side shown once,
+  stored as its SHA-256 and sent as `X-Chess-Seat`.
 - D9 Replay without an account, done: the web client lists the games it
   created anonymously from `localStorage`, for the 24-hour retention.
 - D10 Live SAN, done: the live game response carries `san`.
@@ -94,7 +99,7 @@ batch under Done says what it delivered.
 
 ## Web Client Constraints
 
-The host's security headers bind every web client item (R5.4, R9.2, R9.3):
+The host's security headers bind every web client item (R5.4, R9.2):
 
 - `script-src 'self' 'wasm-unsafe-eval'`: code lives in `app.js`; no inline
   scripts, `on*` attributes, `eval` or `new Function`.
@@ -341,8 +346,9 @@ email.
 
 ## R9 Clients
 
-The web client plays the computer and replays stored games; the terminal
-client drives the whole API, natively and in the browser.
+The web client plays the computer or a friend and replays stored games; the
+terminal client drives the whole API, natively and in the browser, without
+guest seats.
 
 ### R9.2 Analysis on a replay
 
@@ -373,37 +379,6 @@ evaluates a position. Three ways, cheapest first:
   cross-origin isolation that the embedding page would have to serve too; a
   full NNUE network weighs tens of megabytes; Stockfish is GPLv3, so its
   source is offered with the binary.
-
-### R9.3 Human against human in the web client
-
-- Priority: P3, a decision first (D8)
-- Affected files: `internal/server/processor/processor.go`,
-  `internal/server/service/game.go`, `internal/server/http/handler.go`,
-  `internal/server/core/api.go`,
-  `internal/server/webserver/chess-client-web/` (`app.js`, `index.html`,
-  `style.css`), `test/e2e/`, `doc/api.md`
-- Guide: [Claims and control](api.md#claims-and-control),
-  [Offer, accept, or decline a draw](api.md#offer-accept-or-decline-a-draw),
-  [Long-Polling Flow](architecture.md#long-polling-flow)
-
-Two-player games run through the API and the terminal client (`join`,
-`poll`). The web client plays only the computer and long-polls only while
-the computer thinks. A side is claimed by its first authenticated move; an
-anonymous move claims nothing, so an unclaimed side is open to anyone with
-the ID; and a signed-in creator of a game between humans always gets White.
-
-- Decide who may play: signed-in players only, whose claims protect both
-  sides, or anonymous seats too, which needs a new mechanism (a secret per
-  side), since a claim is an account.
-- Server: the creator picks a side; a join claims the open side for a
-  signed-in user without a move and wakes long-polls. A game whose two sides
-  are claimed already refuses takebacks and reconfiguration.
-- Web: Play a friend in the new-game dialog, an invite link (`?game=<id>`),
-  a join screen for the open side, a long-poll while the opponent is to
-  move, an offer indicator on Draw (pressing it accepts), and the opponent's
-  name in the turn strip.
-- Tests: an end-to-end spec with two browser contexts playing a short game,
-  an offer and a resignation.
 
 ## R10 Observability
 

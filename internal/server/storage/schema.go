@@ -31,12 +31,14 @@ type GameRecord struct {
 	WhiteSearchTime int
 	WhiteClaimedBy  string
 	WhiteName       string // claimant's username when the claim was recorded
+	WhiteSeat       []byte // SHA-256 of the secret a guest holds the side with
 	BlackPlayerID   string
 	BlackType       int
 	BlackLevel      int
 	BlackSearchTime int
 	BlackClaimedBy  string
 	BlackName       string
+	BlackSeat       []byte
 	Result          string
 	Termination     string // how Result was reached; empty while unfinished
 	StartTimeUTC    time.Time
@@ -95,21 +97,16 @@ type MovePersistence struct {
 // schemaVersion is the newest schema this binary understands. Migrations are
 // applied in order inside one transaction; PostgreSQL DDL is transactional, so
 // a failed upgrade leaves the previous version intact.
-const schemaVersion = 5
+const schemaVersion = 6
 
 // migrations[v-1] upgrades the schema from version v-1 to v. Never edit a
 // released migration; append a new one.
 var migrations = []string{
-	// v1: initial PostgreSQL schema.
-	//
-	// Identifiers are uuid (16 bytes, validated on input). Usernames and emails
-	// are stored lowercase, so plain unique constraints give case-insensitive
-	// uniqueness without citext or a nondeterministic collation. Game-to-user
-	// association is by claim: every authenticated human slot records its
-	// claimant, and claims survive player reconfiguration. The claimant's
-	// username is copied into the game when the claim is written, so replays
-	// and PGN keep the name after a rename or account deletion. Games with no
-	// claim belong to anonymous players and are purged after inactivity.
+	// v1: the initial schema. Usernames and emails are stored lowercase, so
+	// plain unique constraints are case-insensitive without citext. A game
+	// belongs to a user by claim, which survives reconfiguration; the name is
+	// copied in when the claim is written, so replays keep it after a rename
+	// or deletion. Games with no claim are purged after inactivity.
 	`
 CREATE TABLE schema_version (
 	singleton  boolean PRIMARY KEY DEFAULT true CHECK (singleton),
@@ -258,6 +255,20 @@ CREATE INDEX games_anonymous_start_idx ON games (start_time_utc)
 	WHERE white_claimed_by IS NULL AND black_claimed_by IS NULL AND imported_by IS NULL;
 CREATE INDEX games_imported_by_idx ON games (imported_by, start_time_utc DESC, game_id DESC)
 	WHERE imported_by IS NOT NULL;
+`,
+
+	// v6: guest seats. A guest holds a side with a secret the server shows
+	// once and stores as its SHA-256; an account's claim and a seat exclude
+	// each other. A seat does not make a game a registered player's: the
+	// anonymous purge still applies.
+	`
+ALTER TABLE games
+	ADD COLUMN white_seat bytea,
+	ADD COLUMN black_seat bytea,
+	ADD CONSTRAINT games_white_seat_check
+		CHECK (white_seat IS NULL OR (octet_length(white_seat) = 32 AND white_claimed_by IS NULL)),
+	ADD CONSTRAINT games_black_seat_check
+		CHECK (black_seat IS NULL OR (octet_length(black_seat) = 32 AND black_claimed_by IS NULL));
 `,
 }
 

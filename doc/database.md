@@ -64,7 +64,8 @@ The tables:
   out
 - `chess.password_resets`: one pending reset per account, the SHA-256 of the
   emailed token
-- `chess.games`: players, claims (`*_claimed_by`), name snapshots, `result`,
+- `chess.games`: players, claims (`*_claimed_by`), name snapshots, guest
+  seats (`*_seat`, the SHA-256 of a secret only the guest has), `result`,
   `termination`, `concession_*`, times; for an imported game `imported_by`,
   `event`, `site`, `round`
 - `chess.moves`: ply `move_number` 1..n, UCI move, FEN after the move
@@ -306,7 +307,7 @@ su -m chess -c '/home/chess/bin/chess-server db delete -confirm -dsn "postgres:/
 su -m chess -c '/home/chess/bin/chess-server db init -dsn "postgres:///chess?host=/tmp"'
 ```
 
-`db init` prints `Database schema ready (version 5)`. In split mode the
+`db init` prints `Database schema ready (version 6)`. In split mode the
 `chess` role owns no tables and cannot drop or create them; run both commands
 as `postgres` acting as the owner role instead, e.g. on Linux:
 
@@ -334,6 +335,6 @@ Verify any of them:
 
 ```sql
 \dt chess.*                                   -- games, moves, password_resets, schema_version, sessions, users
-SELECT version FROM chess.schema_version;     -- 5
+SELECT version FROM chess.schema_version;     -- 6
 \drds                                         -- chess: search_path and timeouts in database chess
 ```

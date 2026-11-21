@@ -23,6 +23,9 @@ import (
 )
 
 const (
+	// seatHeader carries a guest's seat secret for the game the request names.
+	seatHeader = "X-Chess-Seat"
+
 	rateLimitRate = 10 // req/sec
 	// requestTimeout outlasts the long-poll, which waits 30 s.
 	requestTimeout = 35 * time.Second
@@ -118,7 +121,7 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 	app.Use(cors.New(cors.Config{
 		AllowOrigins:  "*",
 		AllowMethods:  "GET,POST,PUT,DELETE,OPTIONS",
-		AllowHeaders:  "Origin,Content-Type,Accept,Authorization,If-None-Match",
+		AllowHeaders:  "Origin,Content-Type,Accept,Authorization,If-None-Match," + seatHeader,
 		ExposeHeaders: "ETag,Content-Disposition",
 	}))
 
@@ -233,6 +236,7 @@ func NewFiberApp(proc *processor.Processor, svc *service.Service, opts Options) 
 	api.Post("/games/:gameId/undo", OptionalAuth(validateToken), h.UndoMove)
 	api.Post("/games/:gameId/resign", OptionalAuth(validateToken), h.Resign)
 	api.Post("/games/:gameId/draw", OptionalAuth(validateToken), h.Draw)
+	api.Post("/games/:gameId/join", OptionalAuth(validateToken), h.Join)
 	api.Get("/games/:gameId/board", h.GetBoard)
 	api.Get("/users/me/games", AuthRequired(validateToken), h.GetCurrentUserGames)
 	api.Delete("/users/me/games/:gameId", AuthRequired(validateToken), h.RemoveGame)
@@ -329,10 +333,8 @@ func (h *HTTPHandler) CreateGame(c *fiber.Ctx) error {
 	var req core.CreateGameRequest
 	req = *(validatedBody.(*core.CreateGameRequest))
 
-	userID, _ := c.Locals("userID").(string)
-
 	cmd := processor.NewCreateGameCommand(req)
-	cmd.UserID = userID
+	cmd.Actor = actor(c)
 
 	resp := h.proc.Execute(c.UserContext(), cmd)
 
@@ -373,7 +375,7 @@ func (h *HTTPHandler) ConfigurePlayers(c *fiber.Ctx) error {
 	req = *(validatedBody.(*core.ConfigurePlayersRequest))
 
 	cmd := processor.NewConfigurePlayersCommand(gameID, req)
-	cmd.UserID, _ = c.Locals("userID").(string)
+	cmd.Actor = actor(c)
 	resp := h.proc.Execute(c.UserContext(), cmd)
 
 	if !resp.Success {
@@ -461,10 +463,8 @@ func (h *HTTPHandler) MakeMove(c *fiber.Ctx) error {
 	var req core.MoveRequest
 	req = *(validatedBody.(*core.MoveRequest))
 
-	userID, _ := c.Locals("userID").(string)
-
 	cmd := processor.NewMakeMoveCommand(gameID, req)
-	cmd.UserID = userID
+	cmd.Actor = actor(c)
 
 	resp := h.proc.Execute(c.UserContext(), cmd)
 
@@ -505,7 +505,7 @@ func (h *HTTPHandler) UndoMove(c *fiber.Ctx) error {
 	req = *(validatedBody.(*core.UndoRequest))
 
 	cmd := processor.NewUndoMoveCommand(gameID, req)
-	cmd.UserID, _ = c.Locals("userID").(string)
+	cmd.Actor = actor(c)
 	resp := h.proc.Execute(c.UserContext(), cmd)
 
 	if !resp.Success {
@@ -528,8 +528,27 @@ func (h *HTTPHandler) Draw(c *fiber.Ctx) error {
 	})
 }
 
+// Join gives the caller an open human side of the game.
+func (h *HTTPHandler) Join(c *fiber.Ctx) error {
+	return h.executeWithBody(c, func(gameID string, body any) processor.Command {
+		return processor.NewJoinGameCommand(gameID, *body.(*core.JoinRequest))
+	})
+}
+
+// actor is who the request acts as: the signed-in user, when it carries a
+// token, and the guest whose seat secret it presents.
+func actor(c *fiber.Ctx) core.Actor {
+	var a core.Actor
+	a.UserID, _ = c.Locals("userID").(string)
+	a.Name, _ = c.Locals("username").(string)
+	if secret := c.Get(seatHeader); secret != "" {
+		a.Seat = service.SeatHash(secret)
+	}
+	return a
+}
+
 // executeWithBody runs a game command built from the validated request body,
-// with the caller's user ID for slot authorization.
+// on behalf of the request's actor.
 func (h *HTTPHandler) executeWithBody(c *fiber.Ctx, build func(gameID string, body any) processor.Command) error {
 	gameID := c.Params("gameId")
 	if !isValidUUID(gameID) {
@@ -542,7 +561,7 @@ func (h *HTTPHandler) executeWithBody(c *fiber.Ctx, build func(gameID string, bo
 		})
 	}
 	cmd := build(gameID, body)
-	cmd.UserID, _ = c.Locals("userID").(string)
+	cmd.Actor = actor(c)
 
 	resp := h.proc.Execute(c.UserContext(), cmd)
 	if !resp.Success {
@@ -580,7 +599,7 @@ func (h *HTTPHandler) DeleteGame(c *fiber.Ctx) error {
 	}
 
 	cmd := processor.NewDeleteGameCommand(gameID)
-	cmd.UserID, _ = c.Locals("userID").(string)
+	cmd.Actor = actor(c)
 	resp := h.proc.Execute(c.UserContext(), cmd)
 
 	if !resp.Success {

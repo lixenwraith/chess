@@ -105,13 +105,17 @@ start the server.
 5. Generates a scoped JWT bound to that session
 6. Returns token and user information
 
-### Authenticated Game Creation
+### Game Creation and Sides
 1. HTTP handler receives `POST /games` with optional Bearer token
-2. Middleware validates JWT if present
-3. Creates CreateGameCommand with user ID context
-4. Processor creates game with user ID for human players
-5. Service associates game with authenticated user
-6. Returns game with player IDs matching user
+2. Middleware validates JWT if present; the session lookup names the user
+3. The handler builds the actor: user ID and name, and the hash of the seat
+   secret the request presents (`X-Chess-Seat`), either of which may be absent
+4. The creator takes one human side: the `side` asked for, else White (or
+   Black) when signed in. A signed-in creator claims it by name; a guest
+   gets a seat, whose secret only this answer carries
+5. `POST /games/{id}/join` gives an open side the same way, without a move,
+   and wakes long-polls
+6. A held side acts only for its holder; an open one for anyone with the ID
 
 ### Human Move (Authenticated)
 1. HTTP handler receives `POST /games/{id}/moves` with move
@@ -281,9 +285,9 @@ Profile data is not placed in the token; clients read it from `/auth/me`.
 Commands encapsulate operations with type, arguments, and optional user ID for authenticated requests.
 
 ### Player Configuration
-Players identified by UUID (authenticated users) or generated IDs (anonymous), configured with type (human/computer), skill level, and search time.
+Players identified by UUID (authenticated users) or generated IDs (anonymous), configured with type (human/computer), skill level, and search time. A human side is held by an account's claim or a guest's seat, or is open.
 
-### Storage Schema (version 5)
+### Storage Schema (version 6)
 ```sql
 users (
     user_id uuid PRIMARY KEY,
@@ -310,6 +314,8 @@ games (
     white_search_time integer NOT NULL,
     white_claimed_by uuid,                  -- user that owns the slot
     white_name text,                        -- claimant's username at claim time
+    white_seat bytea,                       -- SHA-256 of a guest's seat secret;
+                                            --   never beside a claim
     black_... (same columns),
     start_time_utc timestamptz NOT NULL,
     result text,                            -- white_wins, black_wins, draw, stalemate
@@ -349,7 +355,7 @@ moves (
 Version 3 added the `concession_*` columns: a rewind clears `result` and
 `termination` but keeps them, and the first concession is never overwritten.
 Version 4 added `password_resets`, one pending reset per account; version 5
-the import columns. Indexes cover session and reset expiry, each claim column
+the import columns; version 6 the guest seats. Indexes cover session and reset expiry, each claim column
 and `imported_by` ordered by `(start_time_utc DESC, game_id DESC)` for the
 game listing, and the start time of games with neither claim nor importer for
 the anonymous-game purge.
@@ -400,6 +406,7 @@ See [`deploy/postgresql`](../deploy/postgresql) for provisioning,
 
 ### Data Protection
 - Passwords never stored in plaintext
+- A guest's seat secret is shown once and stored as its SHA-256, compared in constant time
 - JWT key from a 0600 key file, or rotated on restart (fixed in dev mode)
 - Database access by Unix-socket peer authentication; no stored DB password
 - User IDs use UUIDs with collision detection

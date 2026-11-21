@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -28,7 +29,7 @@ func TestMoveCommitClaimsSlotPersistsResultAndRejectsStalePosition(t *testing.T)
 	ended := time.Date(2026, 9, 7, 2, 3, 4, 0, time.UTC)
 	commit := MoveCommit{
 		ExpectedFEN: "initial", ExpectedState: core.StateOngoing, ExpectedTurn: core.ColorWhite,
-		ActorUserID: userID, MoveUCI: "e2e4", NewFEN: "after", State: core.StateWhiteWins, Termination: core.TermCheckmate, At: ended,
+		Actor: core.Actor{UserID: userID}, MoveUCI: "e2e4", NewFEN: "after", State: core.StateWhiteWins, Termination: core.TermCheckmate, At: ended,
 		Result: &game.MoveResult{Move: "e2e4", PlayerColor: core.ColorWhite, GameState: core.StateWhiteWins},
 	}
 	if err := svc.ApplyMoveWithState(gameID, commit); err != nil {
@@ -71,7 +72,7 @@ func TestUndoClearsDurableTerminalResult(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.UndoMoves(gameID, 1, ""); err != nil {
+	if err := svc.UndoMoves(gameID, 1, core.Actor{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -101,7 +102,7 @@ func TestPlayerReconfigurationPreservesClaimAndPersistsConfiguration(t *testing.
 	replacementBlack := core.NewPlayer(
 		core.PlayerConfig{Type: core.PlayerComputer, Level: 12, SearchTime: 500}, core.ColorBlack,
 	)
-	if err := svc.UpdatePlayers(gameID, replacementWhite, replacementBlack, userID); err != nil {
+	if err := svc.UpdatePlayers(gameID, replacementWhite, replacementBlack, core.Actor{UserID: userID}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -119,7 +120,7 @@ func TestPlayerReconfigurationPreservesClaimAndPersistsConfiguration(t *testing.
 	computerWhite := core.NewPlayer(
 		core.PlayerConfig{Type: core.PlayerComputer, Level: 8, SearchTime: 300}, core.ColorWhite,
 	)
-	if err := svc.UpdatePlayers(gameID, computerWhite, replacementBlack, userID); err != nil {
+	if err := svc.UpdatePlayers(gameID, computerWhite, replacementBlack, core.Actor{UserID: userID}); err != nil {
 		t.Fatal(err)
 	}
 	history, err = svc.GetGameHistory(t.Context(), gameID)
@@ -260,12 +261,12 @@ func TestOnlyAnUnfinishedPlayedGameResumesFromItsRows(t *testing.T) {
 	// A resignation the undo takes back stays on record.
 	view, _ := svc.GetGameView(gameID)
 	if err := svc.EndGame(gameID, EndCommit{
-		ExpectedFEN: view.FEN, Color: core.ColorWhite, ActorUserID: user.UserID,
+		ExpectedFEN: view.FEN, Color: core.ColorWhite, Actor: core.Actor{UserID: user.UserID},
 		State: core.StateBlackWins, Termination: core.TermResignation,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.UndoMoves(gameID, 1, user.UserID); err != nil {
+	if err := svc.UndoMoves(gameID, 1, core.Actor{UserID: user.UserID}); err != nil {
 		t.Fatal(err)
 	}
 	before, _ := svc.GetGameView(gameID)
@@ -292,7 +293,7 @@ func TestOnlyAnUnfinishedPlayedGameResumesFromItsRows(t *testing.T) {
 	if after.FEN != before.FEN || !slices.Equal(after.Moves, before.Moves) || !slices.Equal(after.FENs, before.FENs) ||
 		after.NextTurnColor != before.NextTurnColor || after.State != core.StateOngoing ||
 		after.WhitePlayer.ClaimedBy != user.UserID || after.WhitePlayer.ID != before.WhitePlayer.ID ||
-		*after.BlackPlayer != *before.BlackPlayer || !near(after.StartTimeUTC, before.StartTimeUTC) ||
+		!reflect.DeepEqual(after.BlackPlayer, before.BlackPlayer) || !near(after.StartTimeUTC, before.StartTimeUTC) ||
 		!near(after.MoveTimes[1], before.MoveTimes[1]) {
 		t.Fatalf("resumed game differs:\n got %+v\nwant %+v", after, before)
 	}

@@ -80,6 +80,62 @@ func TestGameBetweenHumansNeedsNoEngine(t *testing.T) {
 	}
 }
 
+// TestSideOfACreateOrJoinIsHeldByItsTaker: a guest gets the secret of the side
+// it takes in that one answer, and the side then moves only for it; a
+// signed-in joiner claims by name.
+func TestSideOfACreateOrJoinIsHeldByItsTaker(t *testing.T) {
+	svc, err := service.New(nil, []byte("test-secret-test-secret-test-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &Processor{svc: svc}
+	human := core.PlayerConfig{Type: core.PlayerHuman}
+	run := func(cmd Command, actor core.Actor) (core.GameResponse, string) {
+		cmd.Actor = actor
+		resp := p.Execute(t.Context(), cmd)
+		if !resp.Success {
+			return core.GameResponse{}, resp.Error.Code
+		}
+		return resp.Data.(core.GameResponse), ""
+	}
+
+	created, code := run(NewCreateGameCommand(core.CreateGameRequest{White: human, Black: human, Side: "b"}), core.Actor{})
+	if code != "" || created.Side != "b" || created.Seat == "" || !created.Players.Black.Seated || created.Players.White.Seated {
+		t.Fatalf("guest creates as black: %+v %s", created, code)
+	}
+	guest := core.Actor{Seat: service.SeatHash(created.Seat)}
+	if shown, _ := run(NewGetGameCommand(created.GameID), guest); shown.Seat != "" || shown.Side != "" {
+		t.Errorf("the seat is shown again: %+v", shown)
+	}
+	move := func(uci string, actor core.Actor) string {
+		_, code := run(NewMakeMoveCommand(created.GameID, core.MoveRequest{Move: uci}), actor)
+		return code
+	}
+	if code := move("e2e4", core.Actor{}); code != "" {
+		t.Fatalf("the open side refused a move: %s", code)
+	}
+	if code := move("e7e5", core.Actor{}); code != core.ErrUnauthorized {
+		t.Errorf("the seated side moved without its seat: %q", code)
+	}
+	if code := move("e7e5", guest); code != "" {
+		t.Errorf("the seated side refused its guest: %s", code)
+	}
+
+	alice := core.Actor{UserID: "0b8f2f0c-8a53-4d11-9f0e-1b1a3c1d2e3f", Name: "alice"}
+	joined, code := run(NewJoinGameCommand(created.GameID, core.JoinRequest{}), alice)
+	if code != "" || joined.Side != "w" || joined.Seat != "" || joined.Players.White.ClaimedBy != alice.UserID ||
+		joined.Players.White.Name != "alice" {
+		t.Fatalf("user joins the open side: %+v %s", joined, code)
+	}
+	if _, code := run(NewJoinGameCommand(created.GameID, core.JoinRequest{}), core.Actor{}); code != core.ErrConflict {
+		t.Errorf("join with no side open: %q, want %s", code, core.ErrConflict)
+	}
+	computer := core.PlayerConfig{Type: core.PlayerComputer, Level: 1, SearchTime: 100}
+	if _, code := run(NewCreateGameCommand(core.CreateGameRequest{White: human, Black: computer, Side: "black"}), core.Actor{}); code != core.ErrInvalidRequest {
+		t.Errorf("taking the computer's side: %q, want %s", code, core.ErrInvalidRequest)
+	}
+}
+
 // TestShadowLogsOnlyDisagreement: the engine's position after a move is held
 // against the ruling, whatever en-passant convention it prints.
 func TestShadowLogsOnlyDisagreement(t *testing.T) {
@@ -205,7 +261,7 @@ func TestActingColor(t *testing.T) {
 		"claimed by another":        {view(human("u1"), computer), "", "u2", 0, core.ErrUnauthorized},
 		"claimed, anonymous caller": {view(human("u1"), computer), "", "", 0, core.ErrUnauthorized},
 	} {
-		color, failure := actingColor(tc.view, tc.requested, tc.user)
+		color, failure := actingColor(tc.view, tc.requested, core.Actor{UserID: tc.user})
 		switch {
 		case tc.code != "" && (failure == nil || failure.Error.Code != tc.code):
 			t.Errorf("%s: got %v %+v, want error %s", name, color, failure, tc.code)

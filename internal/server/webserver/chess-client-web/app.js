@@ -33,6 +33,8 @@ const GAMES_PAGE_SIZE = 20;
 const RECENT_GAMES_KEY = 'chess.recentGames';
 const RECENT_GAMES_MAX = 20;
 const RECENT_GAMES_TTL_MS = 24 * 60 * 60 * 1000; // the server's anonymous-game retention
+const SEATS_KEY = 'chess.seats';
+const SEATS_TTL_MS = 8 * 24 * 60 * 60 * 1000;    // past the week a game stays in memory
 
 // The live game played on this board.
 const live = {
@@ -47,6 +49,9 @@ const live = {
     lastMove: null,
     isPlayerWhite: true,
     level: 10,
+    friend: false,       // both sides are people: the game is watched, not polled
+    opponent: null,      // the other side's player, as the server last gave it
+    drawOffer: '',       // the side whose draw offer stands
     isLocked: false,     // the computer is thinking
     polling: false,
     pollController: null,
@@ -94,6 +99,7 @@ const ui = {
     mail: 'unknown',    // "ok" when the server emails password-reset links
     toastTimer: null,
     historyCache: new Map(), // gameId -> {etag, history}
+    seats: new Map(),        // gameId -> {seat, side}, also for a blocked localStorage
 };
 
 const $ = id => document.getElementById(id);
@@ -258,12 +264,44 @@ function authFetch(url, options = {}) {
 }
 
 function apiJSON(method, path, body) {
-    const options = { method, headers: {} };
+    const options = { method, headers: seatHeader(path) };
     if (body !== undefined) {
         options.headers['Content-Type'] = 'application/json';
         options.body = JSON.stringify(body);
     }
     return authFetch(`${API}${path}`, options);
+}
+
+// A guest holds a side with a secret the server shows once, when the side is
+// taken; it is kept per game on this device and sent with that game's requests.
+function loadSeats() {
+    let seats = {};
+    try {
+        seats = JSON.parse(localStorage.getItem(SEATS_KEY) || '{}') || {};
+    } catch {
+        seats = {};
+    }
+    const cutoff = Date.now() - SEATS_TTL_MS;
+    return Object.fromEntries(Object.entries(seats).filter(([, s]) => s && s.seat && (s.at || 0) > cutoff));
+}
+
+function saveSeat(gameId, seat, side) {
+    try {
+        localStorage.setItem(SEATS_KEY, JSON.stringify({ ...loadSeats(), [gameId]: { seat, side, at: Date.now() } }));
+    } catch {
+        // storage blocked: the seat lasts as long as the page
+    }
+    ui.seats.set(gameId, { seat, side });
+}
+
+function seatFor(gameId) {
+    return ui.seats.get(gameId) || loadSeats()[gameId] || null;
+}
+
+function seatHeader(path) {
+    const id = /^\/api\/games\/([0-9a-f-]{36})/i.exec(path)?.[1];
+    const held = id && seatFor(id);
+    return held ? { 'X-Chess-Seat': held.seat } : {};
 }
 
 // Shared helper: safely parse error response regardless of Content-Type
@@ -1075,12 +1113,22 @@ function setNewGameModalBusy(busy) {
     for (const id of ['start-game-btn', 'cancel-btn', 'computer-level', 'search-time', 'starting-fen']) {
         $(id).disabled = busy;
     }
-    document.querySelectorAll('input[name="player-color"]').forEach(r => r.disabled = busy);
+    document.querySelectorAll('input[name="player-color"], input[name="opponent"]').forEach(r => r.disabled = busy);
+}
+
+// The engine's sliders show only for a game against it.
+function updateOpponentChoice() {
+    const friend = document.querySelector('input[name="opponent"]:checked').value === 'friend';
+    $('level-group').classList.toggle('hidden', friend);
+    $('time-group').classList.toggle('hidden', friend);
+    setModalHint('new-game-modal-message', friend
+        ? 'You get a link to send; your friend opens it and takes the other side.'
+        : 'Level 0 is a beginner, 20 is full strength; the search time is how long it thinks per move.');
 }
 
 function showNewGameModal() {
     if (replay.active) return;
-    setModalHint('new-game-modal-message', 'Level 0 is a beginner, 20 is full strength; the search time is how long it thinks per move.');
+    updateOpponentChoice();
     $('modal-overlay').classList.add('show');
     document.addEventListener('keydown', handleModalKeydown);
     $('start-game-btn').focus();
@@ -1141,12 +1189,16 @@ async function startNewGame() {
     const searchTime = parseInt($('search-time').value, 10);
     const startingFEN = $('starting-fen').value.trim();
     const willBePlayerWhite = chosenColor === 'white';
+    const friend = document.querySelector('input[name="opponent"]:checked').value === 'friend';
 
-    const computer = { type: 2, level: computerLevel, searchTime };
+    // Against a friend the creator takes its side at once: a claim when
+    // signed in, a guest's seat otherwise. The other side waits for the link.
+    const other = friend ? { type: 1 } : { type: 2, level: computerLevel, searchTime };
     const requestBody = {
-        white: willBePlayerWhite ? { type: 1 } : computer,
-        black: willBePlayerWhite ? computer : { type: 1 },
+        white: willBePlayerWhite ? { type: 1 } : other,
+        black: willBePlayerWhite ? other : { type: 1 },
     };
+    if (friend) requestBody.side = willBePlayerWhite ? 'w' : 'b';
     if (startingFEN && startingFEN !== START_FEN) requestBody.fen = startingFEN;
 
     setNewGameModalBusy(true);
@@ -1180,22 +1232,26 @@ async function startNewGame() {
         return;
     }
 
-    adoptGame(game, {
-        isPlayerWhite: willBePlayerWhite, initialFen: game.fen, level: computerLevel, anonymous: !auth.token,
-    });
+    if (game.seat) saveSeat(game.gameId, game.seat, game.side);
+    adoptGame(game, willBePlayerWhite ? 'w' : 'b', !auth.token);
 
     setModalMessage('new-game-modal-message', `Game started — you play ${willBePlayerWhite ? 'White' : 'Black'}`, 'success');
     setTimeout(hideNewGameModal, MODAL_SUCCESS_DISPLAY_MS);
 }
 
-// Makes a game the live one on the board, new or resumed, and sets the
-// computer going when it is to move or already thinking.
-function adoptGame(game, { isPlayerWhite, initialFen, level, anonymous }) {
+// Makes a game the live one on the board, new, resumed or joined, with the
+// visitor on side. A game against a friend is watched from here on; against
+// the computer, the engine is set going when it is to move or thinking.
+function adoptGame(game, side, anonymous) {
     stopPolling();
-    live.isPlayerWhite = isPlayerWhite;
+    const opponent = side === 'w' ? game.players?.black : game.players?.white;
+    live.isPlayerWhite = side === 'w';
     live.gameId = game.gameId;
-    live.initialFen = initialFen;
-    live.level = level;
+    live.initialFen = game.initialFen || game.fen;
+    live.friend = opponent?.type !== 2;
+    live.level = opponent?.level ?? 0;
+    live.opponent = null;
+    live.drawOffer = '';
     live.moves = [];
     live.san = [];
     live.isLocked = false;
@@ -1203,7 +1259,10 @@ function adoptGame(game, { isPlayerWhite, initialFen, level, anonymous }) {
     live.anonymous = anonymous;
     buildBoard(!live.isPlayerWhite);
     updateGameDisplay(game);
-    if (game.state === 'pending') {
+    replaceURL();
+    if (live.friend) {
+        watchGame();
+    } else if (game.state === 'pending') {
         lockBoard();
         startPolling();
     } else if (isPlayable(game.state) && game.turn !== playerColor()) {
@@ -1211,16 +1270,31 @@ function adoptGame(game, { isPlayerWhite, initialFen, level, anonymous }) {
     }
 }
 
-// The side the visitor would continue an unfinished game as: the human side,
-// theirs, of a game against the computer. Null when there is nothing to
-// continue.
+// A side is held by an account's claim or a guest's seat; an open one is
+// neither.
+function isHeld(player) {
+    return !!(player?.claimedBy || player?.seated);
+}
+
+// The side of a game the visitor plays: the one their account claimed or
+// their seat holds, else the open human side of a game against the computer.
+// Null for a game they have no place in yet.
+function sideOf(gameId, players) {
+    const seat = seatFor(gameId)?.side;
+    for (const [side, p] of [['w', players?.white], ['b', players?.black]]) {
+        if (p?.type !== 1) continue;
+        if ((auth.userId && p.claimedBy === auth.userId) || (p.seated && seat === side) || p.you) return side;
+    }
+    if (players?.white?.type === 1 && players?.black?.type === 2 && !isHeld(players.white)) return 'w';
+    if (players?.black?.type === 1 && players?.white?.type === 2 && !isHeld(players.black)) return 'b';
+    return null;
+}
+
+// The side the visitor would continue an unfinished game as, or null when
+// there is nothing to continue.
 function continueSide(summary) {
     if (summary.result || summary.origin === 'imported' || summary.gameId === live.gameId) return null;
-    const white = summary.players?.white, black = summary.players?.black;
-    const mine = p => p?.type === 1 && (summary.local || (!!auth.userId && p.claimedBy === auth.userId));
-    if (mine(white) && black?.type === 2) return 'w';
-    if (mine(black) && white?.type === 2) return 'b';
-    return null;
+    return sideOf(summary.gameId, summary.players);
 }
 
 // Puts an unfinished stored game back on the board. The server loads it from
@@ -1244,12 +1318,119 @@ async function continueGame(summary, side) {
         return;
     }
     const game = await response.json();
-    const opponent = side === 'w' ? game.players?.black : game.players?.white;
-    adoptGame(game, {
-        isPlayerWhite: side === 'w', initialFen: summary.initialFen, level: opponent?.level ?? 0,
-        anonymous: !!summary.local,
-    });
+    adoptGame(game, side, !!summary.local);
     if (!isGameOver(game.state)) toast('Game resumed', 'success');
+}
+
+// Opens the game a link names (?game=<id>): on the visitor's side when they
+// have one, with an offer to join when a side is open, as a replay otherwise.
+async function openGame(gameId) {
+    let response;
+    try {
+        response = await apiJSON('GET', `/api/games/${gameId}`);
+    } catch (error) {
+        handleApiError('open game', error);
+        return;
+    }
+    if (response.status === 404) {
+        enterReplay(gameId, 0, { push: false }); // finished and unloaded, or gone
+        return;
+    }
+    if (!response.ok) {
+        handleApiError('open game', null, response);
+        return;
+    }
+    const game = await response.json();
+    const side = sideOf(gameId, game.players);
+    const open = ['w', 'b'].filter(c => {
+        const p = c === 'w' ? game.players?.white : game.players?.black;
+        return p?.type === 1 && !isHeld(p);
+    });
+    if (isGameOver(game.state)) {
+        enterReplay(gameId, (game.moves || []).length, { push: false });
+    } else if (side) {
+        if (replay.active) exitReplay({ push: false });
+        adoptGame(game, side, !auth.token);
+    } else if (open.length > 0) {
+        showJoinModal(game, open);
+    } else {
+        toast('Both sides of this game are taken; here is its replay', 'info', 4000);
+        enterReplay(gameId, (game.moves || []).length, { push: false });
+    }
+}
+
+// --- join: the open side of a game someone sent the link to
+
+const join = { gameId: null, busy: false };
+
+function showJoinModal(game, open) {
+    join.gameId = game.gameId;
+    join.busy = false;
+    const host = ['w', 'b'].map(c => (c === 'w' ? game.players?.white : game.players?.black))
+        .find(p => p?.type === 1 && isHeld(p));
+    setModalHint('join-modal-message', host
+        ? `${playerLabel(host) === 'Anonymous' ? 'A guest' : playerLabel(host)} invites you to a game.`
+        : 'Both sides of this game are open.');
+    const buttons = $('join-buttons');
+    buttons.querySelectorAll('.join-side').forEach(b => b.remove());
+    for (const side of open) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn btn-primary join-side';
+        button.dataset.side = side;
+        button.textContent = `Play ${side === 'w' ? 'White' : 'Black'}`;
+        button.addEventListener('click', () => joinGame(side));
+        buttons.insertBefore(button, $('join-cancel-btn'));
+    }
+    $('join-overlay').classList.add('show');
+    document.removeEventListener('keydown', handleJoinKeydown);
+    document.addEventListener('keydown', handleJoinKeydown);
+    buttons.querySelector('.join-side').focus();
+}
+
+function hideJoinModal() {
+    if (join.busy) return;
+    $('join-overlay').classList.remove('show');
+    document.removeEventListener('keydown', handleJoinKeydown);
+    replaceURL();
+}
+
+function handleJoinKeydown(e) {
+    if (e.key === 'Escape') {
+        e.preventDefault();
+        hideJoinModal();
+    }
+}
+
+// Takes the side: a claim for a signed-in visitor, a seat for a guest.
+async function joinGame(side) {
+    if (join.busy || !join.gameId) return;
+    join.busy = true;
+    $('join-buttons').querySelectorAll('button').forEach(b => b.disabled = true);
+    const finish = () => {
+        join.busy = false;
+        $('join-buttons').querySelectorAll('button').forEach(b => b.disabled = false);
+    };
+    let response;
+    try {
+        response = await apiJSON('POST', `/api/games/${join.gameId}/join`, { color: side });
+    } catch (error) {
+        finish();
+        setModalMessage('join-modal-message', handleApiError('join', error).statusMessage, 'error');
+        return;
+    }
+    finish();
+    if (!response.ok) {
+        const err = await parseErrorResponse(response);
+        setModalMessage('join-modal-message', response.status === 409
+            ? 'Someone else took that side first.' : (err.error || `Server error (${response.status})`), 'error');
+        return;
+    }
+    const game = await response.json();
+    if (game.seat) saveSeat(game.gameId, game.seat, game.side);
+    hideJoinModal();
+    if (replay.active) exitReplay({ push: false });
+    adoptGame(game, game.side || side, !auth.token);
 }
 
 function handleSquareClick(e) {
@@ -1354,7 +1535,7 @@ async function handleHumanMove(from, to) {
         flashSquare(fromEl, true);
         flashSquare(toEl, true);
         updateGameDisplay(game);
-        if (isPlayable(game.state)) triggerComputerMove();
+        if (!live.friend && isPlayable(game.state)) triggerComputerMove();
     } catch (error) {
         handleApiError('move', error);
     }
@@ -1394,6 +1575,40 @@ function stopPolling() {
     if (live.pollController) {
         live.pollController.abort();
         live.pollController = null;
+    }
+}
+
+// Watches a game against a friend for as long as it is on the board: each
+// long-poll returns on a move, a join, a draw offer or answer, or a result.
+async function watchGame() {
+    const gameId = live.gameId;
+    stopPolling();
+    const controller = live.pollController = new AbortController();
+    const watching = () => live.gameId === gameId && live.friend && !controller.signal.aborted &&
+        !replay.active && isPlayable(live.state);
+    const retry = () => new Promise(resolve => setTimeout(resolve, 2000));
+    while (watching()) {
+        let response;
+        try {
+            response = await authFetch(`${API}/api/games/${gameId}?wait=true&moveCount=${live.moves.length}`,
+                { signal: controller.signal });
+        } catch (error) {
+            if (error.name === 'AbortError') return;
+            await retry(); // the server is restarting, or the network is away
+            continue;
+        }
+        if (!watching()) return;
+        if (response.status === 404) {
+            flashErrorMessage('Game no longer exists');
+            dropLiveGame();
+            return;
+        }
+        if (!response.ok) {
+            await retry();
+            continue;
+        }
+        setServerStatus('healthy');
+        updateGameDisplay(await response.json());
     }
 }
 
@@ -1454,7 +1669,7 @@ function unlockBoard() {
 }
 
 async function undoMoves() {
-    if (live.isLocked || replay.active || !live.gameId) return;
+    if (live.isLocked || replay.active || !live.gameId || live.friend) return;
     if (live.moves.length < 2) return;
     // A resignation or agreed draw stays on record when play continues.
     const conceded = isGameOver(live.state) &&
@@ -1484,7 +1699,8 @@ async function offerDraw() {
     live.actionBusy = true;
     updateGameControls();
     try {
-        const response = await apiJSON('POST', `/api/games/${live.gameId}/draw`, { action: 'offer', color: playerColor() });
+        const action = offeredDraw() ? 'accept' : 'offer';
+        const response = await apiJSON('POST', `/api/games/${live.gameId}/draw`, { action, color: playerColor() });
         if (response.status === 409) {
             flashErrorMessage('Make a move before offering again', 2500);
             return;
@@ -1495,6 +1711,7 @@ async function offerDraw() {
         }
         const game = await response.json();
         if (game.drawOutcome === 'declined') toast('Draw declined', 'info', 2500);
+        if (game.drawOutcome === 'offered') toast('Draw offered', 'info', 2500);
         live.actionBusy = false;
         updateGameDisplay(game);
     } catch (error) {
@@ -1552,13 +1769,16 @@ async function resignGame() {
 // list, controls, and a result message when the game just ended.
 function updateGameDisplay(game) {
     const wasOver = isGameOver(live.state);
+    const waited = !!live.opponent && !isHeld(live.opponent), hadOffer = offeredDraw();
     live.fen = game.fen;
     live.turn = game.turn;
     live.state = game.state;
     live.termination = game.termination || '';
     live.moves = game.moves || [];
     live.san = Array.isArray(game.san) && game.san.length === live.moves.length ? game.san : [];
-    live.lastMove = game.lastMove?.move || null;
+    live.lastMove = game.lastMove?.move || game.moves?.[game.moves.length - 1] || null;
+    live.opponent = (live.isPlayerWhite ? game.players?.black : game.players?.white) || null;
+    live.drawOffer = game.drawOffer || '';
 
     if (!replay.active) renderLive();
     renderLiveMoves();
@@ -1567,7 +1787,21 @@ function updateGameDisplay(game) {
     if (live.anonymous && live.gameId) recordRecentGame(game);
     if (!wasOver && isGameOver(game.state)) {
         toast(describeResult(game.state, game.termination), 'info', 4000);
+    } else if (live.friend && waited && isHeld(live.opponent)) {
+        toast(`${opponentName()} joined the game`, 'info', 3000);
+    } else if (offeredDraw() && !hadOffer) {
+        toast(`${opponentName()} offers a draw: Draw accepts it, a move declines`, 'info', 5000);
     }
+}
+
+// The opponent of a game against a friend, by name when they have one.
+function opponentName() {
+    return live.opponent?.name || 'Your friend';
+}
+
+// Whether the opponent's draw offer stands, for this side to answer.
+function offeredDraw() {
+    return live.friend && !!live.drawOffer && live.drawOffer !== playerColor();
 }
 
 // Shows the live position on the shared board.
@@ -1619,8 +1853,17 @@ function updateTurnStrip() {
         // The dot shows the side to move; the text says whose it is.
         status = live.turn === 'w' ? 'white' : 'black';
         const side = live.turn === 'w' ? 'White' : 'Black';
-        label = live.turn === playerColor() ? 'Your move' : 'Computer';
-        title = `${side} to move: ${live.turn === playerColor() ? 'you' : 'the computer'}`;
+        const mine = live.turn === playerColor();
+        if (!live.friend) {
+            label = mine ? 'Your move' : 'Computer';
+            title = `${side} to move: ${mine ? 'you' : 'the computer'}`;
+        } else if (!mine && !isHeld(live.opponent)) {
+            label = 'Waiting for a friend';
+            title = 'Nobody has taken the other side yet: send the link';
+        } else {
+            label = mine ? 'Your move' : (live.opponent?.name || 'Friend');
+            title = `${side} to move: ${mine ? 'you' : opponentName().toLowerCase()}`;
+        }
     }
     dot.dataset.status = status;
     text.textContent = label;
@@ -1632,10 +1875,30 @@ function updateTurnStrip() {
 function updateGameControls() {
     const hasGame = !!live.gameId;
     const idle = !live.isLocked && !live.actionBusy;
-    $('undo-btn').disabled = !hasGame || live.isLocked || live.moves.length < 2;
-    $('draw-btn').disabled = !hasGame || !idle || live.state !== 'ongoing';
+    // Two players do not take each other's moves back, and one offer stands
+    // until it is answered.
+    const offered = hasGame && offeredDraw(), offering = hasGame && live.friend && live.drawOffer === playerColor();
+    $('undo-btn').disabled = !hasGame || live.isLocked || live.moves.length < 2 || live.friend;
+    const draw = $('draw-btn');
+    draw.disabled = !hasGame || !idle || live.state !== 'ongoing' || offering;
+    draw.textContent = offered ? 'Accept' : 'Draw';
+    draw.classList.toggle('offered', offered);
+    draw.title = offered ? `${opponentName()} offers a draw: press to accept` :
+        offering ? 'Your offer stands until it is answered' : 'Offer a draw';
     $('resign-btn').disabled = !hasGame || live.actionBusy || isGameOver(live.state);
+    $('invite-row').classList.toggle('hidden',
+        !hasGame || !live.friend || isHeld(live.opponent) || !isPlayable(live.state));
     updateLiveTools();
+}
+
+async function copyInviteLink() {
+    if (!live.gameId) return;
+    if (await copyText(`${location.origin}${location.pathname}?game=${live.gameId}`)) {
+        markDone($('invite-copy-btn'));
+        toast('Link copied: send it to your friend', 'success', 2500);
+    } else {
+        flashErrorMessage('Copy failed');
+    }
 }
 
 function updateLiveTools() {
@@ -1729,6 +1992,7 @@ function recordRecentGame(game) {
         initialFen: existing?.initialFen || startingFenOfLive(),
         playerColor: live.isPlayerWhite ? 'w' : 'b',
         level: live.level,
+        friend: live.friend,
         moveCount: (game.moves || []).length,
         finalFen: game.fen,
         state: game.state,
@@ -1739,8 +2003,8 @@ function recordRecentGame(game) {
 
 // A local entry in the shape of a stored-game summary, for the shared row.
 function recentToSummary(g) {
-    const you = { type: 1, name: 'You' };
-    const engine = { type: 2, level: g.level };
+    const you = { type: 1, name: 'You', you: true };
+    const engine = g.friend ? { type: 1, name: 'Friend' } : { type: 2, level: g.level };
     const result = isGameOver(g.state) ? g.state.replace(' ', '_') : '';
     return {
         gameId: g.gameId,
@@ -2079,6 +2343,9 @@ function dropLiveGame() {
     live.san = [];
     live.lastMove = null;
     live.isLocked = false;
+    live.friend = false;
+    live.opponent = null;
+    live.drawOffer = '';
     live.selectedSquare = null;
     if (!replay.active) renderPosition(START_FEN);
     renderLiveMoves();
@@ -2293,8 +2560,9 @@ function exitReplay({ push = true } = {}) {
     if (live.gameId) renderLive(); else renderPosition(START_FEN);
     $('ply-announcer').textContent = '';
     if (push) pushURL();
-    // A computer move may have completed meanwhile.
-    if (live.gameId && live.isLocked) startPolling();
+    // A move may have been made meanwhile, by the computer or by a friend.
+    if (live.gameId && live.friend) watchGame();
+    else if (live.gameId && live.isLocked) startPolling();
     updateGameControls();
 }
 
@@ -2537,13 +2805,16 @@ async function copyReplayLink() {
 
 // -------------------------------------------------------------- routing
 
-// The URL names the view: ?replay=<id>&ply=<n> for a replay, with &games
-// while the drawer is open. Views push history entries; stepping through a
-// replay replaces the entry, so back and forward move between views.
+// The URL names the view: ?replay=<id>&ply=<n> for a replay, ?game=<id> for
+// a game against a friend (its invite link), with &games while the drawer is
+// open. Views push history entries; stepping through a replay replaces the
+// entry, so back and forward move between views.
 function urlForState() {
     const parts = [];
     if (replay.active && replay.gameId) {
         parts.push(`replay=${encodeURIComponent(replay.gameId)}`, `ply=${replay.ply}`);
+    } else if (live.gameId && live.friend) {
+        parts.push(`game=${encodeURIComponent(live.gameId)}`);
     }
     if (games.open) parts.push('games');
     return location.pathname + (parts.length ? `?${parts.join('&')}` : '');
@@ -2567,8 +2838,11 @@ async function applyURL() {
     const id = params.get('replay');
     const ply = parseInt(params.get('ply') || '0', 10);
     const wantGames = params.has('games');
+    const invited = params.get('game');
 
-    if (id && isUUID(id)) {
+    if (invited && isUUID(invited) && invited !== live.gameId && !id) {
+        await openGame(invited);
+    } else if (id && isUUID(id)) {
         if (!replay.active || replay.gameId !== id) {
             await enterReplay(id, ply, { push: false });
         } else if (replay.history) {
@@ -2617,6 +2891,9 @@ function bindEvents() {
     $('resign-confirm-btn').addEventListener('click', resignGame);
     $('resign-cancel-btn').addEventListener('click', hideResignModal);
     $('start-game-btn').addEventListener('click', startNewGame);
+    document.querySelectorAll('input[name="opponent"]').forEach(r => r.addEventListener('change', updateOpponentChoice));
+    $('invite-copy-btn').addEventListener('click', copyInviteLink);
+    $('join-cancel-btn').addEventListener('click', hideJoinModal);
     $('cancel-btn').addEventListener('click', hideNewGameModal);
     $('copy-fen-btn').addEventListener('click', copyLiveFen);
     $('copy-pgn-btn').addEventListener('click', copyLivePgn);
@@ -2660,6 +2937,7 @@ function bindEvents() {
     backdrop('resign-overlay', hideResignModal);
     backdrop('reset-overlay', closeResetModal);
     backdrop('import-overlay', closeImportModal);
+    backdrop('join-overlay', hideJoinModal);
 
     $('games-import-btn').addEventListener('click', openImportModal);
     $('import-submit-btn').addEventListener('click', submitImport);

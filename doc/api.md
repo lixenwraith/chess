@@ -204,6 +204,13 @@ Creates new game with specified players. Optional authentication associates game
 Authorization: Bearer <token>
 ```
 
+`side` (`w`, `b`, `white`, `black`; optional) is the human side the creator
+takes: a claim when signed in, a guest's seat otherwise (see [Claims, seats
+and control](#claims-seats-and-control)). Without it a signed-in creator
+claims White if human, else Black, and a guest takes nothing. The response
+then carries `side`, and for a guest `seat`, the secret of that seat, which
+no later response repeats.
+
 **Request:**
 ```json
 {
@@ -225,6 +232,7 @@ Authorization: Bearer <token>
 ```json
 {
   "gameId": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
+  "initialFen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
   "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
   "turn": "w",
   "state": "ongoing",
@@ -238,6 +246,8 @@ Authorization: Bearer <token>
 ```
 
 Note: When authenticated, human player IDs match the user's ID. Anonymous players receive unique UUIDs.
+A claimed side also carries `claimedBy` and `name`, the claimant's username
+when the claim was made; a side a guest holds carries `"seated": true`.
 
 A custom `fen` must describe a position that can arise in a game: one king
 per side, no pawn on the first or last rank, and the side not to move not in
@@ -552,8 +562,7 @@ already dead, or whose halfmove clock is at 100, is created drawn.
 
 Ends the game in the other side's favor, with `termination: "resignation"`.
 `color` (`w`, `b`, `white`, `black`) may be omitted when the server can infer
-the side: the one side the authenticated caller claimed, else the only human
-side. Allowed while the game is unfinished, including while the computer is
+the side: the one side the caller holds, else the only human side. Allowed while the game is unfinished, including while the computer is
 thinking (its move is discarded) or the engine is stuck.
 
 #### Offer, accept, or decline a draw
@@ -577,9 +586,9 @@ Allowed only while `state` is `ongoing`.
 - **One offer per move:** after an offer is declined, the same side must make
   a move before offering again (409 `GAME_CONFLICT`).
 
-Resign and draw share the move endpoint's authorization: a side claimed by a
-user acts only for that user (403 `UNAUTHORIZED`), and an authenticated
-resignation or acceptance claims an unclaimed side as a first move would.
+Resign and draw share the move endpoint's authorization: a held side acts
+only for its holder (403 `UNAUTHORIZED`), and an authenticated resignation
+or acceptance claims an open side as a first move would.
 Other errors are 400: `GAME_OVER` for a finished game, `INVALID_REQUEST` for
 an ambiguous or computer side, a missing offer, or a game that is not
 ongoing. Both return the game.
@@ -597,22 +606,49 @@ A resignation or agreed draw is a *concession*: a result the players chose.
   History reports it, and the full PGN notes it in the final comment, such as
   `{ White resigned at ply 24; play continued. }`.
 
-### Claims and control
+### Claims, seats and control
 
-Anyone holding the game ID may move for, undo, reconfigure, or unload an
-unclaimed side; a claim is what protects a player. Moves, resignation, and
-draws act for one side and need that side's claim (or none). The requests
-below affect both sides, so:
+A human side is open, or held: by an account's **claim**, or by a guest's
+**seat**.
 
-| Request | Allowed when |
-|---|---|
-| undo, configure players | no side is claimed by another user: the caller holds every claim, or nothing is claimed |
-| delete (unload) | the caller holds a claim, or nothing is claimed |
+- A claim is made by creating the game while signed in, by joining, or by a
+  first authenticated move, resignation or draw acceptance on an open side.
+  Requests act for it with the bearer token.
+- A seat is taken by a guest creating the game with `side`, or joining. The
+  answer carries its secret once, in `seat`; requests act for it with
+  `X-Chess-Seat: <seat>`. The server keeps only the secret's SHA-256.
+- An open side takes a move from anyone holding the game ID, and a guest's
+  move leaves it open.
 
-Otherwise they return 403 `UNAUTHORIZED`. Two players who each claimed a
-side therefore cannot take back each other's moves or swap the opponent for
-the computer: takebacks between players are not supported. Send the bearer
-token (optional authentication) with these requests.
+Moves, resignation, and draws act for one side and need to be its holder (or
+the side open). The requests below affect both sides, so:
+
+- undo, configure players: allowed when nobody else holds a side (the caller
+  holds every held side, or none is held)
+- delete (unload): allowed when the caller holds a side, or none is held
+
+Otherwise they return 403 `UNAUTHORIZED`. Two players who each hold a side
+therefore cannot take back each other's moves or swap the opponent for the
+computer: takebacks between players are not supported.
+
+A seat does not make a game a registered player's: a game no account claims
+is purged 24 hours after its last activity, seats or not.
+
+### Join a Game
+`POST /games/{gameId}/join`
+
+```json
+{"color": "b"}
+```
+
+Takes an open human side without a move: `color`, or the only open one (400
+when both are open and none is named). A signed-in caller claims it; a guest
+gets a seat. Returns the game with `side`, and for a guest `seat`. A caller
+who already holds a side gets it back unchanged. Waiting long-polls wake.
+
+Errors: 409 `GAME_CONFLICT` when the side is taken, 400 `GAME_OVER` for a
+finished game, 400 `INVALID_REQUEST` for a computer's side, 404 for an
+unknown game.
 
 ### Undo Moves
 `POST /games/{gameId}/undo`
@@ -623,14 +659,15 @@ token (optional authentication) with these requests.
 
 Reverts `count` plies (default 1). Allowed after a result: it rewinds the
 result and clears draw offers. Refused while the computer is thinking, after
-a resignation or agreed draw between two humans (400 `GAME_OVER`), and by
-another user's claim (403, see [Claims and control](#claims-and-control)).
+a resignation or agreed draw between two humans (400 `GAME_OVER`), and when
+another player holds a side (403, see [Claims, seats and
+control](#claims-seats-and-control)).
 
 ### Configure Players
 `PUT /games/{gameId}/players`
 
-Changes player configuration mid-game; subject to [Claims and
-control](#claims-and-control).
+Changes player configuration mid-game; subject to [Claims, seats and
+control](#claims-seats-and-control). A claim or a seat stays with its side.
 
 ### Get Board
 `GET /games/{gameId}/board`
@@ -643,7 +680,7 @@ Returns ASCII board visualization.
 Unloads the live game from memory. Its persisted game and move history remain
 available through the history endpoint, and an unfinished one resumes on its
 next request. Returns 204 on success, 404 when it is not in memory, 403 to a
-caller holding none of the game's claims.
+caller holding none of the game's held sides.
 
 ## Error Format
 ```json
@@ -657,11 +694,11 @@ caller holding none of the game's claims.
 Error codes:
 - `GAME_NOT_FOUND` - No live game with that ID, and no unfinished stored one to resume
 - `NOT_FOUND` - No such endpoint (for example a server older than the client)
-- `UNAUTHORIZED` - A side or the game is claimed by another user
+- `UNAUTHORIZED` - A side or the game is held by another player
 - `INVALID_MOVE` - Illegal chess move
 - `NOT_HUMAN_TURN` - Wrong player type for turn
 - `GAME_OVER` - Game already ended
-- `GAME_CONFLICT` - Game changed while a move was being validated; refresh and retry
+- `GAME_CONFLICT` - Game changed while a move was being validated (refresh and retry), or the side to join is taken
 - `STORAGE_UNAVAILABLE` - Durable history/list storage is disabled or degraded, or a stored game could not be read to resume it
 - `RATE_LIMIT_EXCEEDED` - Request limit exceeded
 - `INVALID_REQUEST` - Malformed request

@@ -76,9 +76,16 @@
                     <button id="draw-btn" class="btn btn-secondary" type="button" title="Offer a draw" disabled>Draw</button>
                     <button id="resign-btn" class="btn btn-secondary" type="button" title="Resign this game" disabled>Resign</button>
                 </div>
+                <div class="invite hidden" id="invite-row">
+                    <span class="invite-text">Send your friend the link to this game.</span>
+                    <button id="invite-copy-btn" class="btn btn-tool" type="button" title="Copy the invite link">
+                        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1.5 1.5M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1.5-1.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                        <span>Copy link</span>
+                    </button>
+                </div>
                 <div class="moves" id="live-moves-box">
                     <div class="move-grid" id="live-moves" aria-label="Moves"></div>
-                    <p class="moves-empty" id="live-moves-empty">Start a game to play Stockfish, or open <strong>My games</strong> to replay one.</p>
+                    <p class="moves-empty" id="live-moves-empty">Start a game against Stockfish or a friend, or open <strong>My games</strong> to replay one.</p>
                 </div>
                 <div class="toolbar" role="group" aria-label="Export">
                     <button id="copy-fen-btn" class="btn btn-tool" type="button" title="Copy the current position as FEN" disabled>
@@ -349,17 +356,24 @@
         <h2 id="new-game-title">New game</h2>
         <div id="new-game-modal-message" class="modal-message" role="status" aria-live="polite"></div>
         <div class="form-group form-row">
+            <span class="group-label" id="opponent-label">Opponent</span>
+            <div class="radio-group" role="radiogroup" aria-labelledby="opponent-label">
+                <label><input type="radio" name="opponent" value="computer" checked><span>Computer</span></label>
+                <label><input type="radio" name="opponent" value="friend"><span>Friend</span></label>
+            </div>
+        </div>
+        <div class="form-group form-row">
             <span class="group-label" id="player-color-label">Your colour</span>
             <div class="radio-group" role="radiogroup" aria-labelledby="player-color-label">
                 <label><input type="radio" name="player-color" value="white" checked><span>White</span></label>
                 <label><input type="radio" name="player-color" value="black"><span>Black</span></label>
             </div>
         </div>
-        <div class="form-group">
+        <div class="form-group" id="level-group">
             <label for="computer-level">Computer level: <span id="level-value">10</span></label>
             <input type="range" id="computer-level" min="0" max="20" value="10">
         </div>
-        <div class="form-group">
+        <div class="form-group" id="time-group">
             <label for="search-time">Search time: <span id="time-value">1000</span> ms</label>
             <input type="range" id="search-time" min="100" max="10000" step="100" value="1000">
         </div>
@@ -371,6 +385,17 @@
         <div class="modal-buttons">
             <button id="start-game-btn" class="btn btn-primary" type="button">Start game</button>
             <button id="cancel-btn" class="btn btn-secondary" type="button">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<!-- Join Modal: an invite link (?game=<id>) to a game with an open side -->
+<div id="join-overlay" class="modal-overlay">
+    <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="join-title">
+        <h2 id="join-title">Join this game?</h2>
+        <div id="join-modal-message" class="modal-message" role="status" aria-live="polite"></div>
+        <div class="modal-buttons" id="join-buttons">
+            <button id="join-cancel-btn" class="btn btn-secondary" type="button">Not now</button>
         </div>
     </div>
 </div>

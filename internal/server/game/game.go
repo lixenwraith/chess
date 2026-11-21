@@ -417,23 +417,41 @@ func (g *Game) InitialFEN() string {
 	return chess.StartFEN
 }
 
-// ClaimSlot requires the caller to hold the service lock.
-func (g *Game) ClaimSlot(color core.Color, userID string) error {
-	player := g.players[color]
-	if player == nil {
-		return fmt.Errorf("invalid color")
+// ClaimSlot gives an open human side to a signed-in user, with the name the
+// user has now; repeating one's own claim changes nothing. The caller holds
+// the service lock.
+func (g *Game) ClaimSlot(color core.Color, userID, name string) error {
+	player, err := g.openSide(color, core.Actor{UserID: userID})
+	if err != nil || player.ClaimedBy == userID {
+		return err
 	}
-
-	if player.Type != core.PlayerHuman {
-		return fmt.Errorf("cannot claim computer slot")
-	}
-
-	if player.ClaimedBy != "" && player.ClaimedBy != userID {
-		return fmt.Errorf("slot already claimed by another user")
-	}
-
-	player.ClaimedBy = userID
+	player.ClaimedBy, player.Name = userID, name
 	return nil
+}
+
+// SeatGuest gives an open human side to the guest whose secret hashes to
+// seat. The caller holds the service lock.
+func (g *Game) SeatGuest(color core.Color, seat []byte) error {
+	player, err := g.openSide(color, core.Actor{Seat: seat})
+	if err != nil || player.Seated {
+		return err
+	}
+	player.Seat, player.Seated = seat, true
+	return nil
+}
+
+// openSide returns color's human side when a may take it or holds it already.
+func (g *Game) openSide(color core.Color, a core.Actor) (*core.Player, error) {
+	player := g.players[color]
+	switch {
+	case player == nil:
+		return nil, fmt.Errorf("invalid color")
+	case player.Type != core.PlayerHuman:
+		return nil, fmt.Errorf("cannot take a computer's side")
+	case !player.Admits(a):
+		return nil, fmt.Errorf("side already held by another player")
+	}
+	return player, nil
 }
 
 // ReleaseUser clears userID's claims and name snapshots, leaving those slots
@@ -448,14 +466,4 @@ func (g *Game) ReleaseUser(userID string) bool {
 		}
 	}
 	return changed
-}
-
-// GetSlotOwner returns the slot's claimant, empty if unclaimed; the caller
-// holds the service lock.
-func (g *Game) GetSlotOwner(color core.Color) string {
-	player := g.players[color]
-	if player == nil {
-		return ""
-	}
-	return player.ClaimedBy
 }

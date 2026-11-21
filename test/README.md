@@ -231,7 +231,9 @@ My games, replays it with the buttons and the keyboard, autoplays to the end,
 compares the FEN and PGN it exports (copy and download) with the API, follows
 a deep link to a checkmate, steps back through the browser history, replays
 an anonymous game from the device list, continues an unfinished game the
-server unloaded, checks that a phone-sized viewport holds the board and the
+server unloaded, plays a game between two browsers through its invite link
+(a join, a draw offer, a resignation), checks that a phone-sized viewport
+holds the board and the
 controls without scrolling, and resets a forgotten password through the link
 in the emailed message (needs `MAIL_DIR`).
 

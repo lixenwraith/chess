@@ -283,7 +283,8 @@ func (s *Service) GenerateUserToken(userID, sessionID string) (string, error) {
 	return s.jwt.GenerateToken(userID, map[string]any{"session_id": sessionID})
 }
 
-// ValidateToken also requires a live session that belongs to the token's subject.
+// ValidateToken also requires a live session that belongs to the token's
+// subject, and adds the user's current name to the claims as "username".
 func (s *Service) ValidateToken(ctx context.Context, token string) (string, map[string]any, error) {
 	userID, claims, err := s.jwt.ValidateToken(token)
 	if err != nil {
@@ -297,13 +298,14 @@ func (s *Service) ValidateToken(ctx context.Context, token string) (string, map[
 	if !ok || sessionID == "" {
 		return "", nil, fmt.Errorf("token has no persisted session")
 	}
-	valid, err := s.store.IsSessionValidForUser(ctx, sessionID, userID)
+	username, err := s.store.SessionUser(ctx, sessionID, userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil, fmt.Errorf("session invalidated")
+	}
 	if err != nil {
 		return "", nil, fmt.Errorf("%w: validate token session: %v", ErrStorageUnavailable, err)
 	}
-	if !valid {
-		return "", nil, fmt.Errorf("session invalidated")
-	}
+	claims["username"] = username
 
 	return userID, claims, nil
 }

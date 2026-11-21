@@ -14,9 +14,11 @@ Go backend server providing a RESTful API for chess gameplay with user authentic
 - User registration and JWT authentication
 - Stockfish engine integration for computer opponents
 - Human vs human, human vs computer, computer vs computer modes
+- Games between two people by invite link, in the web client too: a side is
+  held by an account's claim or, for a guest, by a seat secret
 - Resignation, draw offers (the computer answers from its evaluation), and
   automatic draws: dead material, threefold repetition, fifty-move rule
-- Claimed sides protect players: no takebacks between two players, and a
+- Held sides protect players: no takebacks between two players, and a
   resignation or agreed draw between humans is final; against the computer it
   can be undone and stays on record
 - Custom FEN position support
@@ -176,6 +178,8 @@ The chess server includes an embedded web UI for playing games through a browser
 
 - Visual chess board with click-to-move and a promotion picker
 - Human vs Computer gameplay, with undo, draw offers and resignation
+- **Play a friend**: an invite link (`?game=<gameId>`), a join prompt for the
+  open side, live moves, draw offers and resignation, with or without accounts
 - Configurable engine strength (0-20) and custom starting positions
 - Move list in standard algebraic notation; copy the FEN or the PGN
 - **My games**: a signed-in user's stored games with thumbnails, filters and

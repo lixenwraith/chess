@@ -63,6 +63,9 @@ func authenticate(c *fiber.Ctx, validateToken TokenValidator, token string) erro
 	if sessionID, ok := claims["session_id"].(string); ok {
 		c.Locals("sessionID", sessionID)
 	}
+	if username, ok := claims["username"].(string); ok {
+		c.Locals("username", username)
+	}
 	return c.Next()
 }
 

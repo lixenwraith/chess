@@ -43,7 +43,7 @@ func move(t *testing.T, svc *Service, gameID, actor, uci string) {
 	}
 	if err := svc.ApplyMoveWithState(gameID, MoveCommit{
 		ExpectedFEN: view.FEN, ExpectedState: core.StateOngoing, ExpectedTurn: view.NextTurnColor,
-		ActorUserID: actor, MoveUCI: uci, NewFEN: pos.Play(m).FEN(), State: core.StateOngoing,
+		Actor: core.Actor{UserID: actor}, MoveUCI: uci, NewFEN: pos.Play(m).FEN(), State: core.StateOngoing,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -56,25 +56,25 @@ func TestResignationClaimsAndPersists(t *testing.T) {
 
 	view, _ := svc.GetGameView(gameID)
 	resign := EndCommit{
-		ExpectedFEN: view.FEN, Color: core.ColorWhite, ActorUserID: bob,
+		ExpectedFEN: view.FEN, Color: core.ColorWhite, Actor: core.Actor{UserID: bob},
 		State: core.StateBlackWins, Termination: core.TermResignation,
 	}
 	if err := svc.EndGame(gameID, resign); !errors.Is(err, ErrSlotOwner) {
 		t.Fatalf("resigning another user's side: %v, want ErrSlotOwner", err)
 	}
 	stale := resign
-	stale.ActorUserID, stale.ExpectedFEN = alice, chess.StartFEN
+	stale.Actor, stale.ExpectedFEN = core.Actor{UserID: alice}, chess.StartFEN
 	if err := svc.EndGame(gameID, stale); !errors.Is(err, ErrGameChanged) {
 		t.Fatalf("stale position: %v, want ErrGameChanged", err)
 	}
 	wrong := resign
-	wrong.ActorUserID, wrong.Termination = alice, core.TermAgreement
+	wrong.Actor, wrong.Termination = core.Actor{UserID: alice}, core.TermAgreement
 	if err := svc.EndGame(gameID, wrong); err == nil {
 		t.Fatal("a win by agreement was accepted")
 	}
 
 	// Black resigns anonymously; an authenticated resignation would claim it.
-	resign.Color, resign.ActorUserID, resign.State = core.ColorBlack, bob, core.StateWhiteWins
+	resign.Color, resign.Actor, resign.State = core.ColorBlack, core.Actor{UserID: bob}, core.StateWhiteWins
 	if err := svc.EndGame(gameID, resign); err != nil {
 		t.Fatal(err)
 	}
@@ -99,13 +99,13 @@ func TestResignationClaimsAndPersists(t *testing.T) {
 	// nor an anonymous caller can take it back, and the players cannot be
 	// reconfigured around it.
 	for _, actor := range []string{alice, bob, ""} {
-		if err := svc.UndoMoves(gameID, 1, actor); !errors.Is(err, ErrSlotOwner) {
+		if err := svc.UndoMoves(gameID, 1, core.Actor{UserID: actor}); !errors.Is(err, ErrSlotOwner) {
 			t.Fatalf("undo by %q after a two-player resignation: %v, want ErrSlotOwner", actor, err)
 		}
 	}
 	computer := core.NewPlayer(core.PlayerConfig{Type: core.PlayerComputer, Level: 1, SearchTime: 100}, core.ColorBlack)
 	white := core.NewPlayer(core.PlayerConfig{Type: core.PlayerHuman}, core.ColorWhite)
-	if err := svc.UpdatePlayers(gameID, white, computer, alice); !errors.Is(err, ErrSlotOwner) {
+	if err := svc.UpdatePlayers(gameID, white, computer, core.Actor{UserID: alice}); !errors.Is(err, ErrSlotOwner) {
 		t.Fatalf("reconfiguring around a resignation: %v, want ErrSlotOwner", err)
 	}
 	if history.Concession == nil || history.Concession.Result != "white_wins" ||
@@ -120,7 +120,7 @@ func TestConcessionBetweenHumansIsFinal(t *testing.T) {
 	gameID := newHumanGame(t, svc)
 	move(t, svc, gameID, "", "e2e4")
 	view, _ := svc.GetGameView(gameID)
-	if err := svc.OfferDraw(gameID, core.ColorBlack, "", view.FEN); err != nil {
+	if err := svc.OfferDraw(gameID, core.ColorBlack, core.Actor{}, view.FEN); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.EndGame(gameID, EndCommit{
@@ -129,7 +129,7 @@ func TestConcessionBetweenHumansIsFinal(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.UndoMoves(gameID, 1, ""); !errors.Is(err, ErrConcessionFinal) {
+	if err := svc.UndoMoves(gameID, 1, core.Actor{}); !errors.Is(err, ErrConcessionFinal) {
 		t.Fatalf("undo after an agreed draw between humans: %v, want ErrConcessionFinal", err)
 	}
 }
@@ -152,7 +152,7 @@ func TestConcessionAgainstComputerStaysOnRecord(t *testing.T) {
 		t.Helper()
 		view, _ := svc.GetGameView(gameID)
 		if err := svc.EndGame(gameID, EndCommit{
-			ExpectedFEN: view.FEN, Color: core.ColorWhite, ActorUserID: alice,
+			ExpectedFEN: view.FEN, Color: core.ColorWhite, Actor: core.Actor{UserID: alice},
 			State: core.StateBlackWins, Termination: core.TermResignation,
 		}); err != nil {
 			t.Fatal(err)
@@ -160,10 +160,10 @@ func TestConcessionAgainstComputerStaysOnRecord(t *testing.T) {
 	}
 	resign()
 
-	if err := svc.UndoMoves(gameID, 2, ""); !errors.Is(err, ErrSlotOwner) {
+	if err := svc.UndoMoves(gameID, 2, core.Actor{}); !errors.Is(err, ErrSlotOwner) {
 		t.Fatalf("anonymous undo of a claimed game: %v, want ErrSlotOwner", err)
 	}
-	if err := svc.UndoMoves(gameID, 2, alice); err != nil {
+	if err := svc.UndoMoves(gameID, 2, core.Actor{UserID: alice}); err != nil {
 		t.Fatal(err)
 	}
 	view, _ := svc.GetGameView(gameID)
@@ -195,29 +195,29 @@ func TestDrawOffersBetweenHumans(t *testing.T) {
 	move(t, svc, gameID, "", "e2e4")
 
 	view, _ := svc.GetGameView(gameID)
-	if err := svc.OfferDraw(gameID, core.ColorBlack, "", view.FEN); err != nil {
+	if err := svc.OfferDraw(gameID, core.ColorBlack, core.Actor{}, view.FEN); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.OfferDraw(gameID, core.ColorBlack, "", view.FEN); err != nil {
+	if err := svc.OfferDraw(gameID, core.ColorBlack, core.Actor{}, view.FEN); err != nil {
 		t.Fatalf("repeating a standing offer: %v", err)
 	}
 	if view, _ = svc.GetGameView(gameID); view.DrawOffer != core.ColorBlack {
 		t.Fatalf("offer not recorded: %+v", view)
 	}
-	if err := svc.DeclineDraw(gameID, core.ColorBlack, ""); !errors.Is(err, ErrNoDrawOffer) {
+	if err := svc.DeclineDraw(gameID, core.ColorBlack, core.Actor{}); !errors.Is(err, ErrNoDrawOffer) {
 		t.Fatalf("declining one's own offer: %v", err)
 	}
-	if err := svc.DeclineDraw(gameID, core.ColorWhite, ""); err != nil {
+	if err := svc.DeclineDraw(gameID, core.ColorWhite, core.Actor{}); err != nil {
 		t.Fatal(err)
 	}
 	// One offer per move: black must move before offering again.
-	if err := svc.OfferDraw(gameID, core.ColorBlack, "", view.FEN); !errors.Is(err, ErrOfferLimit) {
+	if err := svc.OfferDraw(gameID, core.ColorBlack, core.Actor{}, view.FEN); !errors.Is(err, ErrOfferLimit) {
 		t.Fatalf("second offer in one move: %v, want ErrOfferLimit", err)
 	}
 	move(t, svc, gameID, "", "e7e5")
 	move(t, svc, gameID, "", "g1f3")
 	view, _ = svc.GetGameView(gameID)
-	if err := svc.OfferDraw(gameID, core.ColorBlack, "", view.FEN); err != nil {
+	if err := svc.OfferDraw(gameID, core.ColorBlack, core.Actor{}, view.FEN); err != nil {
 		t.Fatalf("offer after a move: %v", err)
 	}
 	// The offerer's own move keeps the offer standing ...
@@ -231,7 +231,7 @@ func TestDrawOffersBetweenHumans(t *testing.T) {
 		t.Fatalf("offer survived the recipient's move: %v", view.DrawOffer)
 	}
 
-	if err := svc.OfferDraw(gameID, core.ColorWhite, "", view.FEN); err != nil {
+	if err := svc.OfferDraw(gameID, core.ColorWhite, core.Actor{}, view.FEN); err != nil {
 		t.Fatal(err)
 	}
 	view, _ = svc.GetGameView(gameID)
@@ -356,5 +356,92 @@ func TestDegradedStorageResyncsFromMemory(t *testing.T) {
 	move(t, svc, gameID, "", "b8c6")
 	if history, err := svc.GetGameHistory(ctx, gameID); err != nil || len(history.Moves) != 4 {
 		t.Fatalf("move after recovery: %+v, %v", history, err)
+	}
+}
+
+// TestSeatHoldsASideForAGuestAndAJoinClaimsOneForAUser: a seat protects a
+// side as a claim does, survives the game leaving memory, and leaves the game
+// anonymous; a signed-in join claims with the user's name.
+func TestSeatHoldsASideForAGuestAndAJoinClaimsOneForAUser(t *testing.T) {
+	svc := newPersistentTestService(t)
+	ctx := t.Context()
+	_, seatA, _ := NewSeat()
+	_, seatB, _ := NewSeat()
+	guestA, guestB := core.Actor{Seat: seatA}, core.Actor{Seat: seatB}
+
+	gameID := newHumanGame(t, svc)
+	if _, _, err := svc.JoinGame(gameID, 0, core.Actor{}, seatA); !errors.Is(err, ErrSideRequired) {
+		t.Fatalf("join with both sides open: %v, want ErrSideRequired", err)
+	}
+	if side, taken, err := svc.JoinGame(gameID, core.ColorWhite, core.Actor{}, seatA); err != nil || side != core.ColorWhite || !taken {
+		t.Fatalf("guest joins white: %v %v %v", side, taken, err)
+	}
+	_, other, _ := NewSeat()
+	if side, taken, err := svc.JoinGame(gameID, 0, guestA, other); err != nil || side != core.ColorWhite || taken {
+		t.Fatalf("the guest who holds white joins again: %v %v %v", side, taken, err)
+	}
+	if side, taken, err := svc.JoinGame(gameID, 0, core.Actor{}, seatB); err != nil || side != core.ColorBlack || !taken {
+		t.Fatalf("second guest joins: %v %v %v", side, taken, err)
+	}
+	if _, _, err := svc.JoinGame(gameID, 0, core.Actor{}, other); !errors.Is(err, ErrSideTaken) {
+		t.Fatalf("third guest: %v, want ErrSideTaken", err)
+	}
+
+	play := func(actor core.Actor, uci string) error {
+		view, _ := svc.GetGameView(gameID)
+		pos, _ := chess.ParseFEN(view.FEN)
+		m, _ := pos.ParseUCI(uci)
+		return svc.ApplyMoveWithState(gameID, MoveCommit{
+			ExpectedFEN: view.FEN, ExpectedState: core.StateOngoing, ExpectedTurn: view.NextTurnColor,
+			Actor: actor, MoveUCI: uci, NewFEN: pos.Play(m).FEN(), State: core.StateOngoing,
+		})
+	}
+	for name, actor := range map[string]core.Actor{"nobody": {}, "the other guest": guestB, "a user": {UserID: uuid.NewString()}} {
+		if err := play(actor, "e2e4"); !errors.Is(err, ErrSlotOwner) {
+			t.Errorf("white moved for %s: %v", name, err)
+		}
+	}
+	if err := play(guestA, "e2e4"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.UndoMoves(gameID, 1, guestA); !errors.Is(err, ErrSlotOwner) {
+		t.Errorf("takeback between two seated guests: %v, want ErrSlotOwner", err)
+	}
+
+	// The seats are stored: they hold after the game left memory.
+	unload(svc, gameID)
+	if err := svc.LoadGame(ctx, gameID); err != nil {
+		t.Fatal(err)
+	}
+	if err := play(guestA, "e7e5"); !errors.Is(err, ErrSlotOwner) {
+		t.Errorf("black moved for the white guest after a reload: %v", err)
+	}
+	if err := play(guestB, "e7e5"); err != nil {
+		t.Fatal(err)
+	}
+	history, err := svc.GetGameHistory(ctx, gameID)
+	if err != nil || !history.Players.White.Seated || !history.Players.Black.Seated || history.Players.White.ClaimedBy != "" {
+		t.Fatalf("stored seats: %+v %+v, %v", history.Players.White, history.Players.Black, err)
+	}
+	// Guests are not registered players: the game is purged as anonymous.
+	svc.cleanupGames(time.Now().UTC().Add(AnonymousGameTTL + time.Hour))
+	if _, err := svc.GetGameHistory(ctx, gameID); !errors.Is(err, ErrGameNotFound) {
+		t.Errorf("a game of two guests outlived the anonymous retention: %v", err)
+	}
+
+	user, _, err := svc.RegisterUser(ctx, "alice", "", "Password1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	alice := core.Actor{UserID: user.UserID, Name: user.Username}
+	claimed := newHumanGame(t, svc)
+	if side, _, err := svc.JoinGame(claimed, core.ColorBlack, alice, nil); err != nil || side != core.ColorBlack {
+		t.Fatalf("user joins black: %v %v", side, err)
+	}
+	view, _ := svc.GetGameView(claimed)
+	history, err = svc.GetGameHistory(ctx, claimed)
+	if view.BlackPlayer.ClaimedBy != user.UserID || view.BlackPlayer.Name != "alice" || view.BlackPlayer.Seated ||
+		err != nil || history.Players.Black.Name != "alice" {
+		t.Fatalf("joined claim: live %+v, stored %+v, %v", view.BlackPlayer, history.Players.Black, err)
 	}
 }
