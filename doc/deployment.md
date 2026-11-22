@@ -284,9 +284,10 @@ server's API paths:
   (`index.html`, `app.js`, `style.css`) to the site directory. It takes its
   API base from its script element, `<script src="app.js" data-api="…">`,
   which the embedded server sets from `-web-api-url`; without one, as copied,
-  it uses the `/chess` API prefix. Its text is lixen.com's font, Hack Nerd
-  Font, from the host's `/fonts/hack-400.woff2` and `hack-700.woff2`; a host
-  without them, the embedded server among them, shows the system's monospace.
+  it uses the `/chess` API prefix. Its text is lixen.com's Hack Proportional,
+  from the host's `/fonts/hack-proportional-400.woff2` and `-700.woff2`, and its
+  FEN and PGN fields Hack, from `/fonts/hack-400.woff2`; a host without them,
+  the embedded server among them, shows the system's fonts.
 - **WASM terminal client (if published):** `make wasm` (xterm.js and its
   licence are committed under `lib/`), then copy `web/chess-client-wasm/`.
   `terminal.js` runs the client in the page's `#chess-terminal`, whose

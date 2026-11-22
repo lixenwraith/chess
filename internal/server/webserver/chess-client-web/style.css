@@ -38,8 +38,9 @@
 
     --radius: 8px;
     --radius-sm: 6px;
-    /* The site's stack: its text is monospace too, so one serves text and figures. */
-    --font: 'Hack Nerd Font', ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+    /* The site's stacks: Hack Proportional for text, Hack for notation (FEN, PGN). */
+    --font: 'Hack Proportional', system-ui, sans-serif;
+    --font-mono: 'Hack Nerd Font', ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
 
     /* Side by side, the board (its edge holds the coordinates) takes the
        height under the top bar, or the width the panel's minimum leaves, and
@@ -52,9 +53,27 @@
     --board-pad: clamp(14px, 1.04vw, 20px);
 }
 
-/* lixen.com's two files, from /fonts/ on the host that publishes the client;
-   a host without them shows the stack's next font. As on the site, size-adjust
-   draws it at 90% and weights 500 and 600 fall to the 400 and 700 there are. */
+/* lixen.com's files, from /fonts/ on the host that publishes the client; a host
+   without them shows the stack's next font. As on the site, size-adjust draws
+   them at 90% and weights 500 and 600 fall to the 400 and 700 there are. */
+@font-face {
+    font-family: 'Hack Proportional';
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    size-adjust: 90%;
+    src: url('/fonts/hack-proportional-400.woff2') format('woff2');
+}
+
+@font-face {
+    font-family: 'Hack Proportional';
+    font-style: normal;
+    font-weight: 700;
+    font-display: swap;
+    size-adjust: 90%;
+    src: url('/fonts/hack-proportional-700.woff2') format('woff2');
+}
+
 @font-face {
     font-family: 'Hack Nerd Font';
     font-style: normal;
@@ -64,17 +83,7 @@
     src: url('/fonts/hack-400.woff2') format('woff2');
 }
 
-@font-face {
-    font-family: 'Hack Nerd Font';
-    font-style: normal;
-    font-weight: 700;
-    font-display: swap;
-    size-adjust: 90%;
-    src: url('/fonts/hack-700.woff2') format('woff2');
-}
-
-/* Pieces keep the system's sans-serif symbol glyphs: a monospace font, the
-   text's, would draw them narrowed to its cell. */
+/* Pieces keep the system's sans-serif symbol glyphs, which the site's faces lack. */
 #board, .mini-board, .promotion-choices { font-family: sans-serif; }
 
 html, body {
@@ -803,6 +812,7 @@ input[type="range"]:focus-visible { outline: 2px solid var(--periwinkle); outlin
 }
 
 .fen-input {
+    font-family: var(--font-mono);
     font-size: 0.82rem;
     resize: none;
     white-space: pre-wrap;
