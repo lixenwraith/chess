@@ -1,4 +1,4 @@
-/* Chess web client. Dark theme matching lixen.com. The board colours and
+/* Chess web client in lixen.com's dark theme and font. The board colours and
    piece glyph treatment are fixed (see pieceMap in app.js); everything else is
    open. State is classes and data attributes, never inline style. Two layouts
    share the markup: board beside the panel from 700px up, board over the
@@ -38,8 +38,8 @@
 
     --radius: 8px;
     --radius-sm: 6px;
-    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+    /* The site's stack: its text is monospace too, so one serves text and figures. */
+    --font: 'Hack Nerd Font', ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
 
     /* Side by side, the board (its edge holds the coordinates) takes the
        height under the top bar, or the width the panel's minimum leaves, and
@@ -51,6 +51,31 @@
     --board-edge: clamp(280px, min(100vw - var(--panel-min) - 3.5rem, 100vh - var(--topbar-height) - 2rem), 840px);
     --board-pad: clamp(14px, 1.04vw, 20px);
 }
+
+/* lixen.com's two files, from /fonts/ on the host that publishes the client;
+   a host without them shows the stack's next font. As on the site, size-adjust
+   draws it at 90% and weights 500 and 600 fall to the 400 and 700 there are. */
+@font-face {
+    font-family: 'Hack Nerd Font';
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    size-adjust: 90%;
+    src: url('/fonts/hack-400.woff2') format('woff2');
+}
+
+@font-face {
+    font-family: 'Hack Nerd Font';
+    font-style: normal;
+    font-weight: 700;
+    font-display: swap;
+    size-adjust: 90%;
+    src: url('/fonts/hack-700.woff2') format('woff2');
+}
+
+/* Pieces keep the system's sans-serif symbol glyphs: a monospace font, the
+   text's, would draw them narrowed to its cell. */
+#board, .mini-board, .promotion-choices { font-family: sans-serif; }
 
 html, body {
     margin: 0;
@@ -491,7 +516,6 @@ body[data-mode="replay"] .pane-live { display: none; }
     display: grid;
     grid-template-columns: 2.4rem 1fr 1fr;
     gap: 0.15rem 0.3rem;
-    font-family: var(--mono);
     font-size: 0.88rem;
     align-items: stretch;
 }
@@ -581,7 +605,7 @@ body[data-mode="replay"] .pane-live { display: none; }
 }
 
 .replay-result { color: var(--fg); font-weight: 600; }
-.replay-ply { margin-left: auto; color: var(--muted); font-family: var(--mono); font-size: 0.78rem; white-space: nowrap; }
+.replay-ply { margin-left: auto; color: var(--muted); font-size: 0.78rem; white-space: nowrap; }
 
 .replay-players {
     color: var(--fg);
@@ -613,7 +637,7 @@ body[data-mode="replay"] .pane-live { display: none; }
 }
 
 .analysis-head { display: flex; align-items: baseline; gap: 0.5rem; min-height: 1.35rem; }
-.analysis-eval { color: var(--fg); font-family: var(--mono); font-weight: 600; font-size: 0.95rem; }
+.analysis-eval { color: var(--fg); font-weight: 600; font-size: 0.95rem; }
 .analysis-note { color: var(--muted); font-size: 0.78rem; }
 
 .analysis-lines {
@@ -625,7 +649,7 @@ body[data-mode="replay"] .pane-live { display: none; }
 }
 
 .analysis-lines li { display: flex; gap: 0.5rem; white-space: nowrap; }
-.analysis-score { flex: none; width: 3.1rem; color: var(--fg); font-family: var(--mono); text-align: right; }
+.analysis-score { flex: none; width: 3.1rem; color: var(--fg); text-align: right; }
 .analysis-moves { color: var(--fg-soft); overflow: hidden; text-overflow: ellipsis; }
 
 .replay-nav {
@@ -779,7 +803,6 @@ input[type="range"]:focus-visible { outline: 2px solid var(--periwinkle); outlin
 }
 
 .fen-input {
-    font-family: var(--mono);
     font-size: 0.82rem;
     resize: none;
     white-space: pre-wrap;
@@ -1088,7 +1111,7 @@ input[type="range"]:focus-visible { outline: 2px solid var(--periwinkle); outlin
 }
 
 .game-outcome { font-size: 0.82rem; }
-.game-outcome .pgn-result { font-family: var(--mono); color: var(--yellow); margin-right: 0.35rem; }
+.game-outcome .pgn-result { color: var(--yellow); margin-right: 0.35rem; }
 .game-outcome.ongoing .pgn-result { color: var(--green); }
 
 .game-when { font-size: 0.78rem; color: var(--muted); }
@@ -1171,13 +1194,9 @@ input[type="range"]:focus-visible { outline: 2px solid var(--periwinkle); outlin
     :root {
         /* Reserve under the board, in rem so a larger system font grows it:
            top bar 2.5 + gap 0.4 + turn strip 2 + controls 2.25 + move list 4
-           + toolbar 2.25 + gaps and padding 2.35 = 15.75rem. Small viewport
-           units, so the browser's bars never cover the panel. At a 1.5x
-           system font (rem 24px) on a 412x734 viewport this still leaves a
-           356px board; the move list scrolls inside its 4rem. The replay
-           pane is taller (head, navigation, export, exit), so a replay
-           reserves more and the board gives way on a short screen rather
-           than the controls dropping below the fold. */
+           + toolbar 2.25 + gaps and padding 2.35 = 15.75rem, in small viewport
+           units so the browser's bars never cover the panel. A replay reserves
+           more (below): its board gives way before its controls leave the fold. */
         --board-edge: max(240px, min(100vw, calc(100svh - 15.75rem)));
         --board-pad: 14px;
     }

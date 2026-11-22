@@ -63,6 +63,12 @@ sudo CHESS_BINARY=bin/chess-server TRUSTED_PROXIES=127.0.0.1 deploy/linux/setup.
 sudo chess-db user add -username <name>             # prompts for the password
 ```
 
+`chess-db` is no program of its own but the wrapper the script installs for
+the server's `db` commands: `sudo chess-db <command>` runs
+`chess-server db <command>` as `chess` with the service's `CHESSD_DSN`, the
+form every command in [database.md](database.md#the-servers-db-commands) takes
+here.
+
 The script is idempotent: rerun it with a new binary to upgrade. It stops
 `chessd`, installs everything, migrates the schema, starts the service, and
 fails unless `/health` reports `"storage":"ok"`.
@@ -82,7 +88,7 @@ What it installs:
 |---|---|
 | account `chess` | System account, no login shell, home `/var/lib/chessd` |
 | `/usr/local/bin/chess-server` | The server, `root:root 0755`; the previous copy kept as `.prev` |
-| `/usr/local/sbin/chess-db` | Runs `chess-server db ...` as `chess` against the database: `chess-db user list`, `chess-db verify` |
+| `/usr/local/sbin/chess-db` | The wrapper for `chess-server db <command>`, run as `chess` with `CHESSD_DSN`: `chess-db user list`, `chess-db verify` |
 | `/etc/chessd/chessd.env` | Settings, `root:chess 0640`; written on the first install only |
 | `/var/lib/chessd/jwt.key` | JWT signing key, `chess 0600`, generated once; sessions survive restarts |
 | `/etc/systemd/system/chessd.service` | The service unit, replaced on every run |
@@ -221,7 +227,7 @@ test/run-test-server.sh bin/chess-server     # then test/test-*.sh in another te
 systemctl is-active chessd                                  # active
 curl -s http://127.0.0.1:8080/health                        # "storage":"ok"
 ps -o user= -C chess-server                                 # chess
-sudo -u postgres psql -X -d chess -c '\dt chess.*'          # six tables
+sudo -u postgres psql -X -d chess -c '\dt chess.*'          # eight tables
 sudo chess-db verify                                        # 0 problem(s)
 sudo -u chess psql -X -d chess -Atc 'SHOW search_path'     # chess
 ```

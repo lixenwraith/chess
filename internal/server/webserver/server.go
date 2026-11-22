@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html"
 	"io/fs"
+	"path"
 	"strings"
 	"time"
 
@@ -16,7 +17,7 @@ import (
 //go:embed chess-client-web
 var webFS embed.FS
 
-// Start initializes and starts the web UI server
+// Start serves the embedded web client at host:port, its board using the API at apiURL.
 func Start(host string, port int, apiURL string, logRequests bool) error {
 	app := fiber.New(fiber.Config{
 		ReadTimeout:  10 * time.Second,
@@ -24,7 +25,6 @@ func Start(host string, port int, apiURL string, logRequests bool) error {
 		IdleTimeout:  30 * time.Second,
 	})
 
-	// Middleware
 	if logRequests {
 		app.Use(logger.New(logger.Config{
 			Format:     "${time} WEB ${status} ${method} ${path} ${latency}\n",
@@ -34,7 +34,6 @@ func Start(host string, port int, apiURL string, logRequests bool) error {
 	}
 	app.Use(cors.New())
 
-	// Create a sub-filesystem rooted at the embedded web client.
 	webContent, err := fs.Sub(webFS, "chess-client-web")
 	if err != nil {
 		return fmt.Errorf("failed to create web sub-filesystem: %w", err)
@@ -45,7 +44,6 @@ func Start(host string, port int, apiURL string, logRequests bool) error {
 		return err
 	}
 
-	// Serve static files from the embedded client directory.
 	app.Get("*", func(c fiber.Ctx) error {
 		// The path for the embedded filesystem must not have a leading slash
 		fsPath := strings.TrimPrefix(c.Path(), "/")
@@ -58,15 +56,16 @@ func Start(host string, port int, apiURL string, logRequests bool) error {
 			return sendIndex()
 		}
 
-		// Try to read the file
 		data, err := fs.ReadFile(webContent, fsPath)
 		if err != nil {
-			// If the file isn't found, serve index.html for SPA-style routing
-			// This handles client-side routes that don't correspond to a file
+			// A missing file, such as the font a site serves at /fonts/, is a 404:
+			// the page in its place would be fetched only to be rejected.
+			if path.Ext(fsPath) != "" {
+				return c.SendStatus(fiber.StatusNotFound)
+			}
 			return sendIndex()
 		}
 
-		// Set the correct Content-Type based on file extension
 		contentType := "application/octet-stream"
 		switch {
 		case strings.HasSuffix(fsPath, ".html"):
