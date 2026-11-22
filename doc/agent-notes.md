@@ -36,9 +36,11 @@ What earlier agents learned that neither AGENTS.md nor the other docs state.
   migration over the rows it finds, never a fresh start. Rehearse it: seed a
   schema through the previous release's server, then open it with the new
   build and run `db verify`.
-- Docs and reports name no command the operator may not have: `chess-db`
-  exists only where the Linux installer wrote it, and a `db` subcommand takes
-  the DSN the service runs with, which this repository cannot know.
+- Docs give a database command as `chess-server db <command>` and say once
+  how each system runs it (database.md, The Server's `db` Commands):
+  `chess-db` is no program but the Linux installer's wrapper, running it as
+  `chess` with the DSN the service runs with, which this repository cannot
+  know.
 - A fuzz run that sits at 0 execs a second is minimizing an input, by
   default for a minute each: `-fuzzminimizetime=2s` shows the real rate.
 - Account deletion clears `imported_by`, so an import outlives its owner

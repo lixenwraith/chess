@@ -1,9 +1,9 @@
 # Database Operations
 
-`psql` recipes for inspecting and maintaining the chess database as the
-PostgreSQL administrator. Installation is in [deployment.md](deployment.md)
-(FreeBSD jail) and [deployment-linux.md](deployment-linux.md) (Linux with
-systemd).
+Inspecting and maintaining the chess database: the server's own `db`
+commands, and `psql` recipes as the PostgreSQL administrator. Installation is
+in [deployment.md](deployment.md) (FreeBSD jail) and
+[deployment-linux.md](deployment-linux.md) (Linux with systemd).
 
 ## Typical Layout
 
@@ -30,6 +30,24 @@ include `chess`, so **every recipe names the schema explicitly** (`chess.games`)
 This keeps other databases and tools on the same server unaffected, and a
 statement typed into the wrong database fails instead of acting on whatever
 it finds.
+
+## The Server's `db` Commands
+
+Accounts, games, the archive and the schema are managed by the server binary
+itself: `chess-server db <command>`, run as the `chess` account against the
+service's database. The examples below give that command; on each system, run
+it as:
+
+```sh
+# Linux
+sudo chess-db <command>
+# FreeBSD jail
+su -m chess -c '/home/chess/bin/chess-server db <command> -dsn "postgres:///chess?host=/tmp"'
+```
+
+`chess-db` is not a program of its own but the wrapper `deploy/linux/setup.sh`
+installs: it runs `/usr/local/bin/chess-server db <command>` as `chess` with
+the service's `CHESSD_DSN` from `/etc/chessd/chessd.env`.
 
 ## Connecting
 
@@ -69,6 +87,10 @@ The tables:
   `termination`, `concession_*`, times; for an imported game `imported_by`,
   `event`, `site`, `round`
 - `chess.moves`: ply `move_number` 1..n, UCI move, FEN after the move
+- `chess.collections`: the archive's collections; source, licence,
+  attribution, `published`
+- `chess.archive_games`: a collection's games, with the search keys (players,
+  Elo, ECO) and the content hash that stores a game once
 
 `result` is `white_wins`, `black_wins`, `stalemate`, or `draw`, and
 `termination` says how: `checkmate`, `resignation`, `stalemate`,
@@ -128,12 +150,9 @@ normalizes names, enforces uniqueness rules, and hashes passwords. Without
 the process list.
 
 ```sh
-# Linux: chess-db runs `chess-server db ...` as the chess account
-sudo chess-db user add -username <name> [-email <addr>]
-sudo chess-db user set-password -username <name>
-sudo chess-db user list
-# FreeBSD jail
-su -m chess -c '/home/chess/bin/chess-server db user add -username <name> -dsn "postgres:///chess?host=/tmp"'
+chess-server db user add -username <name> [-email <addr>]
+chess-server db user set-password -username <name>
+chess-server db user list
 ```
 
 Other `user` subcommands: `delete`, `set-email`, `set-username`, `set-hash`
@@ -221,8 +240,7 @@ real PGN use the CLI (a full ID or 8-digit prefix; `-ply N` stops after N
 plies) or the API:
 
 ```sh
-sudo chess-db pgn -gameId 68007fd1                                   # Linux
-su -m chess -c '/home/chess/bin/chess-server db pgn -gameId 68007fd1 -dsn "postgres:///chess?host=/tmp"'  # FreeBSD
+chess-server db pgn -gameId 68007fd1
 curl -s https://<site>/chess/api/games/<game-id>/pgn
 ```
 
@@ -232,25 +250,24 @@ reproduced, the result and its termination consistent with the final
 position) and exits non-zero on any problem:
 
 ```sh
-sudo chess-db verify                                                 # Linux
-su -m chess -c '/home/chess/bin/chess-server db verify -dsn "postgres:///chess?host=/tmp"'  # FreeBSD
+chess-server db verify
 ```
 
 ### The archive
 
 Collections of games nobody owns, read from PGN databases and listed
-publicly once published ([api.md](api.md#browse-the-archive)). The commands
-are subcommands of `db archive`, run like the other `db` commands above.
+publicly once published ([api.md](api.md#browse-the-archive)), managed by the
+subcommands of `chess-server db archive`:
 
 ```sh
-db archive collection set -name <name> -title <title>     # create; unpublished
-db archive import -collection <name> -file <pgn> -dry-run # read, replay, count
-db archive import -collection <name> -file <pgn>          # or -dir <dir>: every *.pgn
-db archive collection set -name <name> -source <url> -licence <text> \
-    -attribution <text> -published                         # list it publicly
-db archive collection list
-db archive feature -gameId <id|prefix> -order <n>         # 0 takes it away
-db archive collection delete -name <name> -confirm        # with its games
+chess-server db archive collection set -name <name> -title <title>     # create; unpublished
+chess-server db archive import -collection <name> -file <pgn> -dry-run # read, replay, count
+chess-server db archive import -collection <name> -file <pgn>          # or -dir <dir>: every *.pgn
+chess-server db archive collection set -name <name> -source <url> \
+    -licence <text> -attribution <text> -published                     # list it publicly
+chess-server db archive collection list
+chess-server db archive feature -gameId <id|prefix> -order <n>         # 0 takes it away
+chess-server db archive collection delete -name <name> -confirm        # with its games
 ```
 
 - An import reports, for each file, the games stored, duplicate and rejected,
@@ -333,25 +350,26 @@ su -m postgres -c 'pg_dump -Fc -d chess -f /var/db/postgres/chess-$(date +%F).du
 The service commands are `systemctl stop|start chessd` on Linux and
 `service chessd stop|start` on FreeBSD.
 
-**Clear the data, keep the schema** (accounts, sessions, and games), with the
-service stopped:
+**Clear the data, keep the schema** (accounts, sessions, games and the
+archive), with the service stopped:
 
 ```sql
-TRUNCATE chess.moves, chess.games, chess.password_resets, chess.sessions, chess.users;
+TRUNCATE chess.moves, chess.archive_games, chess.games, chess.collections,
+         chess.password_resets, chess.sessions, chess.users;
 ```
 
 **Recreate the tables** (drops and re-runs the migrations), with the service
 stopped:
 
 ```sh
-sudo chess-db delete -confirm && sudo chess-db init          # Linux
-su -m chess -c '/home/chess/bin/chess-server db delete -confirm -dsn "postgres:///chess?host=/tmp"'   # FreeBSD
-su -m chess -c '/home/chess/bin/chess-server db init -dsn "postgres:///chess?host=/tmp"'
+chess-server db delete -confirm
+chess-server db init
 ```
 
 `db init` prints `Database schema ready (version 7)`. In split mode the
 `chess` role owns no tables and cannot drop or create them; run both commands
-as `postgres` acting as the owner role instead, e.g. on Linux:
+as `postgres` acting as the owner role instead, calling the binary itself
+(`chess-db` runs as `chess`), e.g. on Linux:
 
 ```sh
 sudo -u postgres /usr/local/bin/chess-server db delete -confirm \
@@ -376,7 +394,7 @@ create them again.
 Verify any of them:
 
 ```sql
-\dt chess.*                                   -- games, moves, password_resets, schema_version, sessions, users
-SELECT version FROM chess.schema_version;     -- 6
+\dt chess.*                                   -- archive_games, collections, games, moves, password_resets, schema_version, sessions, users
+SELECT version FROM chess.schema_version;     -- 7
 \drds                                         -- chess: search_path and timeouts in database chess
 ```

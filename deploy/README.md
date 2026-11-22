@@ -26,7 +26,7 @@ Ubuntu, Arch; PostgreSQL 17+ already running).
 |---|---|---|---|
 | 1 | Host | `make server` | Static `bin/chess-server` |
 | 2 | Host (root) | `CHESS_BINARY=bin/chess-server linux/setup.sh` | Account, database, `chessd` systemd service, key, optional backup timer; rerun to upgrade |
-| 3 | Host (root) | `chess-db user add -username <name>` | First account |
+| 3 | Host (root) | `chess-db user add -username <name>` | First account: `chess-server db user add` through step 2's wrapper |
 | 4 | nginx | `nginx-chess.conf` with `127.0.0.1:8080` | Optional reverse proxy |
 
 ## Files
