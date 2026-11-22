@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	netmail "net/mail"
 	"net/url"
 	"os"
 	"os/signal"
@@ -18,12 +19,13 @@ import (
 
 	"github.com/lixenwraith/chess/cmd/chess-server/cli"
 	"github.com/lixenwraith/chess/internal/server/http"
-	"github.com/lixenwraith/chess/internal/server/mail"
 	"github.com/lixenwraith/chess/internal/server/metrics"
 	"github.com/lixenwraith/chess/internal/server/processor"
 	"github.com/lixenwraith/chess/internal/server/service"
 	"github.com/lixenwraith/chess/internal/server/storage"
 	"github.com/lixenwraith/chess/internal/server/webserver"
+
+	"github.com/lixenwraith/mail"
 )
 
 const (
@@ -186,24 +188,21 @@ func main() {
 	}
 
 	// Password recovery needs mail and the client's public address.
-	sender, err := mail.Config{
-		SMTPHost: *smtpHost, SMTPPort: *smtpPort, SMTPUser: *smtpUser, SMTPPasswordFile: *smtpPassFile,
-		Dir: *mailDir, From: *mailFrom,
-	}.Build()
+	sender, err := mailSender(*smtpHost, *smtpPort, *smtpUser, *smtpPassFile, *mailDir, *mailFrom)
 	switch {
-	case errors.Is(err, mail.ErrNoSender):
-		log.Printf("Password recovery disabled (no -smtp-host or -mail-dir)")
 	case err != nil:
 		log.Fatalf("Invalid mail configuration: %v", err)
+	case sender == nil:
+		log.Printf("Password recovery disabled (no -smtp-host or -mail-dir)")
 	case store == nil:
 		log.Fatalf("Password recovery (-smtp-host or -mail-dir) requires a database (-dsn)")
 	case *publicURL == "":
 		log.Fatalf("Password recovery requires -public-url, the web client address that reset links open")
 	default:
-		if err := svc.SetMailer(sender, *publicURL); err != nil {
+		if err := svc.SetMailer(sender, *mailFrom, *publicURL); err != nil {
 			log.Fatalf("Invalid -public-url: %v", err)
 		}
-		log.Printf("Password recovery enabled: %s; links open %s", sender.Describe(), *publicURL)
+		log.Printf("Password recovery enabled: %s, from %s; links open %s", sender, *mailFrom, *publicURL)
 	}
 
 	// The server's lifetime: requests and the cleanup job run within it.
@@ -314,4 +313,41 @@ func main() {
 	}
 
 	log.Println("Servers exited")
+}
+
+// mailSender is the transport the mail flags name: an SMTP relay, a directory
+// of .eml files for development, or nil when neither is given. The relay gets
+// one attempt on one connection a message, with STARTTLS when it offers it.
+func mailSender(host string, port int, user, passwordFile, dir, from string) (mail.Sender, error) {
+	switch {
+	case host != "" && dir != "":
+		return nil, errors.New("-smtp-host and -mail-dir are exclusive")
+	case host == "" && dir == "":
+		return nil, nil
+	case from == "":
+		return nil, errors.New("-mail-from is required with a mail transport")
+	case (user == "") != (passwordFile == ""):
+		return nil, errors.New("-smtp-user and -smtp-password-file go together")
+	}
+	if _, err := netmail.ParseAddress(from); err != nil {
+		return nil, fmt.Errorf("-mail-from %q: %w", from, err)
+	}
+	if dir != "" {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, fmt.Errorf("-mail-dir: %w", err)
+		}
+		return mail.Dir{Path: dir}, nil
+	}
+	config := mail.Config{
+		Host: host, Port: port, Username: user,
+		TLS: mail.OpportunisticTLS, MaxRetries: -1, ConnMaxIdleTime: -1,
+	}
+	if passwordFile != "" {
+		secret, err := loadSecret("SMTP password", passwordFile, 1)
+		if err != nil {
+			return nil, err
+		}
+		config.Password = string(secret)
+	}
+	return mail.NewClient(config)
 }

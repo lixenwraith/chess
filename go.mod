@@ -8,6 +8,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/lixenwraith/auth v0.5.3
+	github.com/lixenwraith/mail v0.2.0
 	golang.org/x/term v0.48.0
 )
 

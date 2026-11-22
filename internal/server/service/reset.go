@@ -14,23 +14,25 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lixenwraith/chess/internal/server/mail"
 	"github.com/lixenwraith/chess/internal/server/storage"
 
 	"github.com/google/uuid"
+	"github.com/lixenwraith/mail"
 )
 
 const (
 	// PasswordResetTTL is how long a reset link works.
-	PasswordResetTTL = time.Hour
-	// PasswordResetCooldown: while an account's link is this new, a request
-	// mails nothing and that link keeps working, so requests from many
-	// addresses cannot flood its inbox.
-	PasswordResetCooldown = 5 * time.Minute
-	resetTokenBytes       = 32
-	resetQueueCapacity    = 64
-	mailSendTimeout       = 20 * time.Second
+	PasswordResetTTL   = time.Hour
+	resetTokenBytes    = 32
+	resetQueueCapacity = 64
+	mailSendTimeout    = 20 * time.Second
 )
+
+// ResetMailLimits is how much password-reset mail the server sends. Whoever
+// registers an account names its address, unverified, so each address gets
+// one message, a second a minute later at the earliest, and then none for a
+// day; and all addresses together get fifty a day, however many accounts ask.
+var ResetMailLimits = storage.ResetMailLimits{Window: 24 * time.Hour, Spacing: time.Minute, Total: 50}
 
 var (
 	// ErrMailDisabled reports that no mail transport is configured, so
@@ -47,8 +49,9 @@ var (
 // is answered before its account is looked up and its timing reveals nothing.
 type mailer struct {
 	sender    mail.Sender
+	from      string
 	publicURL *url.URL
-	cooldown  time.Duration
+	limits    storage.ResetMailLimits
 
 	mu       sync.RWMutex // guards closing requests against a send
 	closed   bool
@@ -58,10 +61,11 @@ type mailer struct {
 	done     chan struct{}
 }
 
-// SetMailer configures password recovery: sender delivers the email and
-// publicURL is the web client's address, which the link opens with
-// ?reset=<token>. A nil sender turns recovery off. Call it before serving.
-func (s *Service) SetMailer(sender mail.Sender, publicURL string) error {
+// SetMailer configures password recovery: sender delivers the email, from is
+// its sender address, and publicURL is the web client's address, which the
+// link opens with ?reset=<token>. A nil sender turns recovery off. Call it
+// before serving.
+func (s *Service) SetMailer(sender mail.Sender, from, publicURL string) error {
 	var next *mailer
 	if sender != nil {
 		u, err := url.Parse(publicURL)
@@ -70,7 +74,7 @@ func (s *Service) SetMailer(sender mail.Sender, publicURL string) error {
 		}
 		ctx, cancel := context.WithCancel(context.Background())
 		next = &mailer{
-			sender: sender, publicURL: u, cooldown: PasswordResetCooldown,
+			sender: sender, from: from, publicURL: u, limits: ResetMailLimits,
 			requests: make(chan string, resetQueueCapacity),
 			ctx:      ctx, cancel: cancel, done: make(chan struct{}),
 		}
@@ -182,8 +186,9 @@ func (s *Service) sendPasswordResets(m *mailer) {
 }
 
 // sendPasswordReset mails a reset link to the account named by identifier
-// when it has an email address and no pending link within the cooldown. A link
-// that cannot be sent is revoked, so a retry is not held back.
+// when it has an email address that the limits still allow mail to. The
+// message holds nothing its requester chose: no name, no text of theirs. A
+// link that cannot be sent is revoked and its place in the limits given back.
 func (s *Service) sendPasswordReset(m *mailer, identifier string) {
 	// Shutdown cuts only the send short: the store calls, each bounded, finish,
 	// so a link is never left stored unsent.
@@ -208,47 +213,64 @@ func (s *Service) sendPasswordReset(m *mailer, identifier string) {
 		return
 	}
 
-	token, hash, err := NewResetToken()
-	if err != nil {
-		slog.Error("password reset token failed", "error", err)
-		return
-	}
 	now := time.Now().UTC()
-	err = s.store.CreatePasswordReset(persist, storage.PasswordResetRecord{
-		UserID: record.UserID, TokenHash: hash, CreatedAt: now, ExpiresAt: now.Add(PasswordResetTTL),
-	}, m.cooldown)
-	switch {
-	case errors.Is(err, storage.ErrResetPending):
-		slog.Info("password reset not mailed: an earlier link is within the cooldown", "user_id", record.UserID)
+	address := sha256.Sum256([]byte(strings.ToLower(record.Email)))
+	switch err := s.store.ReserveResetMail(persist, address[:], now, m.limits); {
+	case errors.Is(err, storage.ErrResetMailHeld):
+		slog.Info("password reset not mailed: the address has had its mail for now", "user_id", record.UserID)
+		return
+	case errors.Is(err, storage.ErrResetMailCapped):
+		slog.Warn("password reset not mailed: the server's limit of reset mail is reached",
+			"user_id", record.UserID, "limit", m.limits.Total, "window", m.limits.Window)
 		return
 	case err != nil:
+		slog.Error("password reset mail not reserved", "user_id", record.UserID, "error", err)
+		return
+	}
+	unsent := func() {
+		if err := s.store.ReleaseResetMail(persist, address[:], now); err != nil {
+			slog.Error("unsent password reset mail still counted", "user_id", record.UserID, "error", err)
+		}
+	}
+
+	token, hash, err := NewResetToken()
+	if err == nil {
+		err = s.store.CreatePasswordReset(persist, storage.PasswordResetRecord{
+			UserID: record.UserID, TokenHash: hash, CreatedAt: now, ExpiresAt: now.Add(PasswordResetTTL),
+		})
+	}
+	if err != nil {
 		slog.Error("password reset not stored", "user_id", record.UserID, "error", err)
+		unsent()
 		return
 	}
 
-	link := ResetLink(m.publicURL, token)
 	ctx, cancel := context.WithTimeout(m.ctx, mailSendTimeout)
 	defer cancel()
-	err = m.sender.Send(ctx, mail.Message{
-		To:      record.Email,
+	err = m.sender.Send(ctx, &mail.Message{
+		From:    m.from,
+		To:      []string{record.Email},
 		Subject: "Reset your chess password",
-		Body: fmt.Sprintf(`Hello %s,
+		Headers: map[string]string{"Auto-Submitted": "auto-generated"},
+		Text: fmt.Sprintf(`Someone asked to reset the password of the chess account that has this
+email address, at %s.
 
-Someone asked to reset the password of your chess account at %s.
 If it was you, open this link within the next hour:
 
   %s
 
-If you did not ask for this, ignore this message: your password stays as
-it is and nobody else can use the link without this email.
-`, record.Username, m.publicURL.Host, link),
+If you did not ask for this, ignore this message: the password stays as it
+is, and nobody can use the link without this email. No more than two of
+these messages are sent to an address in a day.
+`, m.publicURL.Host, ResetLink(m.publicURL, token)),
 	})
 	if err != nil {
 		slog.Error("password reset email failed", "user_id", record.UserID, "error", err)
-		// Revoked, or the cooldown would hold back a retry for a link never sent.
+		// Revoked: a link nobody received must not stand, nor count as sent.
 		if _, err := s.store.ConsumePasswordReset(persist, hash, now); err != nil && !errors.Is(err, sql.ErrNoRows) {
 			slog.Error("unsent password reset not revoked", "user_id", record.UserID, "error", err)
 		}
+		unsent()
 		return
 	}
 	slog.Info("password reset email sent", "user_id", record.UserID)

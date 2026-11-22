@@ -92,8 +92,9 @@ start the server.
   games read from PGN databases by `db archive import`, a hundred games a
   transaction and one copy a game; the published ones are listed publicly.
   They are replayed, never played: no request loads one into memory
-- **Mail** (`internal/server/mail`): password-reset email through an SMTP
-  relay, or `.eml` files in development
+- **Mail** (`github.com/lixenwraith/mail`): the SMTP client and the `.eml`
+  files of development. The server sends one kind of message, the
+  password-reset link, and rations it by address (`service/reset.go`)
 - **Metrics** (`internal/server/metrics`): one `msg=metrics` log line every
   `-metrics-interval` ([Metrics](#metrics))
 - **Web server** (`internal/server/webserver`): serves the embedded web client
@@ -309,7 +310,7 @@ Commands encapsulate operations with type, arguments, and optional user ID for a
 ### Player Configuration
 Players identified by UUID (authenticated users) or generated IDs (anonymous), configured with type (human/computer), skill level, and search time. A human side is held by an account's claim or a guest's seat, or is open.
 
-### Storage Schema (version 7)
+### Storage Schema (version 8)
 ```sql
 users (
     user_id uuid PRIMARY KEY,
@@ -383,6 +384,12 @@ password_resets (
     expires_at timestamptz NOT NULL         -- an hour after creation
 )
 
+reset_mails (                               -- one row a reset mail sent
+    address_hash bytea NOT NULL,            -- SHA-256 of the address: it outlives
+                                            --   the account, so the limits do too
+    sent_at timestamptz NOT NULL            -- rows leave after two days
+)
+
 moves (
     game_id uuid REFERENCES games ON DELETE CASCADE,
     move_number integer,                    -- 1..n without gaps
@@ -401,7 +408,8 @@ Version 3 added the `concession_*` columns: a rewind clears `result` and
 `termination` but keeps them, and the first concession is never overwritten.
 Version 4 added `password_resets`, one pending reset per account; version 5
 the import columns; version 6 the guest seats; version 7 `origin` and the
-archive's two tables. Every version migrates the rows it finds in place.
+archive's two tables; version 8 `reset_mails`. Every version migrates the
+rows it finds in place.
 Indexes cover session and reset expiry, each claim column and `imported_by`
 ordered by `(start_time_utc DESC, game_id DESC)` for the game listing, the
 start time of games with neither claim nor importer, the archive's aside, for

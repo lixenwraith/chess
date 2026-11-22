@@ -127,7 +127,7 @@ type MovePersistence struct {
 // schemaVersion is the newest schema this binary understands. Migrations are
 // applied in order inside one transaction; PostgreSQL DDL is transactional, so
 // a failed upgrade leaves the previous version intact.
-const schemaVersion = 7
+const schemaVersion = 8
 
 // migrations[v-1] upgrades the schema from version v-1 to v. Never edit a
 // released migration; append a new one.
@@ -350,9 +350,22 @@ CREATE INDEX archive_games_white_key_idx ON archive_games (white_key) WHERE whit
 CREATE INDEX archive_games_black_key_idx ON archive_games (black_key) WHERE black_key IS NOT NULL;
 CREATE INDEX archive_games_featured_idx ON archive_games (featured_order) WHERE featured_order IS NOT NULL;
 `,
+
+	// v8: the record of password-reset mail, by the SHA-256 of the address it
+	// went to, which outlives the account: deleting an account and registering
+	// the address again buys no further mail. Rows older than a day are purged.
+	`
+CREATE TABLE reset_mails (
+	address_hash bytea NOT NULL CHECK (octet_length(address_hash) = 32),
+	sent_at      timestamptz NOT NULL
+);
+CREATE INDEX reset_mails_address_idx ON reset_mails (address_hash, sent_at);
+CREATE INDEX reset_mails_sent_at_idx ON reset_mails (sent_at);
+`,
 }
 
 // ownedTables lists every table created by migrations, children first.
 var ownedTables = []string{
-	"moves", "archive_games", "games", "collections", "password_resets", "sessions", "users", "schema_version",
+	"moves", "archive_games", "games", "collections", "reset_mails", "password_resets", "sessions", "users",
+	"schema_version",
 }

@@ -687,7 +687,7 @@ func runUserResetLink(args []string) error {
 	now := time.Now().UTC()
 	if err := store.CreatePasswordReset(ctx, storage.PasswordResetRecord{
 		UserID: targetID, TokenHash: hash, CreatedAt: now, ExpiresAt: now.Add(service.PasswordResetTTL),
-	}, 0); err != nil {
+	}); err != nil {
 		return fmt.Errorf("failed to create reset: %w", err)
 	}
 	fmt.Printf("Reset link for %s, valid until %s (one use):\n%s\n",

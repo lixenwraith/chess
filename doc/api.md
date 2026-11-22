@@ -121,10 +121,21 @@ hashing is saturated or `STORAGE_UNAVAILABLE` when storage is down.
 
 Emails a one-time reset link to the account's address. The request is
 answered before the account is looked up, so the response, and how soon it
-comes, is the same whether or not the account exists or has an email. While
-a link is pending, a request within 5 minutes of it mails nothing and that
-link keeps working. A message the relay refuses is logged, and its link
-revoked.
+comes, is the same whether or not the account exists or has an email. Mail
+is the server's to ration, since an account's address is unverified:
+
+- An address gets one message at once, a second no sooner than a minute
+  after it, and then none until 24 hours after the second. A request in
+  between mails nothing and leaves the last link working. The address is
+  counted, not the account: deleting an account and registering its address
+  again buys no further mail.
+- All addresses together get 50 messages in 24 hours; past that nothing is
+  mailed and the server logs a warning.
+- The message carries the link and nothing its requester chose: no name and
+  no text of theirs.
+
+A newer link replaces a pending one. A message the relay refuses is logged,
+its link revoked, and its place in the limits given back.
 
 **Request:**
 ```json
