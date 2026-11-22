@@ -14,9 +14,8 @@ this file, and the line of its batch under Done says what it delivered.
 
 - Phase 1, now:
   - R8.1 P1: deliver mail through the mail jail (operations)
-- Phase 2, next, in this order:
-  - R8.2 P2: email verification, after R8.1
-- Phase 3, later, each after its decision:
+- Phase 2, later, each after its decision:
+  - R8.2 P3: email verification, which D15 holds back
   - R8.4 P3: recovery timing through the sender
   - R7.3 P3: retire the engine shadow, after a release without a finding
   - R5.5 P3: partial dates of games read from PGN, with the first old collection
@@ -45,8 +44,10 @@ this file, and the line of its batch under Done says what it delivered.
   the collection's rights. Nothing is bundled.
 - Accounts: password recovery by email (schema v4), administrative reset
   links, self-service account deletion. R8.3: a recovery request is answered
-  before the lookup and mailed from a queue, at most one email per account
-  per 5 minutes while its link is pending.
+  before the lookup and mailed from a queue. Reset mail is rationed by
+  address, whoever holds the account: one message, a second a minute later,
+  then none for a day, and 50 a day in all; it names nobody (schema v8).
+  `github.com/lixenwraith/mail` sends it.
 - Operations: transient write retries, degraded mode reported by `/health`,
   the integrity sweep (`-db-cleanup`), draw and resign flows.
 - R6 Live games: no cap on computer games; the engine queue takes two moves
@@ -118,6 +119,10 @@ this file, and the line of its batch under Done says what it delivered.
   list only, its games' history and PGN answering by ID as every game's do
   (D2); the list filters by collection, opening-code prefix and
   player-name prefix on plain indexes, the names lowercased by the server.
+- D15 Mail, done: the server mails the password-reset link and nothing
+  else. An address is unverified, so mail to it is rationed: one message, a
+  second a minute later, then none for 24 hours, counted by address across
+  accounts, 50 a day in all, and nothing in it that its requester chose.
 
 ## Web Client Constraints
 
@@ -199,8 +204,8 @@ verified.
 
 - Priority: P1, operations: recovery is built and tested, and off in
   production until a relay is set
-- Affected files: none expected; `internal/server/mail/mail.go` and
-  `cmd/chess-server/main.go` only if the relay's TLS needs it (below)
+- Affected files: none expected; `cmd/chess-server/main.go` only if the
+  relay's TLS needs it (below)
 - Guide: [Password Recovery by Email](deployment.md#password-recovery-by-email),
   [Service](deployment.md#service-rcdchessd)
 
@@ -216,15 +221,17 @@ verified.
   relay offers it and verifies the certificate against the system roots for
   the `-smtp-host` name, so a relay reached by IP address, or holding a
   certificate from a private CA, fails every send. Then reach it by the name
-  on its certificate, or add a flag for the expected name or a CA file (a
-  small change to `mail.SMTP`), or offer no STARTTLS on the internal port.
+  on its certificate, or add a flag for the expected name or a CA file (the
+  mail module's `Config.TLSConfig` takes both), or offer no STARTTLS on the
+  internal port.
 - Done when `/health` reports `"mail": "ok"` and a recovery from the web
   client completes.
 
 ### R8.2 Email verification
 
-- Priority: P2, after R8.1, which it needs: a mistyped address hands the
-  account's reset links to whoever owns it
+- Priority: P3, held by D15: verifying an address means mailing it, a second
+  kind of message. A mistyped address still hands the account's reset links
+  to whoever owns it
 - Affected files: `internal/server/storage/schema.go`,
   `internal/server/storage/reset.go`, `internal/server/storage/user.go`,
   `internal/server/service/user.go`, `internal/server/service/reset.go`,

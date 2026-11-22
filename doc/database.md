@@ -349,7 +349,7 @@ su -m chess -c '/home/chess/bin/chess-server db delete -confirm -dsn "postgres:/
 su -m chess -c '/home/chess/bin/chess-server db init -dsn "postgres:///chess?host=/tmp"'
 ```
 
-`db init` prints `Database schema ready (version 7)`. In split mode the
+`db init` prints `Database schema ready (version 8)`. In split mode the
 `chess` role owns no tables and cannot drop or create them; run both commands
 as `postgres` acting as the owner role instead, e.g. on Linux:
 

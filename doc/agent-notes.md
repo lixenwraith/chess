@@ -13,7 +13,7 @@ What earlier agents learned that neither AGENTS.md nor the other docs state.
   `proc.Execute`: `service.New(nil, secret)` and a nil processor serve them
   (`TestLongPollEndsWhenServerContextIsCancelled`); `processor.New` starts
   the engine.
-- A test that sets a field the reset-mail sender reads (`mailer.cooldown`)
+- A test that sets a field the reset-mail sender reads (`mailer.limits`)
   sets it before the first `RequestPasswordReset`: the queue's send orders
   the write before the sender's read, which keeps `-race` quiet.
 - To show a comment sweep changed no code, print each file without comments
@@ -46,3 +46,12 @@ What earlier agents learned that neither AGENTS.md nor the other docs state.
   it.
 - `applyURL` awaits a game's load: two history steps in a row overlap, and
   the later one must win (`ui.navigation`).
+- Sending mail is `github.com/lixenwraith/mail`'s work: a change to how a
+  message is rendered or delivered lands there, as one to hashing lands in
+  `lixenwraith/auth`. What chess mails, to whom and how often is
+  `service/reset.go`.
+- To write `go.sum` lines for a module version that has no tag yet, serve
+  its branch from a file proxy: `git archive --prefix=<module>@<version>/`
+  as `@v/<version>.zip` beside `.mod`, `.info` and `list`, then `go mod
+  tidy` with `GOPROXY=file://<dir>,...` and `GONOSUMDB=<module>`. The hash
+  is of the tree, so it holds once that tree is tagged.

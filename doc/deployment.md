@@ -239,9 +239,13 @@ With an SMTP relay the server emails a reset link on request (`POST
 opens the client, which sets the new password and signs the person in. The
 link works for an hour and once; using it signs the account out everywhere
 else. Accounts without an email address cannot use it (the CLI commands above
-can). The server answers before it sends, at most one email per account per
-5 minutes while its link is pending, and logs a message the relay refuses:
-watch the log for `password reset email failed` after setting the relay up.
+can). The server answers before it sends and logs a message the relay
+refuses: watch the log for `password reset email failed` after setting the
+relay up. It rations what it sends
+([api.md](api.md#request-a-password-reset)): two messages to an address,
+a minute apart, then none for a day, and 50 a day in all; `password reset
+not mailed: the server's limit of reset mail is reached` in the log means
+the second limit was met.
 
 The relay is a separate jail reached over the internal network. Set in
 `rc.conf`:
@@ -257,9 +261,11 @@ service chessd restart
 ```
 
 The server uses STARTTLS when the relay offers it and sends credentials only
-over TLS. `GET /chess/health` reports `"mail": "ok"` once recovery is on. For
-a test without a relay, `-mail-dir <dir>` in `chessd_flags` writes each
-message to a file instead.
+over TLS; `chessd_smtp_user` needs its password file. Each message gets one
+attempt on a connection of its own. `GET /chess/health` reports `"mail":
+"ok"` once recovery is configured; it does not test the relay. For a test
+without a relay, `-mail-dir <dir>` in `chessd_flags` writes each message to
+a file instead.
 
 ## Host nginx and Web Clients
 

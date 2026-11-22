@@ -44,7 +44,8 @@ Go backend server providing a RESTful API for chess gameplay with user authentic
   retries, latencies, loaded games) for a log shipper to stream
 - User management with secure Argon2id password storage and scoped JWTs
 - Password recovery by email (SMTP relay, or a directory of `.eml` files in
-  development) and administrative reset links
+  development), rationed by address so the server cannot be made to mail
+  strangers at will, and administrative reset links
 - Self-service account deletion: claims and names are cleared from stored games
 - Static, CGO-free binaries (cross-compiles for FreeBSD)
 - Scripted deployment: FreeBSD jail (rc.d) or Linux (sandboxed systemd unit)

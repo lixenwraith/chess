@@ -183,7 +183,6 @@ chess/
 │       ├── engine/              # Stockfish UCI wrapper
 │       ├── game/                # Live game state and claims
 │       ├── http/                # Fiber routes, handlers, auth, middleware
-│       ├── mail/                # Password-reset email
 │       ├── metrics/             # Timers and the periodic metrics log line
 │       ├── processor/           # Command execution, engine queue, analysis
 │       ├── replay/              # Stored games: SAN, PGN, verification
@@ -242,6 +241,7 @@ CHESS_E2E_MAIL_DIR=/tmp/chess-mail make test-e2e                 # terminal 2
 - Degraded storage is tried again every 5 seconds (internal/server/service/service.go)
 - JWT expiration: 7 days (internal/server/service/service.go)
 - Concurrent Argon2id derivations: 4, five-second wait (internal/server/service/user.go)
+- Reset mail: to an address one message, a second a minute later, then none for 24 hours; 50 in 24 hours to all (internal/server/service/reset.go)
 - Long-poll timeout: 30 seconds (internal/server/service/waiter.go)
 - Long-poll channel buffer: 1 (internal/server/service/waiter.go)
 

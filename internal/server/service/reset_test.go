@@ -11,8 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lixenwraith/chess/internal/server/mail"
 	"github.com/lixenwraith/chess/internal/server/storage"
+
+	"github.com/lixenwraith/mail"
 )
 
 var linkPattern = regexp.MustCompile(`https://example\.test/chess/web-client/\?reset=([A-Za-z0-9_-]{43})`)
@@ -26,16 +27,16 @@ func TestPasswordResetFlow(t *testing.T) {
 		t.Fatalf("recovery without mail: %v", err)
 	}
 	dir := filepath.Join(t.TempDir(), "mail")
-	if err := svc.SetMailer(&mail.Dir{Path: dir, From: "chess@example.test"}, "/chess/"); err == nil {
+	if err := svc.SetMailer(mail.Dir{Path: dir}, "chess@example.test", "/chess/"); err == nil {
 		t.Fatal("relative public URL accepted")
 	}
-	if err := svc.SetMailer(&mail.Dir{Path: dir, From: "chess@example.test"}, "https://example.test/chess/web-client/"); err != nil {
+	if err := svc.SetMailer(mail.Dir{Path: dir}, "chess@example.test", "https://example.test/chess/web-client/"); err != nil {
 		t.Fatal(err)
 	}
 	if svc.MailHealth() != "ok" {
 		t.Fatal("mail not reported ok")
 	}
-	svc.mail.cooldown = 0 // set before the first request reaches the sender
+	svc.mail.limits.Spacing = 0 // set before the first request reaches the sender
 
 	user, sessionID, err := svc.RegisterUser(t.Context(), "alice", "Alice@Example.test", "Password1")
 	if err != nil {
@@ -109,7 +110,7 @@ func TestPasswordResetFlow(t *testing.T) {
 	past := time.Now().UTC().Add(-time.Minute)
 	if err := svc.store.CreatePasswordReset(t.Context(), storage.PasswordResetRecord{
 		UserID: user.UserID, TokenHash: hash, CreatedAt: past.Add(-time.Hour), ExpiresAt: past,
-	}, 0); err != nil {
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := svc.ResetPassword(t.Context(), expired, "Password4"); !errors.Is(err, ErrResetInvalid) {
@@ -127,8 +128,8 @@ func TestPasswordResetRequestReturnsBeforeTheMailIsSent(t *testing.T) {
 	if _, _, err := svc.RegisterUser(t.Context(), "alice", "alice@example.test", "Password1"); err != nil {
 		t.Fatal(err)
 	}
-	sender := &heldSender{release: make(chan struct{}), sent: make(chan mail.Message, 1)}
-	if err := svc.SetMailer(sender, "https://example.test/chess/web-client/"); err != nil {
+	sender := &heldSender{release: make(chan struct{}), sent: make(chan *mail.Message, 1)}
+	if err := svc.SetMailer(sender, "chess@example.test", "https://example.test/chess/web-client/"); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.RequestPasswordReset("alice"); err != nil {
@@ -137,28 +138,33 @@ func TestPasswordResetRequestReturnsBeforeTheMailIsSent(t *testing.T) {
 	close(sender.release)
 	select {
 	case m := <-sender.sent:
-		if m.To != "alice@example.test" {
-			t.Fatalf("mail to %q", m.To)
+		if len(m.To) != 1 || m.To[0] != "alice@example.test" || m.From != "chess@example.test" {
+			t.Fatalf("mail from %q to %q", m.From, m.To)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("queued reset email never sent")
 	}
 }
 
-func TestPasswordResetMailsAnAccountOncePerCooldown(t *testing.T) {
+// TestResetMailIsHeldPerAddressWhoeverHoldsTheAccount: a second request at
+// once mails nothing and leaves the first link working, and deleting the
+// account to register its address again buys no further mail. The message
+// holds nothing the account's owner chose.
+func TestResetMailIsHeldPerAddressWhoeverHoldsTheAccount(t *testing.T) {
 	svc := newPersistentTestService(t)
 	dir := filepath.Join(t.TempDir(), "mail")
-	if err := svc.SetMailer(&mail.Dir{Path: dir, From: "chess@example.test"}, "https://example.test/chess/web-client/"); err != nil {
+	if err := svc.SetMailer(mail.Dir{Path: dir}, "chess@example.test", "https://example.test/chess/web-client/"); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"alice", "carol"} {
-		if _, _, err := svc.RegisterUser(t.Context(), name, name+"@example.test", "Password1"); err != nil {
-			t.Fatal(err)
-		}
+	first, session, err := svc.RegisterUser(t.Context(), "buy_at_shop", "victim@example.test", "Password1")
+	if err != nil {
+		t.Fatal(err)
 	}
-	// Carol's request, queued last, shows when the sender has passed alice's
-	// second one, which mails nothing and leaves the first link working.
-	for _, id := range []string{"alice", "alice", "carol"} {
+	if _, _, err := svc.RegisterUser(t.Context(), "carol", "carol@example.test", "Password1"); err != nil {
+		t.Fatal(err)
+	}
+	// Carol's request, queued last, shows when the sender has passed the others.
+	for _, id := range []string{"buy_at_shop", "victim@example.test", "carol"} {
 		if err := svc.RequestPasswordReset(id); err != nil {
 			t.Fatal(err)
 		}
@@ -167,21 +173,44 @@ func TestPasswordResetMailsAnAccountOncePerCooldown(t *testing.T) {
 	if len(mails) != 2 {
 		t.Fatalf("%d messages, want one each", len(mails))
 	}
-	token := resetToken(t, mails[0], "alice@example.test")
+	token := resetToken(t, mails[0], "victim@example.test")
 	resetToken(t, mails[1], "carol@example.test")
-	if _, _, err := svc.ResetPassword(t.Context(), token, "Password2"); err != nil {
-		t.Fatalf("first link after a request within the cooldown: %v", err)
+	if strings.Contains(mails[0], "buy_at_shop") {
+		t.Errorf("the message names the account:\n%s", mails[0])
+	}
+
+	if err := svc.DeleteAccount(t.Context(), first.UserID, session, "Password1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.RegisterUser(t.Context(), "again", "victim@example.test", "Password1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.RegisterUser(t.Context(), "dave", "dave@example.test", "Password1"); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"again", "dave"} {
+		if err := svc.RequestPasswordReset(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mails = waitForMail(t, dir, 3)
+	if len(mails) != 3 {
+		t.Fatalf("%d messages: the address was mailed again", len(mails))
+	}
+	resetToken(t, mails[2], "dave@example.test")
+	if _, _, err := svc.ResetPassword(t.Context(), token, "Password2"); !errors.Is(err, ErrResetInvalid) {
+		t.Errorf("the deleted account's link: %v", err)
 	}
 }
 
-// TestShutdownRevokesALinkWhoseEmailItCutShort: a link left stored unsent
-// would hold back the account's next request for the cooldown.
+// TestShutdownRevokesALinkWhoseEmailItCutShort: a link nobody received must
+// not stand, nor count against the address's mail.
 func TestShutdownRevokesALinkWhoseEmailItCutShort(t *testing.T) {
 	svc, dsn := newPersistentTestServiceDSN(t)
 	if _, _, err := svc.RegisterUser(t.Context(), "alice", "alice@example.test", "Password1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.SetMailer(&heldSender{release: make(chan struct{})}, "https://example.test/chess/web-client/"); err != nil {
+	if err := svc.SetMailer(&heldSender{release: make(chan struct{})}, "chess@example.test", "https://example.test/chess/web-client/"); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.RequestPasswordReset("alice"); err != nil {
@@ -193,12 +222,12 @@ func TestShutdownRevokesALinkWhoseEmailItCutShort(t *testing.T) {
 	}
 	defer db.Close()
 	links := func() (n int) {
-		if err := db.QueryRow(`SELECT count(*) FROM password_resets`).Scan(&n); err != nil {
+		if err := db.QueryRow(`SELECT (SELECT count(*) FROM password_resets) + (SELECT count(*) FROM reset_mails)`).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		return n
 	}
-	for deadline := time.Now().Add(10 * time.Second); links() == 0; time.Sleep(10 * time.Millisecond) {
+	for deadline := time.Now().Add(10 * time.Second); links() < 2; time.Sleep(10 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("reset link never stored")
 		}
@@ -208,17 +237,17 @@ func TestShutdownRevokesALinkWhoseEmailItCutShort(t *testing.T) {
 		t.Fatal(err)
 	}
 	if n := links(); n != 0 {
-		t.Fatalf("%d unsent links left after shutdown", n)
+		t.Fatalf("%d rows of an unsent link left after shutdown", n)
 	}
 }
 
 // heldSender delivers each message once release is closed.
 type heldSender struct {
 	release chan struct{}
-	sent    chan mail.Message
+	sent    chan *mail.Message
 }
 
-func (h *heldSender) Send(ctx context.Context, m mail.Message) error {
+func (h *heldSender) Send(ctx context.Context, m *mail.Message) error {
 	select {
 	case <-h.release:
 	case <-ctx.Done():
@@ -227,8 +256,6 @@ func (h *heldSender) Send(ctx context.Context, m mail.Message) error {
 	h.sent <- m
 	return nil
 }
-
-func (h *heldSender) Describe() string { return "held" }
 
 // waitForMail waits until dir holds at least n complete messages and returns
 // them all in the order written.

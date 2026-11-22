@@ -236,6 +236,9 @@ func (s *Service) cleanupExpired(ctx context.Context) {
 		} else if deleted > 0 {
 			slog.Info("cleanup deleted expired password resets", "count", deleted)
 		}
+		if err := s.store.DeleteResetMailsBefore(ctx, now.Add(-2*ResetMailLimits.Window)); err != nil {
+			slog.Error("cleanup failed to forget old reset mail", "error", err)
+		}
 	}
 	s.cleanupGames(now)
 	s.checkIntegrity(ctx, now)
